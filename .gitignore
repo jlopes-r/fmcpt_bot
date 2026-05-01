@@ -1,0 +1,40 @@
+# Monorepo Python Gitignore
+__pycache__/
+*.py[cod]
+*$py.class
+.env
+.venv
+env/
+venv/
+ENV/
+
+# Dados persistentes (Ignora o conteúdo, mantém a pasta se tiver um .gitkeep)
+data/downloads/*
+!data/downloads/.gitkeep
+data/logs/*
+!data/logs/.gitkeep
+data/sessions/*
+!data/sessions/.gitkeep
+data/*.db
+data/*.db-journal
+data/*.txt
+data/*.json
+*.json
+data/*.json
+
+# Sessões do Pyrogram
+apps/telegram_bot/*.session
+apps/telegram_bot/*.session-journal
+*.session-journal
+
+# Arquivos gerados dinamicamente
+*.json
+data/*.json
+links_vistos.json
+
+# Assets
+assets/audios/*.ogg
+
+# IDEs
+.vscode/
+.idea/

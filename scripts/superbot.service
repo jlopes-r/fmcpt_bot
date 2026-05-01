@@ -1,0 +1,13 @@
+[Unit]
+Description=Meu Super Bot Telegram
+After=network.target
+
+[Service]
+User=juanl
+WorkingDirectory=/home/juanl/bot/apps/telegram_bot
+ExecStart=/usr/bin/python3 /home/juanl/bot/apps/telegram_bot/super_bot.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
