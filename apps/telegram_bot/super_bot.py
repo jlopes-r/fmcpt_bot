@@ -17,7 +17,6 @@ import aiohttp
 
 from pyrogram import Client, filters, raw
 from pyrogram.types import InputMediaPhoto, InputMediaVideo
-from pyrogram.raw.core import FileId, FileType
 from dotenv import load_dotenv
 from pathlib import Path
 
@@ -111,14 +110,7 @@ async def metralhadora_stickers(client, chat_id):
             selecionados = random.sample(sticker_set.documents, min(len(sticker_set.documents), quantity))
             ids = []
             for doc in selecionados:
-                fid = FileId(
-                    file_type=FileType.STICKER,
-                    dc_id=doc.dc_id,
-                    media_id=doc.id,
-                    access_hash=doc.access_hash,
-                    file_reference=doc.file_reference
-                ).encode()
-                ids.append(fid)
+                ids.append(doc.id)
             return ids
 
         final_ids = []
@@ -126,8 +118,8 @@ async def metralhadora_stickers(client, chat_id):
         final_ids.extend(await get_stickers(PACKS["meus"], 1))
         final_ids.extend(await get_stickers(PACKS["monkes"], 1))
 
-        for fid in final_ids:
-            await client.send_sticker(chat_id, fid)
+        for sticker_id in final_ids:
+            await client.send_sticker(chat_id, sticker_id)
             await asyncio.sleep(0.4)
     except Exception as e:
         log.error(f"Erro stickers: {e}")
