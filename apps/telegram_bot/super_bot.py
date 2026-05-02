@@ -110,7 +110,8 @@ async def metralhadora_stickers(client, chat_id):
             selecionados = random.sample(sticker_set.documents, min(len(sticker_set.documents), quantity))
             ids = []
             for doc in selecionados:
-                ids.append(doc.id)
+                # Extrai o file_id diretamente do documento
+                ids.append(doc.file_id)
             return ids
 
         final_ids = []
