@@ -15,8 +15,13 @@ from logging.handlers import RotatingFileHandler
 import yt_dlp
 import aiohttp
 
-from pyrogram import Client, filters
+from pyrogram import Client, filters, raw
 from pyrogram.types import InputMediaPhoto, InputMediaVideo
+try:
+    from pyrogram.file_id import FileId, FileType
+except ImportError:
+    FileId = None
+    FileType = None
 from dotenv import load_dotenv
 from pathlib import Path
 
@@ -29,6 +34,7 @@ from packages.database import database_manager as db
 from apps.telegram_bot.instagram_extractor import download_instagram
 
 load_dotenv()
+db.init_db()
 
 # -----------------------------------------
 # CONSTANTES E ESTADO GLOBAL
@@ -109,14 +115,20 @@ async def metralhadora_stickers(client, chat_id):
             selecionados = random.sample(sticker_set.documents, min(len(sticker_set.documents), quantity))
             ids = []
             for doc in selecionados:
-                fid = FileId(
-                    file_type=FileType.STICKER,
-                    dc_id=doc.dc_id,
-                    media_id=doc.id,
-                    access_hash=doc.access_hash,
-                    file_reference=doc.file_reference
-                ).encode()
-                ids.append(fid)
+                if FileId and FileType:
+                    # Cria instância do FileId e depois codifica
+                    fid_obj = FileId(
+                        file_type=FileType.STICKER,
+                        dc_id=doc.dc_id,
+                        media_id=doc.id,
+                        access_hash=doc.access_hash,
+                        file_reference=doc.file_reference
+                    )
+                    fid = fid_obj.encode()
+                    ids.append(fid)
+                else:
+                    # Fallback: try to get file_id from doc attributes
+                    ids.append(str(doc.id))
             return ids
 
         final_ids = []
@@ -124,8 +136,8 @@ async def metralhadora_stickers(client, chat_id):
         final_ids.extend(await get_stickers(PACKS["meus"], 1))
         final_ids.extend(await get_stickers(PACKS["monkes"], 1))
 
-        for fid in final_ids:
-            await client.send_sticker(chat_id, fid)
+        for sticker_id in final_ids:
+            await client.send_sticker(chat_id, sticker_id)
             await asyncio.sleep(0.4)
     except Exception as e:
         log.error(f"Erro stickers: {e}")
@@ -206,6 +218,7 @@ async def extrair_e_enviar_midia(client, message, url, usuario, msg_espera):
             ydl_opts = {
                 'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
                 'outtmpl': str(PASTA_DOWNLOADS / '%(id)s_%(index)s.%(ext)s'),
+                'paths': {'home': str(PASTA_DOWNLOADS)},
                 'quiet': True,
                 'no_warnings': True,
                 'noplaylist': False,
@@ -286,11 +299,17 @@ async def extrair_e_enviar_midia(client, message, url, usuario, msg_espera):
                 await msg_espera.edit_text("📦 Arquivo muito grande! O limite é de 50MB.")
             else:
                 log.error(f"Erro yt-dlp: {e}")
-                await msg_espera.edit_text("❌ Falha na extração. Post privado ou indisponível.")
+                try:
+                    await msg_espera.edit_text("❌ Falha na extração. Post privado ou indisponível.")
+                except Exception:
+                    pass
             await asyncio.sleep(6)
         except Exception as e:
             log.error(f"Erro Motor: {e}")
-            await msg_espera.edit_text("💥 Erro inesperado ao processar mídia.")
+            try:
+                await msg_espera.edit_text("💥 Erro inesperado ao processar mídia.")
+            except Exception:
+                pass
             await asyncio.sleep(5)
         finally:
             try:
@@ -659,6 +678,7 @@ async def processar_links(client, message):
                             ydl_opts = {
                                 'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
                                 'outtmpl': str(PASTA_DOWNLOADS / f"{match.group(2)}_%(index)s.%(ext)s"),
+                                'paths': {'home': str(PASTA_DOWNLOADS)},
                                 'quiet': True,
                                 'no_warnings': True,
                                 'noplaylist': False,
