@@ -5,6 +5,7 @@ import logging
 from pathlib import Path
 from datetime import datetime
 
+from functools import wraps
 from pyrogram import Client, filters
 from pyrogram.types import InputMediaPhoto, InputMediaVideo, InputMediaAudio
 from dotenv import load_dotenv
@@ -15,7 +16,10 @@ load_dotenv(os.path.join(RAIZ, "apps", "telegram_bot", ".env"))
 
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
-BOT_TOKEN = os.getenv("BOT_TOKEN_COMANDOS") or os.getenv("BOT_TOKEN")
+BOT_TOKEN = os.getenv("BOT_TOKEN_COMANDOS")
+GRUPOS_AUTORIZADOS_STR = os.getenv("GRUPOS_AUTORIZADOS", "")
+GRUPOS_AUTORIZADOS_STR = os.getenv("GRUPOS_AUTORIZADOS", "")
+GRUPOS_AUTORIZADOS = [int(chat_id.strip()) for chat_id in GRUPOS_AUTORIZADOS_STR.split(',') if chat_id.strip()]
 
 # Logging
 log = logging.getLogger("ComandosBot")
@@ -26,6 +30,26 @@ COMANDOS_FILE = Path(RAIZ) / "data" / "comandos_personalizados.json"
 
 # Estado da conversa para criar comandos
 user_states = {}
+
+# Lista de comandos internos que o bot reconhece nativamente
+COMANDOS_INTERNOS = ["start", "help", "menu", "id", "create", "list", "delete"]
+
+# Decorator para verificar se o usuário está autorizado
+def admin_only(func):
+    @wraps(func)
+    async def wrapped(client, message, *args, **kwargs):
+        chat_id = message.chat.id
+        if not GRUPOS_AUTORIZADOS or chat_id not in GRUPOS_AUTORIZADOS:
+            error_msg = (
+                f"🚫 **Acesso Negado** 🚫\n\n"
+                f"Seu ID de conversa (`{chat_id}`) não tem permissão para usar este comando.\n\n"
+                f"Por favor, entre em contato com o administrador do bot."
+            )
+            await message.reply_text(error_msg)
+            return
+        return await func(client, message, *args, **kwargs)
+    return wrapped
+
 
 # Carrega comandos salvos
 def carregar_comandos():
@@ -50,20 +74,18 @@ app = Client(
 # Comandos personalizados carregados
 comandos_personalizados = carregar_comandos()
 
-async def registrar_comandos_dinamicos():
-    """Registra handlers para comandos personalizados"""
-    for cmd_nome, cmd_info in comandos_personalizados.items():
-        # Cria handler dinâmico
-        async def handler(client, message, nome=cmd_nome, info=cmd_info):
-            await executar_comando_personalizado(client, message, nome, info)
-        
-        # Registra o handler
-        app.add_handler(filters.command(cmd_nome))
-        # Armazena referência
-        setattr(app, f'cmd_dinamico_{cmd_nome}', handler)
-
 async def executar_comando_personalizado(client, message, nome, info):
     """Executa um comando personalizado"""
+    chat_id = message.chat.id
+    if not GRUPOS_AUTORIZADOS or chat_id not in GRUPOS_AUTORIZADOS:
+        error_msg = (
+            f"🚫 **Acesso Negado** 🚫\n\n"
+            f"Seu ID de conversa (`{chat_id}`) não tem permissão para usar comandos personalizados.\n\n"
+            f"Por favor, entre em contato com o administrador do bot."
+        )
+        await message.reply_text(error_msg)
+        return
+        
     try:
         tipo = info.get('tipo', 'texto')
         conteudo = info.get('conteudo', '')
@@ -84,27 +106,45 @@ async def executar_comando_personalizado(client, message, nome, info):
 
 @app.on_message(filters.command("start"))
 async def cmd_start(client, message):
-    await message.reply_text("🤖 Bot de Comandos iniciado! Use /help para ver os comandos.")
+    chat_id = message.chat.id
+    if not GRUPOS_AUTORIZADOS or chat_id not in GRUPOS_AUTORIZADOS:
+        error_msg = (
+            f"🚫 **Acesso Negado** 🚫\n\n"
+            f"Seu ID de conversa (`{chat_id}`) não tem permissão para usar este comando.\n\n"
+            f"Por favor, entre em contato com o administrador do bot."
+        )
+        await message.reply_text(error_msg)
+        return
+    await message.reply_text("🤖 Olá! Sou seu Bot de Comandos. Use /menu para ver o que posso fazer.")
 
-@app.on_message(filters.command("help"))
-async def cmd_help(client, message):
+@app.on_message(filters.command(["help", "menu"]))
+async def cmd_menu(client, message):
     txt = (
-        "**📋 Comandos disponíveis:**\n\n"
-        "- `/start` - Inicia o bot\n"
-        "- `/help` - Mostra esta mensagem\n"
-        "- `/create` - Criar novo comando personalizado\n"
-        "- `/list` - Lista comandos personalizados\n"
-        "- `/delete <comando>` - Deleta um comando personalizado\n\n"
+        "**🤖 MENU DE COMANDOS 🤖**\n\n"
+        "Aqui está tudo que eu posso fazer:\n\n"
+        "**🛠️ Comandos de Administração:**\n"
+        "▫️ `/start` - Inicia a nossa conversa\n"
+        "▫️ `/menu` ou `/help` - Exibe este menu\n"
+        "▫️ `/id` - Mostra o ID desta conversa\n"
+        "▫️ `/create` - 🆕 Cria um novo comando personalizado\n"
+        "▫️ `/list` - 📋 Lista todos os seus comandos\n"
+        "▫️ `/delete NOME` - 🗑️ Deleta um comando\n\n"
     )
     
     if comandos_personalizados:
-        txt += "**Comandos personalizados:**\n"
+        txt += "**✨ Seus Comandos Personalizados:**\n"
         for cmd, info in comandos_personalizados.items():
-            txt += f"- `/{cmd}` - {info.get('descricao', 'Sem descrição')}\n"
+            tipo_emoji = {'texto': '📝', 'foto': '🖼️', 'video': '🎬', 'audio': '🎵'}.get(info.get('tipo'), '❓')
+            txt += f"▫️ `/{cmd}` - {tipo_emoji} {info.get('descricao', 'Sem descrição')}\n"
     
     await message.reply_text(txt)
 
+@app.on_message(filters.command("id"))
+async def cmd_id(client, message):
+    await message.reply_text(f"O ID desta conversa é: `{message.chat.id}`")
+
 @app.on_message(filters.command("create"))
+@admin_only
 async def cmd_create(client, message):
     user_id = message.from_user.id
     user_states[user_id] = {
@@ -117,6 +157,7 @@ async def cmd_create(client, message):
     )
 
 @app.on_message(filters.command("list"))
+@admin_only
 async def cmd_list(client, message):
     if not comandos_personalizados:
         await message.reply_text("📭 Nenhum comando personalizado criado.")
@@ -130,9 +171,10 @@ async def cmd_list(client, message):
     await message.reply_text(txt)
 
 @app.on_message(filters.command("delete"))
+@admin_only
 async def cmd_delete(client, message):
     if len(message.command) < 2:
-        await message.reply_text("❌ Uso: `/delete <nome_do_comando>`")
+        await message.reply_text("❌ **Uso:** `/delete NOME_DO_COMANDO`")
         return
     
     cmd_nome = message.command[1].lstrip('/')
@@ -144,13 +186,16 @@ async def cmd_delete(client, message):
     else:
         await message.reply_text(f"❌ Comando `/{cmd_nome}` não encontrado.")
 
-# Handler para mensagens durante criação de comando
-@app.on_message(filters.text & ~filters.command(["start", "help", "create", "list", "delete", "echo"]))
+# Filtro para verificar se o usuário está no processo de criação de um comando
+async def filtro_estado_usuario(_, __, message):
+    return message.from_user.id in user_states
+
+# Handler para mensagens de texto durante criação de comando (agora com filtro específico)
+@app.on_message(filters.text & ~filters.command(COMANDOS_INTERNOS) & filters.create(filtro_estado_usuario))
+@admin_only
 async def processar_criacao(client, message):
     user_id = message.from_user.id
-    
-    if user_id not in user_states:
-        return
+    # A verificação 'if user_id not in user_states' não é mais necessária aqui
     
     state = user_states[user_id]
     etapa = state['etapa']
@@ -172,16 +217,17 @@ async def processar_criacao(client, message):
             "- Envie um **áudio** para comando de áudio"
         )
     
-    elif etapa == 'tipo':
-        await message.reply_text("❌ Envie o conteúdo conforme o tipo desejado (foto, vídeo ou áudio) ou digite `texto` para comando de texto.")
-    
+    elif etapa == 'tipo' and message.text.lower() == 'texto':
+        user_states[user_id]['etapa'] = 'conteudo_texto'
+        await message.reply_text("✅ Tipo 'texto' definido. Agora envie o conteúdo do comando:")
+
     elif etapa == 'conteudo_texto':
         dados['conteudo'] = message.text
         dados['tipo'] = 'texto'
         user_states[user_id]['etapa'] = 'descricao'
         await message.reply_text(
             "✅ Conteúdo definido!\n\n"
-            "Agora digite uma descrição para o comando (aparecerá no /help):"
+            "Agora digite uma descrição para o comando (aparecerá no /menu):"
         )
     
     elif etapa == 'descricao':
@@ -189,7 +235,7 @@ async def processar_criacao(client, message):
         
         # Salva o comando
         comandos_personalizados[dados['nome']] = {
-            'tipo': dados['tipo'],
+            'tipo': dados.get('tipo', 'texto'),
             'conteudo': dados.get('conteudo', ''),
             'media_id': dados.get('media_id'),
             'descricao': dados['descricao'],
@@ -198,24 +244,36 @@ async def processar_criacao(client, message):
         }
         salvar_comandos(comandos_personalizados)
         
-        # Registra o comando dinamicamente
-        await registrar_comandos_dinamicos()
-        
         del user_states[user_id]
         
         await message.reply_text(
             f"✅ **Comando criado com sucesso!**\n\n"
             f"Use `/{dados['nome']}` para testar.\n"
-            f"Veja no `/help` que ele já aparece no menu!"
+            f"Veja no /menu que ele já aparece na lista!"
         )
 
-@app.on_message(filters.photo | filters.video | filters.audio)
+# Filtro customizado para identificar comandos personalizados
+async def filtro_comando_personalizado(_, __, message):
+    if not message.text or not message.text.startswith('/'):
+        return False
+    # Pega o nome do comando sem a "/"
+    comando = message.text.split()[0][1:]
+    # Retorna True se o comando NÃO for interno E estiver na lista de personalizados
+    return comando not in COMANDOS_INTERNOS and comando in comandos_personalizados
+
+@app.on_message(filters.create(filtro_comando_personalizado))
+async def handle_custom_command(client, message):
+    """Handler genérico para todos os comandos personalizados que funciona em tempo real."""
+    comando = message.text.split()[0][1:]
+    if comando in comandos_personalizados:
+        await executar_comando_personalizado(client, message, comando, comandos_personalizados[comando])
+
+@app.on_message(filters.photo | filters.video | filters.audio & filters.create(filtro_estado_usuario))
+@admin_only
 async def processar_media_criacao(client, message):
     user_id = message.from_user.id
-    
-    if user_id not in user_states:
-        return
-    
+    # A verificação 'if user_id not in user_states' não é mais necessária aqui
+
     state = user_states[user_id]
     
     if state['etapa'] == 'tipo':
@@ -223,7 +281,6 @@ async def processar_media_criacao(client, message):
         
         if message.photo:
             dados['tipo'] = 'foto'
-            # Salva o file_id da foto
             dados['media_id'] = message.photo.file_id
         elif message.video:
             dados['tipo'] = 'video'
@@ -232,20 +289,19 @@ async def processar_media_criacao(client, message):
             dados['tipo'] = 'audio'
             dados['media_id'] = message.audio.file_id
         
+        # Corrige para salvar a legenda (caption) como conteúdo
+        if message.caption:
+            dados['conteudo'] = message.caption
+        
         user_states[user_id]['etapa'] = 'descricao'
         await message.reply_text(
             "✅ Mídia recebida!\n\n"
-            "Agora digite uma descrição para o comando (aparecerá no /help):"
+            "Agora digite uma descrição para o comando (aparecerá no /menu):"
         )
     else:
-        # Se não está criando comando, processa como texto
-        if state['etapa'] == 'conteudo_texto':
-            await processar_criacao(client, message)
+        # Se não está criando comando, mas manda mídia, ignora ou avisa
+        await message.reply_text("🤔 Para criar um comando com mídia, primeiro use /create e siga os passos.")
 
 if __name__ == "__main__":
     log.info("Bot de Comandos iniciando...")
-    # Registra comandos existentes
-    import asyncio
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(registrar_comandos_dinamicos())
     app.run()
