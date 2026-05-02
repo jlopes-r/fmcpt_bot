@@ -29,6 +29,7 @@ from packages.database import database_manager as db
 from apps.telegram_bot.instagram_extractor import download_instagram
 
 load_dotenv()
+db.init_db()
 
 # -----------------------------------------
 # CONSTANTES E ESTADO GLOBAL
