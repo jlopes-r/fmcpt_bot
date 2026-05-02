@@ -116,13 +116,15 @@ async def metralhadora_stickers(client, chat_id):
             ids = []
             for doc in selecionados:
                 if FileId and FileType:
-                    fid = FileId.encode(
-                        FileType.STICKER,
+                    # Cria instância do FileId e depois codifica
+                    fid_obj = FileId(
+                        file_type=FileType.STICKER,
                         dc_id=doc.dc_id,
                         media_id=doc.id,
                         access_hash=doc.access_hash,
                         file_reference=doc.file_reference
                     )
+                    fid = fid_obj.encode()
                     ids.append(fid)
                 else:
                     # Fallback: try to get file_id from doc attributes
@@ -296,11 +298,17 @@ async def extrair_e_enviar_midia(client, message, url, usuario, msg_espera):
                 await msg_espera.edit_text("📦 Arquivo muito grande! O limite é de 50MB.")
             else:
                 log.error(f"Erro yt-dlp: {e}")
-                await msg_espera.edit_text("❌ Falha na extração. Post privado ou indisponível.")
+                try:
+                    await msg_espera.edit_text("❌ Falha na extração. Post privado ou indisponível.")
+                except Exception:
+                    pass
             await asyncio.sleep(6)
         except Exception as e:
             log.error(f"Erro Motor: {e}")
-            await msg_espera.edit_text("💥 Erro inesperado ao processar mídia.")
+            try:
+                await msg_espera.edit_text("💥 Erro inesperado ao processar mídia.")
+            except Exception:
+                pass
             await asyncio.sleep(5)
         finally:
             try:
