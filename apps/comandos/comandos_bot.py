@@ -20,15 +20,16 @@ API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 BOT_TOKEN = os.getenv("BOT_TOKEN_COMANDOS")
 GRUPOS_AUTORIZADOS_STR = os.getenv("GRUPOS_AUTORIZADOS", "")
-GRUPOS_AUTORIZADOS_STR = os.getenv("GRUPOS_AUTORIZADOS", "")
 GRUPOS_AUTORIZADOS = [int(chat_id.strip()) for chat_id in GRUPOS_AUTORIZADOS_STR.split(',') if chat_id.strip()]
 
 # Logging
 log = logging.getLogger("ComandosBot")
 logging.basicConfig(level=logging.INFO)
 
-# Caminho para arquivo de comandos personalizados
-COMANDOS_FILE = Path(RAIZ) / "data" / "comandos_personalizados.json"
+# Caminho para arquivo de comandos personalizados, usando caminho absoluto
+# para garantir que seja encontrado quando executado como serviço.
+CAMINHO_RAIZ_PROJETO = "/home/juanl/fmcpt_bot"
+COMANDOS_FILE = Path(CAMINHO_RAIZ_PROJETO) / "data" / "comandos_personalizados.json"
 
 # Estado da conversa para criar comandos
 user_states = {}
