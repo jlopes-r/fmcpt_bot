@@ -17,6 +17,11 @@ import aiohttp
 
 from pyrogram import Client, filters, raw
 from pyrogram.types import InputMediaPhoto, InputMediaVideo
+try:
+    from pyrogram.file_id import FileId, FileType
+except ImportError:
+    FileId = None
+    FileType = None
 from dotenv import load_dotenv
 from pathlib import Path
 
@@ -110,8 +115,18 @@ async def metralhadora_stickers(client, chat_id):
             selecionados = random.sample(sticker_set.documents, min(len(sticker_set.documents), quantity))
             ids = []
             for doc in selecionados:
-                # Extrai o file_id diretamente do documento
-                ids.append(doc.file_id)
+                if FileId and FileType:
+                    fid = FileId(
+                        file_type=FileType.STICKER,
+                        dc_id=doc.dc_id,
+                        media_id=doc.id,
+                        access_hash=doc.access_hash,
+                        file_reference=doc.file_reference
+                    ).encode()
+                    ids.append(fid.decode())
+                else:
+                    # Fallback: use doc.id as string (may not work)
+                    ids.append(str(doc.id))
             return ids
 
         final_ids = []
