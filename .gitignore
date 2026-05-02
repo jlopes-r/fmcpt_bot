@@ -22,9 +22,8 @@ data/*.json
 *.json
 data/*.json
 
-# Sessões do Pyrogram
-apps/telegram_bot/*.session
-apps/telegram_bot/*.session-journal
+# Sessões do Pyrogram e outros
+*.session
 *.session-journal
 
 # Arquivos gerados dinamicamente
