@@ -11,8 +11,10 @@ from pyrogram.types import InputMediaPhoto, InputMediaVideo, InputMediaAudio
 from dotenv import load_dotenv
 
 # Configuração
-RAIZ = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-load_dotenv(os.path.join(RAIZ, "apps", "telegram_bot", ".env"))
+# O caminho para o arquivo .env é definido de forma absoluta para garantir
+# que o bot funcione corretamente quando executado como um serviço na VM.
+CAMINHO_ENV = "/home/juanl/fmcpt_bot/apps/telegram_bot/.env"
+load_dotenv(CAMINHO_ENV)
 
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
