@@ -116,16 +116,16 @@ async def metralhadora_stickers(client, chat_id):
             ids = []
             for doc in selecionados:
                 if FileId and FileType:
-                    fid = FileId(
-                        file_type=FileType.STICKER,
+                    fid = FileId.encode(
+                        FileType.STICKER,
                         dc_id=doc.dc_id,
                         media_id=doc.id,
                         access_hash=doc.access_hash,
                         file_reference=doc.file_reference
-                    ).encode()
-                    ids.append(fid.decode())
+                    )
+                    ids.append(fid)
                 else:
-                    # Fallback: use doc.id as string (may not work)
+                    # Fallback: try to get file_id from doc attributes
                     ids.append(str(doc.id))
             return ids
 
