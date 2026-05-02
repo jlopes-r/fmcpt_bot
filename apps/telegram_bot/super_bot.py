@@ -17,6 +17,7 @@ import aiohttp
 
 from pyrogram import Client, filters, raw
 from pyrogram.types import InputMediaPhoto, InputMediaVideo
+from pyrogram.raw.core import FileId, FileType
 from dotenv import load_dotenv
 from pathlib import Path
 
