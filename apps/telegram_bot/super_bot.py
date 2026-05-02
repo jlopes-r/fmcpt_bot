@@ -218,6 +218,7 @@ async def extrair_e_enviar_midia(client, message, url, usuario, msg_espera):
             ydl_opts = {
                 'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
                 'outtmpl': str(PASTA_DOWNLOADS / '%(id)s_%(index)s.%(ext)s'),
+                'paths': {'home': str(PASTA_DOWNLOADS)},
                 'quiet': True,
                 'no_warnings': True,
                 'noplaylist': False,
@@ -677,6 +678,7 @@ async def processar_links(client, message):
                             ydl_opts = {
                                 'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
                                 'outtmpl': str(PASTA_DOWNLOADS / f"{match.group(2)}_%(index)s.%(ext)s"),
+                                'paths': {'home': str(PASTA_DOWNLOADS)},
                                 'quiet': True,
                                 'no_warnings': True,
                                 'noplaylist': False,
