@@ -15,7 +15,7 @@ from logging.handlers import RotatingFileHandler
 import yt_dlp
 import aiohttp
 
-from pyrogram import Client, filters
+from pyrogram import Client, filters, raw
 from pyrogram.types import InputMediaPhoto, InputMediaVideo
 from dotenv import load_dotenv
 from pathlib import Path
