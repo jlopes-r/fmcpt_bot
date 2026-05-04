@@ -325,13 +325,17 @@ async def extrair_e_enviar_midia(client, message, url, usuario, msg_espera):
 # -----------------------------------------
 async def processar_instagram(client, message, url, usuario, msg_espera, link_duplicado=None):
     """Handler dedicado para Instagram com cookies + embed fallback."""
-    global DOWNLOAD_COUNT
+    arquivos_para_deletar = []
     try:
         result = await download_instagram(url, COOKIE_PATH, str(PASTA_DOWNLOADS))
 
         if not result:
             await msg_espera.edit_text("📸 Não foi possível baixar do Instagram. O post pode ser privado ou estar indisponível.")
             await asyncio.sleep(6)
+            try:
+                await msg_espera.delete()
+            except Exception:
+                pass
             return
 
         legenda_base = limpar_texto(result.get('title', ''))
@@ -339,89 +343,86 @@ async def processar_instagram(client, message, url, usuario, msg_espera, link_du
             legenda_base = legenda_base[:800] + "..."
         autor = result.get('uploader', 'Autor')
         legenda_final = f"📸 {legenda_base}\n\nAutor: {autor}\n👤 Enviado por: {usuario}"
-
-        arquivos_para_deletar = []
+        
+        lista_telegram = []
 
         if 'files' in result:
             midias_baixadas = result['files']
-            lista_telegram = []
-
             for i, path in enumerate(midias_baixadas):
                 if not os.path.exists(path):
                     continue
                 arquivos_para_deletar.append(path)
                 ext = path.lower().split('.')[-1]
                 cap = legenda_final if i == 0 else ""
-
                 if ext in ['jpg', 'jpeg', 'png', 'webp']:
                     lista_telegram.append(InputMediaPhoto(path, caption=cap))
                 else:
                     lista_telegram.append(InputMediaVideo(path, caption=cap, supports_streaming=True))
 
-            if not lista_telegram:
-                raise Exception("Nenhum arquivo valido.")
-
-            if len(lista_telegram) == 1:
-                midia = lista_telegram[0]
-                if isinstance(midia, InputMediaPhoto):
-                    await client.send_photo(message.chat.id, midia.media, caption=midia.caption, reply_to_message_id=message.id)
-                else:
-                    await client.send_video(message.chat.id, midia.media, caption=midia.caption, reply_to_message_id=message.id)
-            else:
-                for i in range(0, len(lista_telegram), 10):
-                    lote = lista_telegram[i:i+10]
-                    await client.send_media_group(message.chat.id, lote, reply_to_message_id=message.id)
-                    if len(lista_telegram) > 10:
-                        await asyncio.sleep(2)
-
-            async with DOWNLOAD_COUNT_LOCK:
-                DOWNLOAD_COUNT += 1
-            log.info(f"Instagram sucesso (cookies): {url} ({len(lista_telegram)} itens)")
-
         elif 'urls' in result:
             midias_urls = result['urls']
-            lista_telegram = []
+            await msg_espera.edit_text(f"✨ Extraído! Baixando {len(midias_urls)} {'item' if len(midias_urls) == 1 else 'itens'}...")
+            
+            async with aiohttp.ClientSession() as session:
+                for i, m_url in enumerate(midias_urls):
+                    try:
+                        async with session.get(m_url) as response:
+                            if response.status == 200:
+                                ext = m_url.split('?')[0].split('.')[-1].lower() if '.' in m_url.split('?')[0] else 'mp4'
+                                caminho_temp = PASTA_DOWNLOADS / f"temp_insta_{message.id}_{i}.{ext}"
+                                
+                                with open(caminho_temp, 'wb') as f:
+                                    f.write(await response.read())
+                                
+                                arquivos_para_deletar.append(str(caminho_temp))
+                                cap = legenda_final if i == 0 else ""
+                                is_video = any(v in ext for v in ['mp4', 'mov', 'm4v'])
 
-            for i, m_url in enumerate(midias_urls):
-                cap = legenda_final if i == 0 else ""
-                ext = m_url.split('?')[0].split('.')[-1].lower()
-                is_video = any(v in ext for v in ['mp4', 'mov', 'm4v'])
+                                if is_video:
+                                    lista_telegram.append(InputMediaVideo(str(caminho_temp), caption=cap, supports_streaming=True))
+                                else:
+                                    lista_telegram.append(InputMediaPhoto(str(caminho_temp), caption=cap))
+                            else:
+                                log.warning(f"Falha ao baixar URL do Instagram ({response.status}): {m_url}")
+                    except Exception as e:
+                        log.error(f"Erro ao baixar midia individual do Instagram: {e}")
 
-                if is_video:
-                    lista_telegram.append(InputMediaVideo(m_url, caption=cap))
-                else:
-                    lista_telegram.append(InputMediaPhoto(m_url, caption=cap))
+        if not lista_telegram:
+            raise Exception("Nenhum arquivo válido encontrado ou baixado.")
 
-            if not lista_telegram:
-                raise Exception("Nenhuma URL valida.")
-
-            if len(lista_telegram) == 1:
-                midia = lista_telegram[0]
-                if isinstance(midia, InputMediaPhoto):
-                    await client.send_photo(message.chat.id, midia.media, caption=midia.caption, reply_to_message_id=message.id)
-                else:
-                    await client.send_video(message.chat.id, midia.media, caption=midia.caption, reply_to_message_id=message.id)
+        if len(lista_telegram) == 1:
+            midia = lista_telegram[0]
+            if isinstance(midia, InputMediaPhoto):
+                await client.send_photo(message.chat.id, midia.media, caption=midia.caption, reply_to_message_id=message.id)
             else:
-                for i in range(0, len(lista_telegram), 10):
-                    lote = lista_telegram[i:i+10]
-                    await client.send_media_group(message.chat.id, lote, reply_to_message_id=message.id)
-                    if len(lista_telegram) > 10:
-                        await asyncio.sleep(2)
+                await client.send_video(message.chat.id, midia.media, caption=midia.caption, supports_streaming=True, reply_to_message_id=message.id)
+        else:
+            for i in range(0, len(lista_telegram), 10):
+                lote = lista_telegram[i:i+10]
+                await client.send_media_group(message.chat.id, lote, reply_to_message_id=message.id)
+                if len(lista_telegram) > 10:
+                    await asyncio.sleep(2)
 
-            async with DOWNLOAD_COUNT_LOCK:
-                DOWNLOAD_COUNT += 1
-            log.info(f"Instagram sucesso (embed): {url} ({len(lista_telegram)} itens)")
-
+        async with DOWNLOAD_COUNT_LOCK:
+            DOWNLOAD_COUNT += 1
+        log.info(f"Instagram sucesso (upload): {url} ({len(lista_telegram)} itens)")
         await msg_espera.delete()
 
     except Exception as e:
         log.error(f"Erro Instagram handler: {e}")
-        await msg_espera.edit_text("⚠️ Erro ao processar Instagram. Tente novamente mais tarde.")
-        await asyncio.sleep(5)
         try:
+            await msg_espera.edit_text("⚠️ Erro ao processar Instagram. Tente novamente mais tarde.")
+            await asyncio.sleep(5)
             await msg_espera.delete()
         except Exception:
             pass
+    finally:
+        for p in arquivos_para_deletar:
+            if os.path.exists(p):
+                try:
+                    os.remove(p)
+                except Exception as e:
+                    log.error(f"Erro ao deletar arquivo temporário {p}: {e}")
 
 # -----------------------------------------
 # COMANDOS DE RANKING (SQLite)
@@ -792,30 +793,10 @@ async def processar_links(client, message):
         msg_espera = await message.reply_text("⏳ *Puxando mídia original...*")
         await extrair_e_enviar_midia(client, message, url, usuario, msg_espera)
 
-        if repetido_db:
+        if repetido_db and not any(d in url_raw for d in ["youtube.com", "youtu.be"]):
             await enviar_aviso_duplicado(client, message, {}, info_db, usuario)
         return
 
-    # 3. YOUTUBE, TIKTOK, THREADS, PINTEREST (yt-dlp generico)
-    if url_raw and any(d in url_raw for d in ["youtube.com", "youtu.be", "tiktok.com", "threads.net", "pinterest.com", "pin.it"]):
-        if not url_permitida(url_raw):
-            return
-
-        url = url_raw
-        yt_match = re.search(r'(?:youtube\.com/watch\?v=|youtu\.be/)([a-zA-Z0-9_-]+)', url)
-        if yt_match:
-            url = f"https://www.youtube.com/watch?v={yt_match.group(1)}"
-        elif not any(d in url for d in ["youtube.com", "youtu.be", "google.com"]):
-            url = urlunparse(urlparse(url)._replace(query="")).rstrip("/")
-
-        mencao = message.from_user.mention if message.from_user else "Membro"
-
-        msg_espera = await message.reply_text("⚙️ Processando...")
-        await extrair_e_enviar_midia(client, message, url, usuario, msg_espera)
-
-        if repetido_db:
-            await enviar_aviso_duplicado(client, message, {}, info_db, usuario)
-        return
 
     # 4. OUTROS LINKS (fallback)
     if url_raw and any(d in url_raw for d in DOMINIOS_PERMITIDOS):
@@ -834,7 +815,7 @@ async def processar_links(client, message):
         msg_espera = await message.reply_text("⚙️ Processando...")
         await extrair_e_enviar_midia(client, message, url, usuario, msg_espera)
 
-        if repetido_db:
+        if repetido_db and not any(d in url_raw for d in ["youtube.com", "youtu.be"]):
             await enviar_aviso_duplicado(client, message, {}, info_db, usuario)
 
 # -----------------------------------------
