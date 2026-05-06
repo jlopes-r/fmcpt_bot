@@ -607,15 +607,6 @@ async def processar_links(client, message):
         usuario = "Membro"
         user_id = 0
 
-    if user_id and not verificar_rate_limit(user_id):
-        aviso = await message.reply_text("⏳ Rate limit! Máximo 10 links por minuto.")
-        await asyncio.sleep(5)
-        try:
-            await aviso.delete()
-        except Exception:
-            pass
-        return
-
     # Aceita http://, https://, www. ou até mesmo urls nuas tipo instagram.com/p/...
     url_encontrada = re.search(r'((?:https?://|www\.)?[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?:/[^\s]*)?)', texto)
     url_raw = None
@@ -627,18 +618,27 @@ async def processar_links(client, message):
         # Se veio sem http, adiciona (o httpx e aiohttp precisam disso)
         if not url_raw.startswith('http'):
             url_raw = 'https://' + url_raw
+            
+        if not url_permitida(url_raw):
+            url_raw = None
 
-    # DB registration for all platforms
     if url_raw:
+        if user_id and not verificar_rate_limit(user_id):
+            aviso = await message.reply_text("⏳ Rate limit! Máximo 10 links por minuto.")
+            await asyncio.sleep(5)
+            try:
+                await aviso.delete()
+            except Exception:
+                pass
+            return
+
+        # DB registration for all platforms
         url_norm = urlunparse(urlparse(url_raw)._replace(query="")).lower().rstrip("/")
         repetido_db, info_db = db.registrar_link_e_checar(url_norm, message.from_user.first_name or "Membro", user_id)
 
     # 1. TWITTER / X
     if url_raw and re.search(r'(x|twitter)\.com', url_raw):
         log.info(f"🐦 Detectado link X: {url_raw}")
-        if not url_permitida(url_raw):
-            log.warning(f"URL X nao permitida: {url_raw}")
-            return
         log.info(f"Puxando dados do X: {url_raw}")
         msg_espera = await message.reply_text("🐦 Puxando dados do X...")
         arquivos_x = []
@@ -769,8 +769,6 @@ async def processar_links(client, message):
 
     # 2. INSTAGRAM (handler dedicado)
     if url_raw and any(d in url_raw for d in ["instagram.com", "instagr.am"]):
-        if not url_permitida(url_raw):
-            return
         msg_espera = await message.reply_text("⏳ *Baixando do Instagram...*")
         await processar_instagram(client, message, url_raw, usuario, msg_espera)
 
@@ -780,9 +778,6 @@ async def processar_links(client, message):
 
     # 3. YOUTUBE, TIKTOK, THREADS, PINTEREST (yt-dlp generico)
     if url_raw and any(d in url_raw for d in ["youtube.com", "youtu.be", "tiktok.com", "threads.net", "pinterest.com", "pin.it"]):
-        if not url_permitida(url_raw):
-            return
-
         url = url_raw
         yt_match = re.search(r'(?:youtube\.com/watch\?v=|youtu\.be/)([a-zA-Z0-9_-]+)', url)
         if yt_match:
