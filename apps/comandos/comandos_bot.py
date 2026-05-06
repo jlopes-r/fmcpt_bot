@@ -35,7 +35,7 @@ COMANDOS_FILE = Path(CAMINHO_RAIZ_PROJETO) / "data" / "comandos_personalizados.j
 user_states = {}
 
 # Lista de comandos internos que o bot reconhece nativamente
-COMANDOS_INTERNOS = ["start", "help", "menu", "id", "create", "list", "delete"]
+COMANDOS_INTERNOS = ["start", "help", "menu", "id", "create", "list", "delete", "instance"]
 
 # Decorator para verificar se o usuário está autorizado
 def admin_only(func):
@@ -131,7 +131,8 @@ async def cmd_menu(client, message):
         "▫️ `/id` - Mostra o ID desta conversa\n"
         "▫️ `/create` - 🆕 Cria um novo comando personalizado\n"
         "▫️ `/list` - 📋 Lista todos os seus comandos\n"
-        "▫️ `/delete NOME` - 🗑️ Deleta um comando\n\n"
+        "▫️ `/delete NOME` - 🗑️ Deleta um comando\n"
+        "▫️ `/instance` - 🙏 Envia um GIF de bom dia abençoado\n\n"
     )
     
     if comandos_personalizados:
@@ -141,6 +142,153 @@ async def cmd_menu(client, message):
             txt += f"▫️ `/{cmd}` - {tipo_emoji} {info.get('descricao', 'Sem descrição')}\n"
     
     await message.reply_text(txt)
+
+import random
+
+@app.on_message(filters.command("instance"))
+async def cmd_instance(client, message):
+    chat_id = message.chat.id
+    if GRUPOS_AUTORIZADOS and chat_id not in GRUPOS_AUTORIZADOS:
+        return
+        
+    gifs_catolicos = [
+        "https://media.tenor.com/tH2hPj0tK14AAAAC/bom-dia-deus.gif",
+        "https://media.tenor.com/mO2X9g-T49QAAAAC/bom-dia.gif",
+        "https://media.tenor.com/x4W9bNnsTlkAAAAC/bom-dia-catolico.gif",
+        "https://media.tenor.com/1GvK_i8E0bIAAAAC/bom-dia-amigos.gif",
+        "https://media.tenor.com/7s2NndU6_oYAAAAC/bom-dia-nossa-senhora.gif",
+        "https://media.tenor.com/pZqM8lW_P7kAAAAC/bom-dia.gif",
+        "https://media.tenor.com/r6_6gN9A0yQAAAAC/bom-dia.gif",
+        "https://media.tenor.com/4h_R-A07_E4AAAAC/bom-dia.gif",
+        "https://media.tenor.com/WvzldR40pgAAAAAM/bom-dia-good-day.gif",
+        "https://media.tenor.com/zhe-JWGvC3sAAAAM/jesus-god.gif",
+        "https://media.tenor.com/TBeN43TlzMsAAAAM/bom-dia-good-day.gif",
+        "https://media.tenor.com/ESIuDKbQoLQAAAAM/bom-dia-bom-dia-retencao.gif",
+        "https://media.tenor.com/t8U6B-f7AyUAAAAM/jesus-goodmorning.gif",
+        "https://media.tenor.com/JdqOAJYXiRsAAAAM/bom-dia-que-o-nosso.gif",
+        "https://media.tenor.com/N6XtQf397SwAAAAM/bom-dia-good-morning.gif",
+        "https://media.tenor.com/2e614ZJXUq0AAAAM/bom-dia-good-morning.gif",
+        "https://media.tenor.com/QJ55RdY_lnkAAAAM/bom-dia-good-day.gif",
+        "https://media.tenor.com/_yA0ZW7VjDYAAAAM/jesus-bible.gif",
+        "https://media.tenor.com/kiJV0utmMoYAAAAM/bom-dia-good-morning.gif",
+        "https://media.tenor.com/WbjAqTxVPloAAAAM/god-bless-you-jesus.gif",
+        "https://media.tenor.com/VdoB274LopsAAAAM/bom-dia-valtatu%C3%AD-bom-dia.gif",
+        "https://media.tenor.com/Swjz1L08ZR0AAAAM/bom-dia.gif",
+        "https://media.tenor.com/EicZL9riOb0AAAAM/jesus-identidade.gif",
+        "https://media.tenor.com/ozpe9Gew2zIAAAAM/good-morning.gif",
+        "https://media.tenor.com/FRjJeOSeszkAAAAM/hand-jesus.gif",
+        "https://media.tenor.com/MUNzKvQ6TI4AAAAM/good-morning-good-morning-jesus.gif",
+        "https://media.tenor.com/meSKEFDMXl4AAAAM/bom-dia-good-morning.gif",
+        "https://media.tenor.com/-et4j7grunEAAAAM/bom-dia-good-day.gif",
+        "https://media.tenor.com/EYMoO2zNXioAAAAM/bom-dia-good-day.gif",
+        "https://media.tenor.com/QqJt5KtuTAMAAAAM/bom-dia-good-morning.gif",
+        "https://media.tenor.com/6E85v_z2UHcAAAAM/bom-dia-good-morning.gif",
+        "https://media.tenor.com/uu_Aftj6DNQAAAAM/jesus-valtatui-hug.gif",
+        "https://media.tenor.com/OQrAEaQ5f3YAAAAM/jesus-god.gif",
+        "https://media.tenor.com/XJ9Wh-ffsIAAAAAM/kai-emo.gif",
+        "https://media.tenor.com/WYPzgk5_10EAAAAM/bom-dia-good-morning.gif",
+        "https://media.tenor.com/5yUdhK5oCq8AAAAM/buenos-dias-espiritu-santo.gif",
+        "https://media.tenor.com/0w1Ml6Ee7sgAAAAM/bom-dia-good-morning.gif",
+        "https://media.tenor.com/2j0mT6Xlyf8AAAAM/bom-dia-familia.gif",
+        "https://media.tenor.com/Mto3IIa86WkAAAAM/bom-dia-good-day.gif",
+        "https://media.tenor.com/3Ss1pmJhxekAAAAM/bom-dia-good-morning.gif",
+        "https://media.tenor.com/coq5gDS3jWQAAAAM/nossa-senhora-aparecida-aparecida.gif",
+        "https://media.tenor.com/gGh7zghA0kgAAAAM/bom-dia-valtatui.gif",
+        "https://media.tenor.com/4jJFGWmN7B8AAAAM/good-morning-summer.gif",
+        "https://media.tenor.com/54C0cWeVEd8AAAAM/jesus-mother.gif",
+        "https://media.tenor.com/OHVDsOM-6wcAAAAM/good-morning-bom-dia.gif",
+        "https://media.tenor.com/D1fVXSAnO-EAAAAM/lord-jesus.gif",
+        "https://media.tenor.com/83rYhEzFzpUAAAAM/wednesday-blessings.gif",
+        "https://media.tenor.com/4Czk2atB5EIAAAAM/bom-dia-maria.gif",
+        "https://media.tenor.com/cz49M8DXcfQAAAAM/bom-dia-good-morning.gif",
+        "https://media.tenor.com/a4PHB6U5NlIAAAAM/bom-dia-good-morning.gif",
+        "https://media.tenor.com/N-PhX-GrkeQAAAAM/buenos-dias-jesus-christ.gif",
+        "https://media.tenor.com/gBI4Ooq9kMkAAAAM/bom-dia-good-morning.gif",
+        "https://media.tenor.com/Ll-bZ48nGYQAAAAM/prayers-love.gif",
+        "https://media.tenor.com/FnPx7siELT8AAAAM/good-morning-blessings.gif",
+        "https://media.tenor.com/9PW3cKiWz7sAAAAM/bom-dia-good-morning.gif",
+        "https://media.tenor.com/z2lK390bDDoAAAAM/good-morning-happy-day.gif",
+        "https://media.tenor.com/2TM3BMUsEMUAAAAM/biblia.gif",
+        "https://media.tenor.com/Ahp4XVJf-EYAAAAM/buenos-dias-sagrada-familia.gif",
+        "https://media.tenor.com/mz53Yx8mY08AAAAM/good-morning.gif",
+        "https://media.tenor.com/D_qHC9o075cAAAAM/bible-verses.gif",
+        "https://media.tenor.com/1xBE49JBge4AAAAM/oracao-celebrate.gif",
+        "https://media.tenor.com/U3EazesSHR4AAAAM/good-morning.gif",
+        "https://media.tenor.com/gK-20Gwst94AAAAM/morning-good.gif",
+        "https://media.tenor.com/rkGoEjoCoYcAAAAM/bom-dia-good-morning.gif",
+        "https://media.tenor.com/MMgkZbcuMRkAAAAM/bom-dia-hdwan-prayer.gif",
+        "https://media.tenor.com/Q3CdkNCz06sAAAAM/blessings-blessings-to-all.gif",
+        "https://media.tenor.com/0zIkxBregbYAAAAM/bom-dia.gif",
+        "https://media.tenor.com/xR8qBXdzTY8AAAAM/sunshine-sun.gif",
+        "https://media.tenor.com/qeO5vYZI678AAAAM/bom-dia-good-morning.gif",
+        "https://media.tenor.com/L8GdtgiH4AcAAAAM/bom-dia-good-morning.gif",
+        "https://media.tenor.com/_A3LCp8xrvQAAAAM/good-morning-bestie.gif",
+        "https://media.tenor.com/8RkyB4IBbtQAAAAM/bi-agua-viva.gif",
+        "https://media.tenor.com/fYceF6gyd9UAAAAM/bom-dia-good-morning.gif",
+        "https://media.tenor.com/UADRT6NYL0kAAAAM/bom-dia-valtatui-bom-dia-proc%C3%AA.gif",
+        "https://media.tenor.com/NuHIaVTO-gkAAAAM/bom-dia-good-day.gif",
+        "https://media.tenor.com/9Re3YWwLBW4AAAAM/para-hoje-muito-amor-e-ora%C3%A7ao.gif",
+        "https://media.tenor.com/PtUpt4bYONYAAAAM/jesus-valtatui.gif",
+        "https://media.tenor.com/PWTG8PeVKnwAAAAM/bom-dia-good-day.gif",
+        "https://media.tenor.com/rPP-dfRJ3dYAAAAM/bendiciones-am%C3%A9n-sagrado-corazon-de-jesus.gif",
+        "https://media.tenor.com/bwxIBum19HYAAAAM/bom-dia-good-day.gif",
+        "https://media.tenor.com/0dokFblgK8YAAAAM/bom-dia.gif",
+        "https://media.tenor.com/076pcmPlQScAAAAM/morning.gif",
+        "https://media.tenor.com/8Oxj3l6awx8AAAAM/bom-dia-good-morning.gif",
+        "https://media.tenor.com/D-nTAC6AZKsAAAAM/azucrim-bom-dia.gif",
+        "https://media.tenor.com/Pl7Xuy82DnUAAAAM/good-morning-son-good-morning.gif",
+        "https://media.tenor.com/y6jmYdkxXjoAAAAM/bible-bible-verse.gif",
+        "https://media.tenor.com/xCm3UyMjNeUAAAAM/good-morning-good-morning-prayer.gif",
+        "https://media.tenor.com/tRH_Cw1gffcAAAAM/bom-dia-good-morning.gif",
+        "https://media.tenor.com/QEhIxc5z4p4AAAAM/bom-dia-good-morning.gif",
+        "https://media.tenor.com/cOGLft8aqDQAAAAM/virgin-mary-hearts.gif",
+        "https://media.tenor.com/nBQIQ91V6E4AAAAM/bom-dia-good-day.gif",
+        "https://media.tenor.com/iREk9g3QAtgAAAAM/bom-dia-good-day.gif",
+        "https://media.tenor.com/fOlwsO7sM6sAAAAM/jesus-buenos-dias.gif",
+        "https://media.tenor.com/PAk6_gC4mQQAAAAM/jesus-senhor.gif",
+        "https://media.tenor.com/YZeKqKkWlW8AAAAM/good-morning.gif",
+        "https://media.tenor.com/BWssbWIiVzEAAAAM/jesus-buenos-dias-amen-oracion-alma.gif",
+        "https://media.tenor.com/EE4N5dJyNeMAAAAM/bom-dia-good-morning.gif",
+        "https://media.tenor.com/p4lE6h7c7rQAAAAM/goodmorning-jesus.gif",
+        "https://media.tenor.com/gNIzMvmmnj8AAAAM/bom-dia-good-morning.gif",
+        "https://media.tenor.com/skFX8sbM8uEAAAAM/bom-dia-good-day.gif",
+        "https://media.tenor.com/HFymbbW5olQAAAAM/bom-dia-good-morning.gif",
+        "https://media.tenor.com/Im4IIdE2UpkAAAAM/bom-dia-good-day.gif",
+        "https://media.tenor.com/ui7xNPJZwAwAAAAM/good-morning-bom-dia.gif",
+        "https://media.tenor.com/9c3JfC7N-LUAAAAM/bom-dia.gif",
+        "https://media.tenor.com/c5U5d-T5f48AAAAM/sagrado-corazon-jesus-catolico.gif",
+        "https://media.tenor.com/Jr2IphpdQKgAAAAM/dia-de-nossa-senhora-da-concei%C3%A7%C3%A3o-feliz-dia-de-nossa-senhora-da-concei%C3%A7%C3%A3o.gif",
+        "https://media.tenor.com/oZyx9ACPK6AAAAAM/josimo-josimo-jesus.gif",
+        "https://media.tenor.com/QI0mWevnoKQAAAAM/goodnight-prayer.gif",
+        "https://media.tenor.com/JffRvTDkqdIAAAAM/telefonemas-da-esperan%C3%A7a-good-morning.gif",
+        "https://media.tenor.com/eaKqCHCYpqoAAAAM/thank-you-jesus-ty-jesus.gif",
+        "https://media.tenor.com/MEyFxlV7CWgAAAAM/bom-dia-good-morning.gif",
+        "https://media.tenor.com/p8cfldA_ibsAAAAM/bom-dia-good-morning.gif",
+        "https://media.tenor.com/weSsoxE4Ek4AAAAM/primeiro-lugar.gif",
+        "https://media.tenor.com/emWB2TBI4KkAAAAM/te-amo-bom-dia.gif",
+        "https://media.tenor.com/kvaDNhFUZEMAAAAM/bom-dia-good-morning.gif",
+        "https://media.tenor.com/9wcBlmR5RpAAAAAM/bom-dia-valtatui-valtatui.gif",
+        "https://media.tenor.com/QrVW4rFivTUAAAAM/feliz-dia-bom-dia.gif",
+        "https://media.tenor.com/medTegOK7bUAAAAM/bom-dia-good-day.gif",
+        "https://media.tenor.com/vtybKxmPWRIAAAAM/bom-dia-good-morning.gif",
+        "https://media.tenor.com/QebHrvlN75QAAAAM/bom-dia.gif",
+        "https://media.tenor.com/r9IgggRp3QsAAAAM/bom-dia-good-day.gif",
+        "https://media.tenor.com/Hkr34fWLgCwAAAAM/bom-dia-pedro-soares.gif",
+        "https://media.tenor.com/v507l5QWDFIAAAAM/bom-dia-dia-aben%C3%A7oado.gif",
+        "https://media.tenor.com/jWID6ncHXiEAAAAM/paradise.gif",
+        "https://media.tenor.com/_Qby_0WHpqUAAAAM/good-morning.gif",
+        "https://media.tenor.com/Lju1LDs_BTcAAAAM/bom-dia-good-day.gif",
+        "https://media.tenor.com/eM1POLklyhEAAAAM/bom-dia-valtatui.gif",
+        "https://media.tenor.com/5FWV9jC2cewAAAAM/um-bom-dia-ola.gif",
+        "https://media.tenor.com/06s6ze1DOiIAAAAM/buenos-dias-jesus-christ.gif",
+        "https://media.tenor.com/8BOWxoteyBIAAAAM/good-morning.gif",
+        "https://media.tenor.com/WhajuVYZRKsAAAAM/aleluia-gloria.gif"
+    ]
+    gif_escolhido = random.choice(gifs_catolicos)
+    try:
+        await client.send_animation(message.chat.id, gif_escolhido, reply_to_message_id=message.id)
+    except Exception as e:
+        log.error(f"Erro ao enviar gif /instance: {e}")
 
 @app.on_message(filters.command("id"))
 async def cmd_id(client, message):
