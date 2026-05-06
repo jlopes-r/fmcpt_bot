@@ -480,8 +480,7 @@ async def cmd_help(client, message):
         "**🎯 Castigo**\n"
         "- `/repetido` - (Em resposta a alguém) Aplica o castigo manual.\n\n"
         "**😈 Diversão**\n"
-        "- `/comi` - Escolhe uma vítima aleatória do grupo.\n"
-        "- `/instance` - Envia um GIF de bom dia abençoado.\n\n"
+        "- `/comi` - Escolhe uma vítima aleatória do grupo.\n\n"
         "**🔧 Utilidades**\n"
         "- `/id` - Mostra o ID deste chat.\n"
         "- `/stats` - Status técnico do bot.\n"
@@ -534,26 +533,6 @@ async def cmd_comi(client, message):
         await message.reply_text(random.choice(frases))
     except Exception as e:
         log.error(f"Erro no /comi: {e}")
-
-@app.on_message(filters.command("instance"))
-async def cmd_instance(client, message):
-    if not chat_autorizado(message.chat.id):
-        return
-    gifs_catolicos = [
-        "https://media.tenor.com/tH2hPj0tK14AAAAC/bom-dia-deus.gif",
-        "https://media.tenor.com/mO2X9g-T49QAAAAC/bom-dia.gif",
-        "https://media.tenor.com/x4W9bNnsTlkAAAAC/bom-dia-catolico.gif",
-        "https://media.tenor.com/1GvK_i8E0bIAAAAC/bom-dia-amigos.gif",
-        "https://media.tenor.com/7s2NndU6_oYAAAAC/bom-dia-nossa-senhora.gif",
-        "https://media.tenor.com/pZqM8lW_P7kAAAAC/bom-dia.gif",
-        "https://media.tenor.com/r6_6gN9A0yQAAAAC/bom-dia.gif",
-        "https://media.tenor.com/4h_R-A07_E4AAAAC/bom-dia.gif"
-    ]
-    gif_escolhido = random.choice(gifs_catolicos)
-    try:
-        await client.send_animation(message.chat.id, gif_escolhido, reply_to_message_id=message.id)
-    except Exception as e:
-        log.error(f"Erro ao enviar gif /instance: {e}")
 
 @app.on_message(filters.command("id"))
 async def cmd_id(client, message):
@@ -608,7 +587,7 @@ async def enviar_aviso_duplicado(client, message, info_original: dict, repetido_
 # -----------------------------------------
 # ESCUTA DE MENSAGENS
 # -----------------------------------------
-COMANDOS = {"ranking", "bocadeleite", "anual", "stats", "help", "repetido", "id", "comi", "instance"}
+COMANDOS = {"ranking", "bocadeleite", "anual", "stats", "help", "repetido", "id", "comi"}
 
 @app.on_message(filters.text & ~filters.command(list(COMANDOS)))
 async def processar_links(client, message):
