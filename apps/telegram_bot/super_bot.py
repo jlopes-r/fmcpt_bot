@@ -547,7 +547,32 @@ async def cmd_instance(client, message):
         "https://media.tenor.com/7s2NndU6_oYAAAAC/bom-dia-nossa-senhora.gif",
         "https://media.tenor.com/pZqM8lW_P7kAAAAC/bom-dia.gif",
         "https://media.tenor.com/r6_6gN9A0yQAAAAC/bom-dia.gif",
-        "https://media.tenor.com/4h_R-A07_E4AAAAC/bom-dia.gif"
+        "https://media.tenor.com/4h_R-A07_E4AAAAC/bom-dia.gif",
+        "https://media.tenor.com/WvzldR40pgAAAAAM/bom-dia-good-day.gif",
+        "https://media.tenor.com/zhe-JWGvC3sAAAAM/jesus-god.gif",
+        "https://media.tenor.com/TBeN43TlzMsAAAAM/bom-dia-good-day.gif",
+        "https://media.tenor.com/ESIuDKbQoLQAAAAM/bom-dia-bom-dia-retencao.gif",
+        "https://media.tenor.com/t8U6B-f7AyUAAAAM/jesus-goodmorning.gif",
+        "https://media.tenor.com/JdqOAJYXiRsAAAAM/bom-dia-que-o-nosso.gif",
+        "https://media.tenor.com/N6XtQf397SwAAAAM/bom-dia-good-morning.gif",
+        "https://media.tenor.com/2e614ZJXUq0AAAAM/bom-dia-good-morning.gif",
+        "https://media.tenor.com/QJ55RdY_lnkAAAAM/bom-dia-good-day.gif",
+        "https://media.tenor.com/_yA0ZW7VjDYAAAAM/jesus-bible.gif",
+        "https://media.tenor.com/kiJV0utmMoYAAAAM/bom-dia-good-morning.gif",
+        "https://media.tenor.com/WbjAqTxVPloAAAAM/god-bless-you-jesus.gif",
+        "https://media.tenor.com/VdoB274LopsAAAAM/bom-dia-valtatu%C3%AD-bom-dia.gif",
+        "https://media.tenor.com/Swjz1L08ZR0AAAAM/bom-dia.gif",
+        "https://media.tenor.com/EicZL9riOb0AAAAM/jesus-identidade.gif",
+        "https://media.tenor.com/ozpe9Gew2zIAAAAM/good-morning.gif",
+        "https://media.tenor.com/FRjJeOSeszkAAAAM/hand-jesus.gif",
+        "https://media.tenor.com/MUNzKvQ6TI4AAAAM/good-morning-good-morning-jesus.gif",
+        "https://media.tenor.com/meSKEFDMXl4AAAAM/bom-dia-good-morning.gif",
+        "https://media.tenor.com/-et4j7grunEAAAAM/bom-dia-good-day.gif",
+        "https://media.tenor.com/EYMoO2zNXioAAAAM/bom-dia-good-day.gif",
+        "https://media.tenor.com/QqJt5KtuTAMAAAAM/bom-dia-good-morning.gif",
+        "https://media.tenor.com/6E85v_z2UHcAAAAM/bom-dia-good-morning.gif",
+        "https://media.tenor.com/uu_Aftj6DNQAAAAM/jesus-valtatui-hug.gif",
+        "https://media.tenor.com/OQrAEaQ5f3YAAAAM/jesus-god.gif"
     ]
     gif_escolhido = random.choice(gifs_catolicos)
     try:
