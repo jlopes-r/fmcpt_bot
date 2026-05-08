@@ -230,9 +230,14 @@ async def download_via_instaloader(url: str, out_dir: str) -> dict | None:
                 # Load session from cookie file se existir
                 cookie_file = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data", "instagram_cookies.txt")
                 if os.path.exists(cookie_file):
-                    pass
-            except Exception:
-                pass
+                    import http.cookiejar
+                    cj = http.cookiejar.MozillaCookieJar(cookie_file)
+                    cj.load(ignore_discard=True, ignore_expires=True)
+                    for cookie in cj:
+                        local_L.context._session.cookies.set_cookie(cookie)
+                    log.info("Cookies carregados no Instaloader com sucesso!")
+            except Exception as e:
+                log.warning(f"Falha ao carregar cookies no Instaloader: {e}")
 
             post = instaloader.Post.from_shortcode(local_L.context, shortcode)
             
