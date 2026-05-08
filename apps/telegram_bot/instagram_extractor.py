@@ -222,15 +222,14 @@ async def download_via_instaloader(url: str, out_dir: str) -> dict | None:
                 download_geotags=False,
                 download_comments=False,
                 save_metadata=False,
-                compress_json=False
+                compress_json=False,
+                max_connection_attempts=1
             )
             
             try:
                 # Load session from cookie file se existir
                 cookie_file = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data", "instagram_cookies.txt")
                 if os.path.exists(cookie_file):
-                    # We would need proper logic to import Firefox/Chrome cookies into instaloader
-                    # Instaloader natively uses its own format, but for now we'll just try without login
                     pass
             except Exception:
                 pass
@@ -257,9 +256,13 @@ async def download_via_instaloader(url: str, out_dir: str) -> dict | None:
                 'uploader': post.owner_username if post.owner_username else 'Autor'
             }
             
-        result = await loop.run_in_executor(None, _get_post_info)
+        # Adicionado timeout estrito para evitar que o instaloader trave a thread para sempre
+        result = await asyncio.wait_for(loop.run_in_executor(None, _get_post_info), timeout=15.0)
         return result
         
+    except asyncio.TimeoutError:
+        log.warning("Instaloader demorou muito (timeout) para shortcode: %s", shortcode)
+        return None
     except Exception as e:
         log.warning("Instaloader falhou: %s", str(e)[:150])
         return None
