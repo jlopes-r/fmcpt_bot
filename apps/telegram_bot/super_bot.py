@@ -185,14 +185,20 @@ def dividir_texto_longo(texto: str, limite: int = 4096) -> list[str]:
 
 def _progresso_upload(msg_espera):
     """Cria um callback de progresso para upload de vídeo."""
-    ultimo_pct = [0]
+    estado = {"ultimo_pct": 0, "ultimo_tempo": 0}
+    
     async def _callback(current, total):
         if total == 0:
             return
         pct = int(current * 100 / total)
-        # Atualiza a cada 15% para evitar rate limit do Telegram
-        if pct - ultimo_pct[0] >= 15 or pct >= 100:
-            ultimo_pct[0] = pct
+        agora = time.time()
+        
+        # Atualiza a cada 15% E no mínimo a cada 2s para evitar FloodWait
+        if (pct - estado["ultimo_pct"] >= 15 and agora - estado["ultimo_tempo"] > 2.0) or pct == 100:
+            if pct == 100 and estado["ultimo_pct"] == 100:
+                return
+            estado["ultimo_pct"] = pct
+            estado["ultimo_tempo"] = agora
             barra = "█" * (pct // 10) + "░" * (10 - pct // 10)
             try:
                 await msg_espera.edit_text(f"📤 Enviando... {barra} {pct}%")
@@ -481,7 +487,10 @@ async def processar_instagram(client, message, url, usuario, msg_espera, link_du
                 async with DOWNLOAD_COUNT_LOCK:
                     DOWNLOAD_COUNT += 1
                 log.info(f"Instagram sucesso (upload): {url} ({len(lista_telegram)} itens)")
-                await msg_espera.delete()
+                try:
+                    await msg_espera.delete()
+                except Exception:
+                    pass
                 return True
             else:
                 raise Exception("Nenhum arquivo válido encontrado ou baixado.")
@@ -909,14 +918,20 @@ async def processar_links(client, message):
                         async with DOWNLOAD_COUNT_LOCK:
                             DOWNLOAD_COUNT += 1
                         log.info(f"Sucesso X (fotos): {url_raw}")
-                    await msg_espera.delete()
+                    try:
+                        await msg_espera.delete()
+                    except Exception:
+                        pass
                 else:
                     log.info(f"X: tweet sem midia, enviando texto...")
                     cap_limpa = limpar_texto(res.get('text', ''))
                     msg = f"📝 {res.get('user_name', 'Autor')}:\n{cap_limpa}\n\n👤 Enviado por: {usuario}"
                     for parte in dividir_texto_longo(msg):
                         await message.reply_text(parte)
-                    await msg_espera.delete()
+                    try:
+                        await msg_espera.delete()
+                    except Exception:
+                        pass
                     log.info(f"Sucesso X (texto): {url_raw}")
 
                 # Registra link e verifica duplicata SOMENTE após sucesso
