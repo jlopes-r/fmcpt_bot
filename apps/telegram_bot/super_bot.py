@@ -152,6 +152,34 @@ def limpar_texto(texto: str) -> str:
     texto = re.sub(r'\n\s*\n', '\n\n', texto)
     return texto.strip()
 
+def montar_legenda(texto_base: str, autor: str, usuario: str, emoji: str = "✨", limite: int = 1024) -> str:
+    """Monta legenda respeitando o limite de caracteres do Telegram (1024 para captions)."""
+    sufixo = f"\n\nAutor: {autor}\n👤 Enviado por: {usuario}"
+    espaco_disponivel = limite - len(sufixo) - len(emoji) - 5  # 5 = espaço + "..." + margem
+    if espaco_disponivel < 50:
+        espaco_disponivel = 50
+    if len(texto_base) > espaco_disponivel:
+        texto_base = texto_base[:espaco_disponivel] + "..."
+    return f"{emoji} {texto_base}{sufixo}"
+
+def dividir_texto_longo(texto: str, limite: int = 4096) -> list[str]:
+    """Divide texto longo em múltiplas mensagens respeitando o limite do Telegram."""
+    if len(texto) <= limite:
+        return [texto]
+    partes = []
+    while texto:
+        if len(texto) <= limite:
+            partes.append(texto)
+            break
+        corte = texto.rfind('\n', 0, limite)
+        if corte == -1 or corte < limite // 2:
+            corte = texto.rfind(' ', 0, limite)
+        if corte == -1 or corte < limite // 2:
+            corte = limite
+        partes.append(texto[:corte])
+        texto = texto[corte:].lstrip()
+    return partes
+
 def url_permitida(url: str) -> bool:
     try:
         parsed = urlparse(url)
@@ -241,10 +269,8 @@ async def extrair_e_enviar_midia(client, message, url, usuario, msg_espera):
             lista_telegram = []
 
             legenda_base = limpar_texto(info.get('title') or info.get('description') or "")
-            if len(legenda_base) > 800:
-                legenda_base = legenda_base[:800] + "..."
             autor = info.get('uploader') or info.get('channel') or "Autor"
-            legenda_final = f"✨ {legenda_base}\n\nAutor: {autor}\n👤 Enviado por: {usuario}"
+            legenda_final = montar_legenda(legenda_base, autor, usuario)
 
             await msg_espera.edit_text(f"✨ Extraído! Enviando {'album' if len(midias) > 1 else 'arquivo'}...")
 
@@ -339,10 +365,8 @@ async def processar_instagram(client, message, url, usuario, msg_espera, link_du
             return
 
         legenda_base = limpar_texto(result.get('title', ''))
-        if len(legenda_base) > 800:
-            legenda_base = legenda_base[:800] + "..."
         autor = result.get('uploader', 'Autor')
-        legenda_final = f"📸 {legenda_base}\n\nAutor: {autor}\n👤 Enviado por: {usuario}"
+        legenda_final = montar_legenda(legenda_base, autor, usuario, emoji="📸")
         
         lista_telegram = []
 
@@ -652,7 +676,7 @@ async def processar_links(client, message):
                         res = await resp.json()
 
                 cap_limpa = limpar_texto(res.get('text', ''))
-                legenda = f"📸 {cap_limpa}\n\nAutor: {res.get('user_name', 'Autor')}\n👤 Enviado por: {usuario}"
+                legenda = montar_legenda(cap_limpa, res.get('user_name', 'Autor'), usuario, emoji="📸")
 
                 if 'media_extended' in res and len(res['media_extended']) > 0:
                     tem_video = any(m['type'] in ['video', 'gif'] for m in res['media_extended'])
@@ -751,7 +775,8 @@ async def processar_links(client, message):
                     log.info(f"X: tweet sem midia, enviando texto...")
                     cap_limpa = limpar_texto(res.get('text', ''))
                     msg = f"📝 {res.get('user_name', 'Autor')}:\n{cap_limpa}\n\n👤 Enviado por: {usuario}"
-                    await message.reply_text(msg)
+                    for parte in dividir_texto_longo(msg):
+                        await message.reply_text(parte)
                     await msg_espera.delete()
                     log.info(f"Sucesso X (texto): {url_raw}")
 

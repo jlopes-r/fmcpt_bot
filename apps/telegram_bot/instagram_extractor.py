@@ -25,14 +25,14 @@ L = instaloader.Instaloader(
 # Regex para extrair URLs de imagens e videos do embed
 IMG_REGEX = re.compile(r'class="EmbeddedMediaImage"[^>]*src="([^"]+)"')
 VIDEO_REGEX = re.compile(r'class="EmbeddedVideoPlayer"[^>]*src="([^"]+)"')
-SHORTCODE_REGEX = re.compile(r'/p/([A-Za-z0-9_-]+)|/reel/([A-Za-z0-9_-]+)')
+SHORTCODE_REGEX = re.compile(r'/(?:p|reel|ad|tv)/([A-Za-z0-9_-]+)')
 
 
 def _get_shortcode(url: str) -> str | None:
     """Extrai o shortcode do Instagram da URL."""
     match = SHORTCODE_REGEX.search(url)
     if match:
-        return match.group(1) or match.group(2)
+        return match.group(1)
     return None
 
 
