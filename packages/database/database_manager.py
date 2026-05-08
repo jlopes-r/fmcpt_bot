@@ -28,6 +28,18 @@ def init_db():
     conn.commit()
     conn.close()
 
+def checar_link(url_norm):
+    """Apenas verifica se o link já existe no banco, sem registrar."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT count, first_user, first_user_id FROM links WHERE url_norm = ?", (url_norm,))
+    res = cursor.fetchone()
+    conn.close()
+    
+    if res:
+        return True, {"primeiro_user": res[1], "primeiro_id": res[2], "vezes": res[0]}
+    return False, {}
+
 def registrar_link_e_checar(url_norm, user_name, user_id):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
