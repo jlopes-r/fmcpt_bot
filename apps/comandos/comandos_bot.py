@@ -101,6 +101,8 @@ async def executar_comando_personalizado(client, message, nome, info):
             await client.send_video(message.chat.id, info['media_id'], caption=conteudo)
         elif tipo == 'audio' and 'media_id' in info:
             await client.send_audio(message.chat.id, info['media_id'], caption=conteudo)
+        elif tipo == 'gif' and 'media_id' in info:
+            await client.send_animation(message.chat.id, info['media_id'], caption=conteudo)
         else:
             await message.reply_text(f"❌ Erro: tipo de comando não suportado")
     except Exception as e:
@@ -138,7 +140,7 @@ async def cmd_menu(client, message):
     if comandos_personalizados:
         txt += "**✨ Seus Comandos Personalizados:**\n"
         for cmd, info in comandos_personalizados.items():
-            tipo_emoji = {'texto': '📝', 'foto': '🖼️', 'video': '🎬', 'audio': '🎵'}.get(info.get('tipo'), '❓')
+            tipo_emoji = {'texto': '📝', 'foto': '🖼️', 'video': '🎬', 'audio': '🎵', 'gif': '🎞️'}.get(info.get('tipo'), '❓')
             txt += f"▫️ `/{cmd}` - {tipo_emoji} {info.get('descricao', 'Sem descrição')}\n"
     
     await message.reply_text(txt)
@@ -419,7 +421,7 @@ async def handle_custom_command(client, message):
     if comando in comandos_personalizados:
         await executar_comando_personalizado(client, message, comando, comandos_personalizados[comando])
 
-@app.on_message(filters.photo | filters.video | filters.audio & filters.create(filtro_estado_usuario))
+@app.on_message((filters.photo | filters.video | filters.audio | filters.animation) & filters.create(filtro_estado_usuario))
 @admin_only
 async def processar_media_criacao(client, message):
     user_id = message.from_user.id
@@ -433,6 +435,9 @@ async def processar_media_criacao(client, message):
         if message.photo:
             dados['tipo'] = 'foto'
             dados['media_id'] = message.photo.file_id
+        elif message.animation:
+            dados['tipo'] = 'gif'
+            dados['media_id'] = message.animation.file_id
         elif message.video:
             dados['tipo'] = 'video'
             dados['media_id'] = message.video.file_id
