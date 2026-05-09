@@ -312,9 +312,10 @@ async def download_via_rapidapi(url: str) -> dict | None:
             # Adiciona instâncias fixas de backup caso a busca falhe
             if not instances:
                 instances = [
-                    "https://api.cobalt.tools",
-                    "https://cobalt-api.kwiatekmiki.com",
-                    "https://cobalt.api.timelessnesses.me",
+                    "https://cobalt-api.libly.org",
+                    "https://cobalt.api.g-p.io",
+                    "https://cobalt.vinid.de",
+                    "https://api.cobalt.tools", # Auth required, but keeping as last resort
                 ]
                 
             post_url = f"https://www.instagram.com/p/{shortcode}/"

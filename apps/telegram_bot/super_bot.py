@@ -330,8 +330,11 @@ async def extrair_e_enviar_midia(client, message, url, usuario, msg_espera):
                     if not path:
                         path = item.get('filepath')
                         if not path or not os.path.exists(path):
-                            path = yt_dlp.YoutubeDL(ydl_opts).prepare_filename(item)
                             if not os.path.exists(path):
+                                # Verifica se foi filtrado por tamanho
+                                filesize = item.get('filesize') or item.get('filesize_approx')
+                                if filesize and filesize > LIMITE_TAMANHO:
+                                    raise Exception(f"File is larger than limit ({filesize} bytes)")
                                 continue
 
                     arquivos_para_deletar.append(path)
@@ -731,6 +734,11 @@ async def limpeza_periodica():
             if len(_retry_cache) > 500:
                 _retry_cache.clear()
                 
+            # Limpa locks de processamento orfãos (se houver algum travado há mais de 10 min)
+            # Como o set não guarda o tempo, limpamos tudo se estiver muito grande
+            if len(_processing_urls) > 100:
+                _processing_urls.clear()
+                
             # Failed URL cache
             agora = time.time()
             expirados = [u for u, ts in _failed_url_cache.items() if agora - ts > 600]
@@ -1002,7 +1010,8 @@ async def processar_links(client, message):
     # 3. YOUTUBE, TIKTOK, THREADS, PINTEREST (yt-dlp generico)
     if url_raw and any(d in url_raw for d in ["youtube.com", "youtu.be", "tiktok.com", "threads.net", "pinterest.com", "pin.it"]):
         url = url_raw
-        yt_match = re.search(r'(?:youtube\.com/watch\?v=|youtu\.be/)([a-zA-Z0-9_-]+)', url)
+        # Suporte para shorts e links normais com limpeza de tracking
+        yt_match = re.search(r'(?:youtube\.com/(?:watch\?v=|shorts/|live/)|youtu\.be/)([a-zA-Z0-9_-]+)', url)
         if yt_match:
             url = f"https://www.youtube.com/watch?v={yt_match.group(1)}"
         elif not any(d in url for d in ["youtube.com", "youtu.be", "google.com"]):
@@ -1026,7 +1035,7 @@ async def processar_links(client, message):
             return
 
         url = url_raw
-        yt_match = re.search(r'(?:youtube\.com/watch\?v=|youtu\.be/)([a-zA-Z0-9_-]+)', url)
+        yt_match = re.search(r'(?:youtube\.com/(?:watch\?v=|shorts/|live/)|youtu\.be/)([a-zA-Z0-9_-]+)', url)
         if yt_match:
             url = f"https://www.youtube.com/watch?v={yt_match.group(1)}"
         elif not any(d in url for d in ["youtube.com", "youtu.be", "google.com"]):
