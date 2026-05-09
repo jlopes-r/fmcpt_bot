@@ -273,7 +273,7 @@ async def download_via_instaloader(url: str, out_dir: str) -> dict | None:
         return None
 
 async def download_via_rapidapi(url: str) -> dict | None:
-    """Fallback 3: Usa uma API pública ou proxy para baixar."""
+    """Fallback 3: Usa uma API pública ou proxy para baixar (Cobalt API v2 - POST /)."""
     shortcode = _get_shortcode(url)
     if not shortcode:
         return None
@@ -286,7 +286,7 @@ async def download_via_rapidapi(url: str) -> dict | None:
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
         }
         
-        async with httpx.AsyncClient(timeout=20.0) as client:
+        async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
             # 1. Pega lista de instâncias públicas do Cobalt que estão ativas
             instances = []
             try:
@@ -294,38 +294,53 @@ async def download_via_rapidapi(url: str) -> dict | None:
                 if resp_instances.status_code == 200:
                     data = resp_instances.json()
                     for inst in data:
-                        if inst.get("online") and inst.get("services", {}).get("instagram") is True:
-                            instances.append(f"{inst['protocol']}://{inst['api']}")
+                        # Suporta formato antigo (online/services) e novo (status)
+                        is_online = inst.get("online") or inst.get("status") == "online"
+                        supports_ig = True  # Assume suporte se não especificado
+                        if "services" in inst:
+                            supports_ig = inst["services"].get("instagram", False)
+                        if is_online and supports_ig:
+                            # Suporta tanto 'api' quanto 'url' como chave
+                            api_host = inst.get("api") or inst.get("url", "").replace("https://", "").replace("http://", "")
+                            protocol = inst.get("protocol", "https")
+                            if api_host:
+                                api_url = f"{protocol}://{api_host}" if "://" not in api_host else api_host
+                                instances.append(api_url.rstrip("/"))
             except Exception as e:
                 log.debug("Não foi possível buscar lista de instâncias cobalt: %s", e)
                 
             # Adiciona instâncias fixas de backup caso a busca falhe
             if not instances:
                 instances = [
-                    "https://cobalt-api.meowing.de",
-                    "https://cobalt-backend.canine.tools",
-                    "https://capi.3kh0.net",
-                    "https://co.wuk.sh"
+                    "https://api.cobalt.tools",
+                    "https://cobalt-api.kwiatekmiki.com",
+                    "https://cobalt.api.timelessnesses.me",
                 ]
                 
+            post_url = f"https://www.instagram.com/p/{shortcode}/"
+            
             for api_base in instances:
                 try:
                     log.debug("Tentando Cobalt API: %s", api_base)
+                    # API v2: POST / (raiz) — /api/json foi deprecado em Nov 2024
                     resp = await client.post(
-                        f"{api_base}/api/json", 
-                        json={"url": f"https://www.instagram.com/p/{shortcode}/"}, 
+                        f"{api_base}/", 
+                        json={"url": post_url}, 
                         headers=headers
                     )
                     if resp.status_code == 200:
                         data = resp.json()
-                        if "url" in data:
-                            return {
-                                'type': 'video' if data.get('is_video', True) else 'photo',
-                                'urls': [data["url"]],
-                                'title': '',
-                                'uploader': 'Autor'
-                            }
-                        elif data.get("status") == "picker":
+                        status = data.get("status", "")
+                        
+                        if status == "tunnel" or status == "redirect":
+                            if "url" in data:
+                                return {
+                                    'type': 'video',
+                                    'urls': [data["url"]],
+                                    'title': '',
+                                    'uploader': 'Autor'
+                                }
+                        elif status == "picker":
                             urls = [item["url"] for item in data.get("picker", []) if "url" in item]
                             if urls:
                                 return {
@@ -334,14 +349,9 @@ async def download_via_rapidapi(url: str) -> dict | None:
                                     'title': '',
                                     'uploader': 'Autor'
                                 }
-                        elif data.get("status") == "redirect" or data.get("status") == "stream":
-                            if "url" in data:
-                                return {
-                                    'type': 'video' if data.get("status") == "stream" else 'photo', 
-                                    'urls': [data["url"]],
-                                    'title': '',
-                                    'uploader': 'Autor'
-                                }
+                    elif resp.status_code == 401:
+                        log.debug("Cobalt %s requer autenticação, pulando...", api_base)
+                        continue
                 except Exception as e:
                     log.debug("API %s falhou: %s", api_base, str(e)[:100])
                     continue

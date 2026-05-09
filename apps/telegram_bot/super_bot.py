@@ -74,6 +74,9 @@ _historico_uso = defaultdict(list)
 _fila_espera = 0
 _fila_lock = asyncio.Lock()
 _retry_cache = {}  # msg_erro_id -> (url, usuario, chat_id, original_msg_id)
+_failed_url_cache = {}  # url_norm -> timestamp (cooldown para URLs que falharam recentemente)
+_processing_urls = set()  # URLs em processamento (evita downloads duplicados simultâneos)
+_processing_lock = asyncio.Lock()
 
 # -----------------------------------------
 # LOGGING
@@ -727,6 +730,12 @@ async def limpeza_periodica():
             # Retry cache
             if len(_retry_cache) > 500:
                 _retry_cache.clear()
+                
+            # Failed URL cache
+            agora = time.time()
+            expirados = [u for u, ts in _failed_url_cache.items() if agora - ts > 600]
+            for u in expirados:
+                del _failed_url_cache[u]
         except Exception:
             pass
 
@@ -810,6 +819,13 @@ async def processar_links(client, message):
         url_norm = urlunparse(urlparse(url_raw)._replace(query="")).lower().rstrip("/")
         repetido_db, info_db = db.checar_link(url_norm)
 
+        # Race condition lock
+        async with _processing_lock:
+            if url_norm in _processing_urls:
+                await message.reply_text("⏳ Esse link já está sendo processado. Aguarde um instante...")
+                return
+            _processing_urls.add(url_norm)
+
     # 1. TWITTER / X
     if url_raw and re.search(r'(x|twitter)\.com', url_raw):
         log.info(f"🐦 Detectado link X: {url_raw}")
@@ -880,10 +896,18 @@ async def processar_links(client, message):
                                 lista_telegram.append(InputMediaVideo(path, caption=legenda, supports_streaming=True))
                             except Exception as e:
                                 log.error(f"X yt-dlp erro: {e}")
-                                log.info(f"X: tentando URL direta: {video_url}")
+                                log.info(f"X: tentando download direto: {video_url}")
                                 try:
-                                    lista_telegram.append(InputMediaVideo(video_url, caption=legenda))
-                                except Exception:
+                                    video_path = str(PASTA_DOWNLOADS / f"x_{match.group(2)}_{int(time.time())}.mp4")
+                                    async with aiohttp.ClientSession() as dl_session:
+                                        async with dl_session.get(video_url, timeout=60) as dl_resp:
+                                            if dl_resp.status == 200:
+                                                with open(video_path, 'wb') as vf: vf.write(await dl_resp.read())
+                                                arquivos_x.append(video_path)
+                                                lista_telegram.append(InputMediaVideo(video_path, caption=legenda, supports_streaming=True))
+                                            else: raise Exception("Download direto falhou")
+                                except Exception as e2:
+                                    log.error(f"X direct download erro: {e2}")
                                     raise
 
                         if not lista_telegram:
@@ -946,17 +970,33 @@ async def processar_links(client, message):
             for p in arquivos_x:
                 if os.path.exists(p):
                     os.remove(p)
+            async with _processing_lock:
+                _processing_urls.discard(url_norm)
         return
 
     # 2. INSTAGRAM (handler dedicado)
     if url_raw and any(d in url_raw for d in ["instagram.com", "instagr.am"]):
+        agora_ts = time.time()
+        if url_norm in _failed_url_cache and agora_ts - _failed_url_cache[url_norm] < 300:
+            tr = int(300 - (agora_ts - _failed_url_cache[url_norm]))
+            await message.reply_text(f"⏳ Esse link falhou há pouco tempo. Tente em {tr // 60}min {tr % 60}s.")
+            async with _processing_lock:
+                _processing_urls.discard(url_norm)
+            return
+            
         msg_espera = await message.reply_text("⏳ *Baixando do Instagram...*")
         sucesso = await processar_instagram(client, message, url_raw, usuario, msg_espera)
 
         if sucesso:
+            _failed_url_cache.pop(url_norm, None)
             repetido_db, info_db = db.registrar_link_e_checar(url_norm, message.from_user.first_name or "Membro", user_id)
             if repetido_db:
                 await enviar_aviso_duplicado(client, message, {}, info_db, usuario)
+        else:
+            _failed_url_cache[url_norm] = agora_ts
+            
+        async with _processing_lock:
+            _processing_urls.discard(url_norm)
         return
 
     # 3. YOUTUBE, TIKTOK, THREADS, PINTEREST (yt-dlp generico)
@@ -975,6 +1015,8 @@ async def processar_links(client, message):
             repetido_db, info_db = db.registrar_link_e_checar(url_norm, message.from_user.first_name or "Membro", user_id)
             if repetido_db:
                 await enviar_aviso_duplicado(client, message, {}, info_db, usuario)
+        async with _processing_lock:
+            _processing_urls.discard(url_norm)
         return
 
 
@@ -999,6 +1041,9 @@ async def processar_links(client, message):
             repetido_db, info_db = db.registrar_link_e_checar(url_norm, message.from_user.first_name or "Membro", user_id)
             if repetido_db:
                 await enviar_aviso_duplicado(client, message, {}, info_db, usuario)
+        
+        async with _processing_lock:
+            _processing_urls.discard(url_norm)
 
 # -----------------------------------------
 # INICIALIZACAO
