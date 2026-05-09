@@ -330,12 +330,11 @@ async def extrair_e_enviar_midia(client, message, url, usuario, msg_espera):
                     if not path:
                         path = item.get('filepath')
                         if not path or not os.path.exists(path):
-                            if not os.path.exists(path):
-                                # Verifica se foi filtrado por tamanho
-                                filesize = item.get('filesize') or item.get('filesize_approx')
-                                if filesize and filesize > LIMITE_TAMANHO:
-                                    raise Exception(f"File is larger than limit ({filesize} bytes)")
-                                continue
+                            # Verifica se foi filtrado por tamanho antes de dar erro
+                            filesize = item.get('filesize') or item.get('filesize_approx')
+                            if filesize and filesize > LIMITE_TAMANHO:
+                                raise Exception(f"Arquivo muito grande ({filesize / 1024 / 1024:.1f}MB). O limite é de 50MB.")
+                            continue
 
                     arquivos_para_deletar.append(path)
                     ext = path.lower().split('.')[-1]
