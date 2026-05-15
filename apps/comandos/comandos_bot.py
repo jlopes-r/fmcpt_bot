@@ -66,6 +66,40 @@ def salvar_comandos(comandos):
     with open(COMANDOS_FILE, 'w', encoding='utf-8') as f:
         json.dump(comandos, f, ensure_ascii=False, indent=2)
 
+async def atualizar_menu_comandos(client):
+    try:
+        from pyrogram.types import BotCommand
+        lista_comandos = [
+            BotCommand("start", "Inicia o bot"),
+            BotCommand("menu", "Abre o menu principal"),
+            BotCommand("list", "Lista comandos personalizados"),
+            BotCommand("create", "Cria um comando"),
+            BotCommand("delete", "Deleta um comando"),
+            BotCommand("instance", "Envia um GIF de bom dia abençoado"),
+            BotCommand("sync", "Sincroniza o menu de comandos")
+        ]
+        
+        adicionados = 0
+        tipo_emoji = {'texto': '📝', 'foto': '🖼️', 'video': '🎬', 'audio': '🎵', 'voice': '🎤', 'gif': '🎞️'}
+        for cmd, info in comandos_personalizados.items():
+            if adicionados >= 90:
+                break
+            tipo = info.get('tipo', 'texto')
+            emoji = tipo_emoji.get(tipo, '❓')
+            desc = f"{emoji} {info.get('descricao', 'Sem descrição')}"
+            
+            if len(desc) > 60:
+                desc = desc[:57] + "..."
+            lista_comandos.append(BotCommand(cmd.lower(), desc))
+            adicionados += 1
+            
+        await client.set_bot_commands(lista_comandos)
+        log.info("Menu de comandos atualizado no Telegram!")
+        return True
+    except Exception as e:
+        log.error(f"Erro ao atualizar menu: {e}")
+        return False
+
 # Cliente
 app = Client(
     "meu_comandos_bot",
@@ -317,9 +351,10 @@ async def cmd_list(client, message):
         return
     
     txt = "**📋 Comandos Personalizados:**\n\n"
+    tipo_emoji = {'texto': '📝', 'foto': '🖼️', 'video': '🎬', 'audio': '🎵', 'voice': '🎤', 'gif': '🎞️'}
     for cmd, info in comandos_personalizados.items():
-        txt += f"- `/{cmd}` - {info.get('descricao', 'Sem descrição')}\n"
-        txt += f"  Tipo: {info.get('tipo', 'texto')}\n\n"
+        emoji = tipo_emoji.get(info.get('tipo', 'texto'), '❓')
+        txt += f"▫️ `/{cmd}` {emoji} - {info.get('descricao', 'Sem descrição')}\n"
     
     await message.reply_text(txt)
 
@@ -335,9 +370,19 @@ async def cmd_delete(client, message):
     if cmd_nome in comandos_personalizados:
         del comandos_personalizados[cmd_nome]
         salvar_comandos(comandos_personalizados)
+        await atualizar_menu_comandos(client)
         await message.reply_text(f"✅ Comando `/{cmd_nome}` deletado com sucesso!")
     else:
         await message.reply_text(f"❌ Comando `/{cmd_nome}` não encontrado.")
+
+@app.on_message(filters.command("sync"))
+@admin_only
+async def cmd_sync(client, message):
+    sucesso = await atualizar_menu_comandos(client)
+    if sucesso:
+        await message.reply_text("✅ Menu do Telegram (botão /) atualizado com todos os comandos!")
+    else:
+        await message.reply_text("❌ Erro ao atualizar o menu. Veja os logs.")
 
 # Filtro para verificar se o usuário está no processo de criação de um comando
 async def filtro_estado_usuario(_, __, message):
@@ -401,6 +446,7 @@ async def processar_criacao(client, message):
             'data_criacao': str(datetime.now())
         }
         salvar_comandos(comandos_personalizados)
+        await atualizar_menu_comandos(client)
         
         del user_states[user_id]
         
