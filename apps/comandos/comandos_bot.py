@@ -468,17 +468,22 @@ async def processar_criacao(client, message):
 async def filtro_comando_personalizado(_, __, message):
     if not message.text or not message.text.startswith('/'):
         return False
-    # Pega o nome do comando sem a "/"
-    comando = message.text.split()[0][1:]
+    # Pega o nome do comando sem a "/" e tira o @nomedobot se houver
+    comando = message.text.split()[0][1:].split('@')[0].lower()
     # Retorna True se o comando NÃO for interno E estiver na lista de personalizados
-    return comando not in COMANDOS_INTERNOS and comando in comandos_personalizados
+    # Fazos lower() para garantir que case insensitive funcione (já que o JSON e o comando do Telegram usam lowercase)
+    return comando not in COMANDOS_INTERNOS and comando in [c.lower() for c in comandos_personalizados.keys()]
 
 @app.on_message(filters.create(filtro_comando_personalizado))
 async def handle_custom_command(client, message):
     """Handler genérico para todos os comandos personalizados que funciona em tempo real."""
-    comando = message.text.split()[0][1:]
-    if comando in comandos_personalizados:
-        await executar_comando_personalizado(client, message, comando, comandos_personalizados[comando])
+    comando_recebido = message.text.split()[0][1:].split('@')[0].lower()
+    
+    # Encontra a chave original correspondente ignorando case
+    chave_real = next((c for c in comandos_personalizados if c.lower() == comando_recebido), None)
+    
+    if chave_real:
+        await executar_comando_personalizado(client, message, chave_real, comandos_personalizados[chave_real])
 
 @app.on_message((filters.photo | filters.video | filters.audio | filters.voice | filters.animation) & filters.create(filtro_estado_usuario))
 @admin_only
