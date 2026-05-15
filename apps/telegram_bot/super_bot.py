@@ -412,6 +412,7 @@ async def extrair_e_enviar_midia(client, message, url, usuario, msg_espera):
 # -----------------------------------------
 async def processar_instagram(client, message, url, usuario, msg_espera, link_duplicado=None):
     """Handler dedicado para Instagram com cookies + embed fallback. Retorna True se obteve sucesso."""
+    global DOWNLOAD_COUNT
     arquivos_para_deletar = []
     for tentativa in range(1, MAX_RETRIES + 1):
         try:
