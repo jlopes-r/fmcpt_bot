@@ -421,7 +421,7 @@ async def handle_custom_command(client, message):
     if comando in comandos_personalizados:
         await executar_comando_personalizado(client, message, comando, comandos_personalizados[comando])
 
-@app.on_message((filters.photo | filters.video | filters.audio | filters.animation) & filters.create(filtro_estado_usuario))
+@app.on_message((filters.photo | filters.video | filters.audio | filters.voice | filters.animation) & filters.create(filtro_estado_usuario))
 @admin_only
 async def processar_media_criacao(client, message):
     user_id = message.from_user.id
@@ -444,6 +444,9 @@ async def processar_media_criacao(client, message):
         elif message.audio:
             dados['tipo'] = 'audio'
             dados['media_id'] = message.audio.file_id
+        elif message.voice:
+            dados['tipo'] = 'audio'
+            dados['media_id'] = message.voice.file_id
         
         # Corrige para salvar a legenda (caption) como conteúdo
         if message.caption:
