@@ -101,6 +101,8 @@ async def executar_comando_personalizado(client, message, nome, info):
             await client.send_video(message.chat.id, info['media_id'], caption=conteudo)
         elif tipo == 'audio' and 'media_id' in info:
             await client.send_audio(message.chat.id, info['media_id'], caption=conteudo)
+        elif tipo == 'voice' and 'media_id' in info:
+            await client.send_voice(message.chat.id, info['media_id'], caption=conteudo)
         elif tipo == 'gif' and 'media_id' in info:
             await client.send_animation(message.chat.id, info['media_id'], caption=conteudo)
         else:
@@ -138,10 +140,8 @@ async def cmd_menu(client, message):
     )
     
     if comandos_personalizados:
-        txt += "**✨ Seus Comandos Personalizados:**\n"
-        for cmd, info in comandos_personalizados.items():
-            tipo_emoji = {'texto': '📝', 'foto': '🖼️', 'video': '🎬', 'audio': '🎵', 'gif': '🎞️'}.get(info.get('tipo'), '❓')
-            txt += f"▫️ `/{cmd}` - {tipo_emoji} {info.get('descricao', 'Sem descrição')}\n"
+        txt += "**✨ Comandos Personalizados:**\n"
+        txt += "👉 Use `/list` para ver a lista com todos os seus comandos criados!"
     
     await message.reply_text(txt)
 
@@ -359,15 +359,20 @@ async def processar_criacao(client, message):
         if not nome.isalnum():
             await message.reply_text("❌ Nome inválido! Use apenas letras e números:")
             return
+            
+        aviso = ""
+        if nome in comandos_personalizados:
+            aviso = f"\n\n⚠️ **Aviso:** O comando `/{nome}` já existe e será **substituído** se você continuar!"
+            
         dados['nome'] = nome
         user_states[user_id]['etapa'] = 'tipo'
         await message.reply_text(
-            f"✅ Comando `/{nome}` definido!\n\n"
+            f"✅ Comando `/{nome}` definido!{aviso}\n\n"
             "Agora escolha o tipo de conteúdo:\n"
             "- Digite `texto` para enviar um texto\n"
             "- Envie uma **foto** para comando de foto\n"
             "- Envie um **vídeo** para comando de vídeo\n"
-            "- Envie um **áudio** para comando de áudio"
+            "- Envie um **áudio/voz** para comando de áudio"
         )
     
     elif etapa == 'tipo' and message.text.lower() == 'texto':
@@ -445,7 +450,7 @@ async def processar_media_criacao(client, message):
             dados['tipo'] = 'audio'
             dados['media_id'] = message.audio.file_id
         elif message.voice:
-            dados['tipo'] = 'audio'
+            dados['tipo'] = 'voice'
             dados['media_id'] = message.voice.file_id
         
         # Corrige para salvar a legenda (caption) como conteúdo
