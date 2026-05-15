@@ -81,16 +81,23 @@ async def atualizar_menu_comandos(client):
         
         adicionados = 0
         tipo_emoji = {'texto': '📝', 'foto': '🖼️', 'video': '🎬', 'audio': '🎵', 'voice': '🎤', 'gif': '🎞️'}
+        import re
         for cmd, info in comandos_personalizados.items():
             if adicionados >= 90:
                 break
+            
+            cmd_formatado = cmd.lower()
+            # Telegram apenas aceita [a-z0-9_] e até 32 caracteres. Pula se for inválido.
+            if not re.match(r'^[a-z0-9_]{1,32}$', cmd_formatado):
+                continue
+                
             tipo = info.get('tipo', 'texto')
             emoji = tipo_emoji.get(tipo, '❓')
             desc = f"{emoji} {info.get('descricao', 'Sem descrição')}"
             
             if len(desc) > 60:
                 desc = desc[:57] + "..."
-            lista_comandos.append(BotCommand(cmd.lower(), desc))
+            lista_comandos.append(BotCommand(cmd_formatado, desc))
             adicionados += 1
             
         await client.set_bot_commands(lista_comandos)
@@ -401,8 +408,9 @@ async def processar_criacao(client, message):
     
     if etapa == 'nome':
         nome = message.text.strip().lstrip('/')
-        if not nome.isalnum():
-            await message.reply_text("❌ Nome inválido! Use apenas letras e números:")
+        import re
+        if not re.match(r'^[a-zA-Z0-9_]+$', nome):
+            await message.reply_text("❌ Nome inválido! Use apenas letras, números e underlines (sem espaços ou acentos):")
             return
             
         aviso = ""
