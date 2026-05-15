@@ -399,6 +399,46 @@ async def download_via_embed_v2(url: str) -> dict | None:
         log.warning("Embed V2 falhou: %s", str(e)[:150])
     return None
 
+
+async def download_via_igram(url: str) -> dict | None:
+    """Fallback 5: Puxa o vídeo via igram.world."""
+    log.info("Tentando download via igram.world para: %s", url)
+    try:
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+            # Passo 1: Obter o ID do post
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'Origin': 'https://igram.world',
+                'Referer': 'https://igram.world/'
+            }
+            
+            payload = {'url': url, 'lang': 'en'}
+            
+            resp = await client.post("https://igram.world/api/ig/story", data=payload, headers=headers)
+            
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get("status") == "ok" and data.get("result"):
+                    # Pega a primeira mídia encontrada (geralmente a melhor qualidade)
+                    media = data["result"][0]
+                    video_url = media.get("url")
+                    
+                    if video_url:
+                        return {
+                            'type': 'video' if media.get("type") == "video" else "photo",
+                            'urls': [video_url],
+                            'title': '',
+                            'uploader': 'Autor'
+                        }
+            else:
+                log.warning(f"igram.world API falhou com status {resp.status_code}")
+
+    except Exception as e:
+        log.warning("igram.world falhou: %s", str(e)[:150])
+        
+    return None
+
 async def download_instagram(
     url: str,
     cookie_path: str,
@@ -415,21 +455,28 @@ async def download_instagram(
     """
     log.info("Y\" Tentando download Instagram: %s", url)
 
-    # Tentativa 1: Instaloader (Melhor para fotos/carrossel, yt-dlp costuma falhar nelas)
+    # Tentativa 1: iGram
+    result = await download_via_igram(url)
+    if result:
+        log.info("o. Instagram download via iGram: %s (%d itens)", url, len(result.get('urls', [])))
+        return result
+    log.info("s? iGram falhou, tentando próxima...")
+
+    # Tentativa 2: Instaloader (Melhor para fotos/carrossel, yt-dlp costuma falhar nelas)
     result = await download_via_instaloader(url, out_dir)
     if result:
         log.info("o. Instagram download via Instaloader: %s (%d itens)", url, len(result.get('urls', [])))
         return result
     log.info("s? Instaloader falhou, tentando próxima...")
 
-    # Tentativa 2: API Externa (Cobalt)
+    # Tentativa 3: API Externa (Cobalt)
     result = await download_via_rapidapi(url)
     if result:
         log.info("o. Instagram download via Cobalt API: %s (%d itens)", url, len(result.get('urls', [])))
         return result
     log.info("s? APIs externas falharam, tentando próxima...")
 
-    # Tentativa 3: yt-dlp com cookies (Bom para vídeos fechados/reels pesados)
+    # Tentativa 4: yt-dlp com cookies (Bom para vídeos fechados/reels pesados)
     if os.path.exists(cookie_path):
         result = await download_with_cookies(url, cookie_path, out_dir)
         if result:
@@ -437,13 +484,13 @@ async def download_instagram(
             return result
         log.info("s? Cookies/yt-dlp falharam, tentando embed fallback...")
 
-    # Tentativa 4: Embed endpoint
+    # Tentativa 5: Embed endpoint
     result = await download_via_embed(url)
     if result:
         log.info("o. Instagram download via embed: %s (%d itens)", url, len(result.get('files', result.get('urls', []))))
         return result
         
-    # Tentativa 5: Embed endpoint Direto/HTML Scraping
+    # Tentativa 6: Embed endpoint Direto/HTML Scraping
     result = await download_via_embed_v2(url)
     if result:
         log.info("o. Instagram download via embed v2: %s (%d itens)", url, len(result.get('urls', [])))
