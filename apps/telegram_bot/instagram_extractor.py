@@ -254,6 +254,7 @@ async def download_via_web_scrapers(url: str) -> dict | None:
             if resp.status_code == 200:
                 data = resp.json()
                 html = data.get("data", "")
+                log.info("SaveIG retornou status 200, html length: %d", len(html))
                 
                 # O SaveIG retorna um HTML com os links de download
                 import re
@@ -268,6 +269,8 @@ async def download_via_web_scrapers(url: str) -> dict | None:
                     if ("scontent" in link or "cdninstagram" in link) and link not in media_urls:
                         media_urls.append(link)
                         
+                log.info("SaveIG achou %d links CDN na página", len(media_urls))
+                        
                 if media_urls:
                     caption = await _try_fetch_caption(url)
                     return {
@@ -276,8 +279,12 @@ async def download_via_web_scrapers(url: str) -> dict | None:
                         'title': caption,
                         'uploader': 'Autor'
                     }
+                else:
+                    log.info("SaveIG não encontrou media_urls válidos na extração.")
+            else:
+                log.info("SaveIG falhou HTTP HTTP %d - %s", resp.status_code, resp.text[:100])
     except Exception as e:
-        log.debug("SaveIG Scraper falhou: %s", str(e)[:100])
+        log.info("SaveIG Scraper gerou exceção: %s", str(e)[:150])
 
     # 2. Tentar SnapInsta (bom para vídeos)
     try:
@@ -291,10 +298,12 @@ async def download_via_web_scrapers(url: str) -> dict | None:
             )
             if resp.status_code == 200:
                 html = resp.text
+                log.info("SnapInsta retornou status 200, text length: %d", len(html))
                 # SnapInsta pode retornar JSON ou HTML com script
                 links = re.findall(r'href="([^"]+)"\s+[^>]*?class="[^"]*?btn-download', html, re.IGNORECASE)
                 media_urls = [link.replace("&amp;", "&") for link in links if "snapinsta.app/download" in link or "scontent" in link]
                 
+                log.info("SnapInsta achou %d links", len(media_urls))
                 if media_urls:
                     caption = await _try_fetch_caption(url)
                     return {
@@ -303,8 +312,12 @@ async def download_via_web_scrapers(url: str) -> dict | None:
                         'title': caption,
                         'uploader': 'Autor'
                     }
+                else:
+                    log.info("SnapInsta não encontrou links válidos.")
+            else:
+                log.info("SnapInsta falhou HTTP %d", resp.status_code)
     except Exception as e:
-        log.debug("SnapInsta Scraper falhou: %s", str(e)[:100])
+        log.info("SnapInsta Scraper gerou exceção: %s", str(e)[:150])
 
     return None
 
