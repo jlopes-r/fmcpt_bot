@@ -15,6 +15,7 @@ import json
 import asyncio
 import logging
 import urllib.parse
+import http.cookiejar
 from functools import partial
 
 import yt_dlp
@@ -81,6 +82,27 @@ def _shortcode_to_media_id(shortcode: str) -> str:
         if char in alphabet:
             media_id = media_id * 64 + alphabet.index(char)
     return str(media_id)
+
+
+def _load_cookies_from_file(cookie_path: str) -> dict:
+    """Carrega cookies do arquivo Netscape e retorna um dict nome→valor."""
+    cookies = {}
+    if not cookie_path or not os.path.exists(cookie_path):
+        return cookies
+    try:
+        cj = http.cookiejar.MozillaCookieJar(cookie_path)
+        cj.load(ignore_discard=True, ignore_expires=True)
+        for cookie in cj:
+            cookies[cookie.name] = cookie.value
+        log.info("🍪 Cookies carregados: %s", ', '.join(cookies.keys()))
+    except Exception as e:
+        log.warning("Falha ao carregar cookies: %s", str(e)[:100])
+    return cookies
+
+
+def _build_cookie_header(cookies: dict) -> str:
+    """Monta a string Cookie: para o header HTTP."""
+    return '; '.join(f'{k}={v}' for k, v in cookies.items())
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -175,28 +197,19 @@ def _parse_graphql_media(media: dict) -> dict | None:
 #  Camada 1 — API Interna do Instagram (i.instagram.com)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-async def _extract_via_api(shortcode: str) -> dict | None:
+async def _extract_via_api(shortcode: str, cookies: dict = None) -> dict | None:
     """
     Usa a API interna do Instagram: i.instagram.com/api/v1/media/{media_id}/info/
-    Essa é a mesma API que o app móvel usa. Não precisa de login.
+    Essa é a mesma API que o app móvel usa. Com cookies, funciona de qualquer IP.
     """
+    cookies = cookies or {}
     media_id = _shortcode_to_media_id(shortcode)
     log.info("🔌 Camada 1 (API Interna): shortcode=%s → media_id=%s", shortcode, media_id)
 
     try:
         async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
-            # Passo 1: "aquecer" a sessão visitando a página do post (pega cookies)
-            post_url = f'https://www.instagram.com/p/{shortcode}/'
-            warmup = await client.get(post_url, headers=BROWSER_HEADERS)
-            log.info("   Warmup status: %d", warmup.status_code)
-
-            # Pega csrftoken do cookie
-            csrf = ''
-            for cookie_name, cookie_value in client.cookies.items():
-                if cookie_name == 'csrftoken':
-                    csrf = cookie_value
-
-            # Passo 2: Bater na API interna
+            # Monta headers com cookies de autenticação
+            csrf = cookies.get('csrftoken', '')
             api_url = f'https://i.instagram.com/api/v1/media/{media_id}/info/'
             headers = {
                 **BROWSER_HEADERS,
@@ -204,6 +217,8 @@ async def _extract_via_api(shortcode: str) -> dict | None:
             }
             if csrf:
                 headers['X-CSRFToken'] = csrf
+            if cookies:
+                headers['Cookie'] = _build_cookie_header(cookies)
 
             resp = await client.get(api_url, headers=headers)
             log.info("   API resp status: %d", resp.status_code)
@@ -230,11 +245,12 @@ async def _extract_via_api(shortcode: str) -> dict | None:
 #  Camada 2 — GraphQL com doc_id público
 # ═══════════════════════════════════════════════════════════════════════════════
 
-async def _extract_via_graphql(shortcode: str) -> dict | None:
+async def _extract_via_graphql(shortcode: str, cookies: dict = None) -> dict | None:
     """
-    Usa o endpoint GraphQL público com o doc_id mais recente.
+    Usa o endpoint GraphQL com o doc_id mais recente + cookies de autenticação.
     Pode quebrar se o Instagram rotacionar o doc_id, mas é fácil de atualizar.
     """
+    cookies = cookies or {}
     log.info("🔌 Camada 2 (GraphQL): shortcode=%s", shortcode)
 
     variables = json.dumps({
@@ -253,19 +269,15 @@ async def _extract_via_graphql(shortcode: str) -> dict | None:
 
     try:
         async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
-            # Aquecer sessão
-            warmup = await client.get(f'https://www.instagram.com/p/{shortcode}/', headers=BROWSER_HEADERS)
-            csrf = ''
-            for cookie_name, cookie_value in client.cookies.items():
-                if cookie_name == 'csrftoken':
-                    csrf = cookie_value
-
+            csrf = cookies.get('csrftoken', '')
             headers = {
                 **BROWSER_HEADERS,
                 **IG_APP_HEADERS,
                 'X-CSRFToken': csrf,
                 'X-Requested-With': 'XMLHttpRequest',
             }
+            if cookies:
+                headers['Cookie'] = _build_cookie_header(cookies)
 
             for doc_id in doc_ids:
                 query_url = (
@@ -302,7 +314,7 @@ async def _extract_via_graphql(shortcode: str) -> dict | None:
 #  Camada 3 — Embed Page Scraping
 # ═══════════════════════════════════════════════════════════════════════════════
 
-async def _extract_via_embed(shortcode: str) -> dict | None:
+async def _extract_via_embed(shortcode: str, cookies: dict = None) -> dict | None:
     """
     Faz scraping da página de embed do Instagram.
     Procura por __additionalDataLoaded, _sharedData, ou tags meta OG.
@@ -310,9 +322,13 @@ async def _extract_via_embed(shortcode: str) -> dict | None:
     log.info("🔌 Camada 3 (Embed Scraping): shortcode=%s", shortcode)
     embed_url = f'https://www.instagram.com/p/{shortcode}/embed/'
 
+    cookies = cookies or {}
     try:
+        embed_headers = {**BROWSER_HEADERS}
+        if cookies:
+            embed_headers['Cookie'] = _build_cookie_header(cookies)
         async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
-            resp = await client.get(embed_url, headers=BROWSER_HEADERS)
+            resp = await client.get(embed_url, headers=embed_headers)
             log.info("   Embed status: %d, body length: %d", resp.status_code, len(resp.text))
 
             if resp.status_code != 200:
@@ -531,6 +547,9 @@ async def download_instagram(
     log.info("📷 Instagram Extractor v2: %s", url)
     shortcode = _get_shortcode(url)
 
+    # Carrega cookies para autenticar as requisições
+    cookies = _load_cookies_from_file(cookie_path)
+
     # Stories: vai direto pro yt-dlp (único método que funciona)
     if _is_story(url):
         log.info("📖 URL de Story detectada, usando yt-dlp direto...")
@@ -545,21 +564,21 @@ async def download_instagram(
         return None
 
     # ── Camada 1: API Interna ──
-    result = await _extract_via_api(shortcode)
+    result = await _extract_via_api(shortcode, cookies)
     if result:
         log.info("✅ Instagram download via API Interna: %s (%d itens)", url, len(result['urls']))
         return result
     log.info("⏭️ API Interna falhou, tentando Camada 2...")
 
     # ── Camada 2: GraphQL ──
-    result = await _extract_via_graphql(shortcode)
+    result = await _extract_via_graphql(shortcode, cookies)
     if result:
         log.info("✅ Instagram download via GraphQL: %s (%d itens)", url, len(result['urls']))
         return result
     log.info("⏭️ GraphQL falhou, tentando Camada 3...")
 
     # ── Camada 3: Embed Scraping ──
-    result = await _extract_via_embed(shortcode)
+    result = await _extract_via_embed(shortcode, cookies)
     if result:
         log.info("✅ Instagram download via Embed: %s (%d itens)", url, len(result['urls']))
         return result
