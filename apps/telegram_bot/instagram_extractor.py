@@ -743,7 +743,15 @@ async def download_instagram(
         log.warning("❌ Todas as tentativas falharam para story: %s", url)
         return None
 
-    # Tentativa 2: RapidAPI Profissional (Requer chave no .env)
+    # Tentativa 3: yt-dlp com cookies (Bom para vídeos fechados/reels pesados)
+    if os.path.exists(cookie_path):
+        result = await download_with_cookies(url, cookie_path, out_dir)
+        if result:
+            log.info("✅ Instagram download via yt-dlp/cookies: %s (%d arquivos)", url, len(result.get('files', [])))
+            return result
+        log.info("⚠️ yt-dlp falhou ou postagem é foto, tentando próxima...")
+
+    # Tentativa 4: RapidAPI Profissional (Requer chave no .env)
     result = await download_via_rapidapi_pro(url)
     if result:
         log.info("✅ Instagram download via RapidAPI Pro: %s", url)
@@ -767,15 +775,7 @@ async def download_instagram(
         return result
     log.info("⚠️ APIs externas falharam, tentando próxima...")
 
-    # Tentativa 4: yt-dlp com cookies (Bom para vídeos fechados/reels pesados)
-    if os.path.exists(cookie_path):
-        result = await download_with_cookies(url, cookie_path, out_dir)
-        if result:
-            log.info("✅ Instagram download via cookies: %s (%d arquivos)", url, len(result.get('files', [])))
-            return result
-        log.info("⚠️ Cookies/yt-dlp falharam, tentando embed fallback...")
-
-    # Tentativa 5: Embed endpoint
+    # Tentativa 6: Embed endpoint
     result = await download_via_embed(url)
     if result:
         log.info("✅ Instagram download via embed: %s (%d itens)", url, len(result.get('files', result.get('urls', []))))
