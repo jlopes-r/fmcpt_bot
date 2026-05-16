@@ -849,7 +849,10 @@ async def processar_links(client, message):
                     async with session.get(api_url) as resp:
                         res = await resp.json()
 
-                cap_limpa = limpar_texto(res.get('text', ''))
+                texto_base = res.get('text', '')
+                if 'qrt' in res and res['qrt'] and 'text' in res['qrt']:
+                    texto_base += f"\n\n🔁 [Quote - {res['qrt'].get('user_name', 'Autor')}]:\n{res['qrt']['text']}"
+                cap_limpa = limpar_texto(texto_base)
                 legenda = montar_legenda(cap_limpa, res.get('user_name', 'Autor'), usuario, emoji="📸")
 
                 if 'media_extended' in res and len(res['media_extended']) > 0:
@@ -901,7 +904,8 @@ async def processar_links(client, message):
                                             raise Exception("Arquivo nao encontrado apos download.")
 
                                 arquivos_x.append(path)
-                                lista_telegram.append(InputMediaVideo(path, caption=legenda, supports_streaming=True))
+                                caption_video = legenda if not lista_telegram else ""
+                                lista_telegram.append(InputMediaVideo(path, caption=caption_video, supports_streaming=True))
                             except Exception as e:
                                 log.error(f"X yt-dlp erro: {e}")
                                 log.info(f"X: tentando download direto: {video_url}")
@@ -912,7 +916,8 @@ async def processar_links(client, message):
                                             if dl_resp.status == 200:
                                                 with open(video_path, 'wb') as vf: vf.write(await dl_resp.read())
                                                 arquivos_x.append(video_path)
-                                                lista_telegram.append(InputMediaVideo(video_path, caption=legenda, supports_streaming=True))
+                                                caption_video = legenda if not lista_telegram else ""
+                                                lista_telegram.append(InputMediaVideo(video_path, caption=caption_video, supports_streaming=True))
                                             else: raise Exception("Download direto falhou")
                                 except Exception as e2:
                                     log.error(f"X direct download erro: {e2}")
