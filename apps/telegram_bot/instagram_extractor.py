@@ -226,9 +226,87 @@ async def download_via_embed(url: str) -> dict | None:
         log.warning("Embed timeout para Instagram: %s", url)
         return None
     except Exception as e:
-        log.debug("Embed fallback falhou: %s", str(e)[:150])
+        log.warning("Falha ao criar diretório para iGram: %s", str(e))
         return None
+        
+async def download_via_web_scrapers(url: str) -> dict | None:
+    """Super Fallback: Finge ser um humano em sites de download gratuitos."""
+    shortcode = _get_shortcode(url)
+    if not shortcode:
+        return None
+        
+    log.info("Tentando Web Scrapers Ninja para shortcode: %s", shortcode)
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/125.0.0.0",
+        "Accept": "*/*",
+        "Origin": "https://saveig.app",
+        "Referer": "https://saveig.app/"
+    }
+    
+    # 1. Tentar SaveIG (muito bom para carrossel)
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(
+                "https://v3.saveig.app/api/ajaxSearch",
+                data={"q": url, "t": "media", "lang": "en"},
+                headers=headers
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                html = data.get("data", "")
+                
+                # O SaveIG retorna um HTML com os links de download
+                import re
+                
+                # Tenta pegar links diretos de MP4 ou JPG de alta qualidade
+                links = re.findall(r'href="([^"]+\.(?:mp4|jpg)[^"]*)"', html, re.IGNORECASE)
+                
+                # Filtra links duplicados e pega apenas os que vêm da CDN do Instagram
+                media_urls = []
+                for link in links:
+                    link = link.replace("&amp;", "&")
+                    if ("scontent" in link or "cdninstagram" in link) and link not in media_urls:
+                        media_urls.append(link)
+                        
+                if media_urls:
+                    caption = await _try_fetch_caption(url)
+                    return {
+                        'urls': media_urls,
+                        'type': 'carousel' if len(media_urls) > 1 else 'video' if '.mp4' in media_urls[0].lower() else 'photo',
+                        'title': caption,
+                        'uploader': 'Autor'
+                    }
+    except Exception as e:
+        log.debug("SaveIG Scraper falhou: %s", str(e)[:100])
 
+    # 2. Tentar SnapInsta (bom para vídeos)
+    try:
+        headers["Origin"] = "https://snapinsta.app"
+        headers["Referer"] = "https://snapinsta.app/"
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(
+                "https://snapinsta.app/action.php",
+                data={"url": url, "action": "post"},
+                headers=headers
+            )
+            if resp.status_code == 200:
+                html = resp.text
+                # SnapInsta pode retornar JSON ou HTML com script
+                links = re.findall(r'href="([^"]+)"\s+[^>]*?class="[^"]*?btn-download', html, re.IGNORECASE)
+                media_urls = [link.replace("&amp;", "&") for link in links if "snapinsta.app/download" in link or "scontent" in link]
+                
+                if media_urls:
+                    caption = await _try_fetch_caption(url)
+                    return {
+                        'urls': media_urls,
+                        'type': 'carousel' if len(media_urls) > 1 else 'video' if 'video' in html else 'photo',
+                        'title': caption,
+                        'uploader': 'Autor'
+                    }
+    except Exception as e:
+        log.debug("SnapInsta Scraper falhou: %s", str(e)[:100])
+
+    return None
 
 async def download_via_instaloader(url: str, out_dir: str) -> dict | None:
     """Fallback 2: Tenta usar o Instaloader para baixar fotos e álbuns."""
@@ -645,6 +723,13 @@ async def download_instagram(
             result['title'] = await _try_fetch_caption(url)
         return result
     log.info("⚠️ iGram falhou, tentando próxima...")
+    
+    # Tentativa 2: Web Scrapers Ninja (SaveIG, SnapInsta)
+    result = await download_via_web_scrapers(url)
+    if result:
+        log.info("✅ Instagram download via Web Scrapers Ninja: %s (%d itens)", url, len(result.get('urls', [])))
+        return result
+    log.info("⚠️ Web Scrapers Ninja falharam, tentando próxima...")
 
     # Stories: se é story, tenta yt-dlp com cookies antes dos outros métodos
     # (Instaloader e embed não funcionam bem com stories)
