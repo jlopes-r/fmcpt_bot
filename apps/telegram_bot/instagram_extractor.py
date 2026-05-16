@@ -105,6 +105,59 @@ def _build_cookie_header(cookies: dict) -> str:
     return '; '.join(f'{k}={v}' for k, v in cookies.items())
 
 
+def _auto_login_and_save_cookies(cookie_path: str) -> dict:
+    """
+    Faz login no Instagram via Instaloader usando IG_USERNAME/IG_PASSWORD do .env.
+    Gera cookies frescos a partir do IP da VM e salva no arquivo.
+    Retorna o dict de cookies ou {} se falhar.
+    """
+    username = os.getenv('IG_USERNAME', '').strip()
+    password = os.getenv('IG_PASSWORD', '').strip()
+
+    if not username or not password:
+        log.info("🔑 IG_USERNAME/IG_PASSWORD não configurados no .env, pulando auto-login")
+        return {}
+
+    log.info("🔐 Tentando auto-login no Instagram como '%s'...", username)
+
+    try:
+        import instaloader
+        L = instaloader.Instaloader(
+            download_pictures=False,
+            download_video_thumbnails=False,
+            download_videos=False,
+            download_geotags=False,
+            download_comments=False,
+            save_metadata=False,
+        )
+
+        L.login(username, password)
+        log.info("✅ Login no Instagram bem-sucedido!")
+
+        # Extrai cookies da sessão e salva no formato Netscape
+        session = L.context._session
+        os.makedirs(os.path.dirname(cookie_path), exist_ok=True)
+
+        cj = http.cookiejar.MozillaCookieJar(cookie_path)
+        for cookie in session.cookies:
+            cj.set_cookie(cookie)
+        cj.save(ignore_discard=True, ignore_expires=True)
+
+        log.info("💾 Cookies frescos salvos em: %s", cookie_path)
+
+        # Retorna como dict
+        cookies = {}
+        for cookie in cj:
+            cookies[cookie.name] = cookie.value
+        return cookies
+
+    except Exception as e:
+        log.warning("❌ Auto-login falhou: %s", str(e)[:200])
+        log.warning("   Verifique IG_USERNAME/IG_PASSWORD no .env. "
+                     "Se a conta tem 2FA, desative temporariamente ou use uma conta sem 2FA.")
+        return {}
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  Parsers — transformam dados brutos do IG em nosso formato padrão
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -563,6 +616,38 @@ async def download_instagram(
         log.warning("❌ Não foi possível extrair shortcode de: %s", url)
         return None
 
+    # ── Tentativa 1: com cookies existentes ──
+    result = await _try_all_layers(shortcode, cookies, url)
+    if result:
+        return result
+
+    # ── Tentativa 2: auto-login para gerar cookies frescos ──
+    if os.getenv('IG_USERNAME') and os.getenv('IG_PASSWORD'):
+        log.info("🔄 Cookies falharam. Tentando auto-login para gerar cookies frescos...")
+        loop = asyncio.get_running_loop()
+        fresh_cookies = await loop.run_in_executor(
+            None, _auto_login_and_save_cookies, cookie_path
+        )
+        if fresh_cookies:
+            result = await _try_all_layers(shortcode, fresh_cookies, url)
+            if result:
+                return result
+    else:
+        log.info("🔑 Auto-login não disponível (IG_USERNAME/IG_PASSWORD não configurados)")
+
+    # ── Camada Final: yt-dlp (força bruta) ──
+    result = await _extract_via_ytdlp(url, cookie_path, out_dir)
+    if result:
+        log.info("✅ Instagram download via yt-dlp: %s", url)
+        return result
+
+    log.warning("❌ Todas as tentativas falharam para: %s", url)
+    return None
+
+
+async def _try_all_layers(shortcode: str, cookies: dict, url: str) -> dict | None:
+    """Tenta as 3 camadas de extração (API, GraphQL, Embed) com os cookies fornecidos."""
+
     # ── Camada 1: API Interna ──
     result = await _extract_via_api(shortcode, cookies)
     if result:
@@ -582,13 +667,6 @@ async def download_instagram(
     if result:
         log.info("✅ Instagram download via Embed: %s (%d itens)", url, len(result['urls']))
         return result
-    log.info("⏭️ Embed falhou, tentando Camada 4...")
+    log.info("⏭️ Embed falhou...")
 
-    # ── Camada 4: yt-dlp ──
-    result = await _extract_via_ytdlp(url, cookie_path, out_dir)
-    if result:
-        log.info("✅ Instagram download via yt-dlp: %s", url)
-        return result
-
-    log.warning("❌ Todas as 4 camadas falharam para: %s", url)
     return None
