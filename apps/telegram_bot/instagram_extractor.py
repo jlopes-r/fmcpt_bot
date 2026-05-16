@@ -26,6 +26,7 @@ L = instaloader.Instaloader(
 IMG_REGEX = re.compile(r'class="EmbeddedMediaImage"[^>]*src="([^"]+)"')
 VIDEO_REGEX = re.compile(r'class="EmbeddedVideoPlayer"[^>]*src="([^"]+)"')
 SHORTCODE_REGEX = re.compile(r'/(?:p|reel|reels|ad|tv)/([A-Za-z0-9_-]+)')
+STORIES_REGEX = re.compile(r'/stories/([^/]+)/([0-9]+)')
 
 
 def _get_shortcode(url: str) -> str | None:
@@ -34,6 +35,33 @@ def _get_shortcode(url: str) -> str | None:
     if match:
         return match.group(1)
     return None
+
+
+def _is_story(url: str) -> bool:
+    """Verifica se a URL é de um story do Instagram."""
+    return bool(STORIES_REGEX.search(url))
+
+
+def _get_story_info(url: str) -> tuple[str, str] | None:
+    """Extrai username e media_id de uma URL de story. Retorna (username, media_id) ou None."""
+    match = STORIES_REGEX.search(url)
+    if match:
+        return match.group(1), match.group(2)
+    return None
+
+
+def _sanitize_caption(text: str) -> str:
+    """Limpa a caption removendo caracteres problemáticos para encoding."""
+    if not text:
+        return ''
+    try:
+        # Remove caracteres nulos e de controle exceto newlines
+        text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
+        # Garante que o texto é UTF-8 válido
+        text = text.encode('utf-8', errors='replace').decode('utf-8', errors='replace')
+        return text.strip()
+    except Exception:
+        return ''
 
 
 def _run_ytdlp(url: str, ydl_opts: dict) -> dict:
@@ -254,10 +282,19 @@ async def download_via_instaloader(url: str, out_dir: str) -> dict | None:
                 else:
                     media_urls.append({'type': 'photo', 'url': post.url})
                     
+            # Extrai caption com sanitização segura
+            caption = ''
+            try:
+                if post.caption:
+                    caption = _sanitize_caption(post.caption)
+            except Exception as e:
+                log.debug("Erro ao extrair caption do Instaloader: %s", str(e)[:100])
+                caption = ''
+                    
             return {
                 'urls': [m['url'] for m in media_urls],
                 'type': 'carousel' if len(media_urls) > 1 else media_urls[0]['type'],
-                'title': '', # Title was causing encoding errors
+                'title': caption,
                 'uploader': post.owner_username if post.owner_username else 'Autor'
             }
             
@@ -271,6 +308,67 @@ async def download_via_instaloader(url: str, out_dir: str) -> dict | None:
     except Exception as e:
         log.warning("Instaloader falhou: %s", str(e)[:150])
         return None
+
+async def download_via_rapidapi_pro(url: str) -> dict | None:
+    """Fallback PRO: Usa uma API paga/gratuita do RapidAPI (se configurada)."""
+    shortcode = _get_shortcode(url)
+    if not shortcode:
+        return None
+        
+    rapidapi_key = os.getenv('RAPIDAPI_KEY')
+    if not rapidapi_key:
+        return None
+
+    log.info("Tentando RapidAPI Profissional para shortcode: %s", shortcode)
+    try:
+        # Usando a API 'Instagram Scraper API' (instagram-scraper-api2.p.rapidapi.com)
+        # Ela tem um plano gratuito ótimo (500-1000 requests/mês)
+        api_host = "instagram-scraper-api2.p.rapidapi.com"
+        api_url = "https://instagram-scraper-api2.p.rapidapi.com/v1/post_info"
+        
+        headers = {
+            "x-rapidapi-key": rapidapi_key,
+            "x-rapidapi-host": api_host
+        }
+        params = {"code_or_id_or_url": shortcode}
+        
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(api_url, headers=headers, params=params)
+            if resp.status_code == 200:
+                data = resp.json()
+                if "data" in data:
+                    item = data["data"]
+                    caption = item.get("caption", {}).get("text", "")
+                    uploader = item.get("user", {}).get("username", "Autor")
+                    urls = []
+                    
+                    # Carrossel
+                    if "carousel_media" in item:
+                        for m in item["carousel_media"]:
+                            if m.get("video_versions"):
+                                urls.append(m["video_versions"][0]["url"])
+                            elif m.get("image_versions2"):
+                                urls.append(m["image_versions2"]["candidates"][0]["url"])
+                    # Vídeo único (Reel/IGTV)
+                    elif item.get("video_versions"):
+                        urls.append(item["video_versions"][0]["url"])
+                    # Foto única
+                    elif item.get("image_versions2"):
+                        urls.append(item["image_versions2"]["candidates"][0]["url"])
+                        
+                    if urls:
+                        return {
+                            'urls': urls,
+                            'type': 'carousel' if len(urls) > 1 else 'video' if item.get("video_versions") else 'photo',
+                            'title': caption,
+                            'uploader': uploader
+                        }
+            else:
+                log.warning("RapidAPI retornou erro: %d - %s", resp.status_code, resp.text)
+    except Exception as e:
+        log.warning("Falha na RapidAPI Profissional: %s", str(e)[:150])
+        
+    return None
 
 async def download_via_rapidapi(url: str) -> dict | None:
     """Fallback 3: Usa uma API pública ou proxy para baixar (Cobalt API v2 - POST /)."""
@@ -401,11 +499,10 @@ async def download_via_embed_v2(url: str) -> dict | None:
 
 
 async def download_via_igram(url: str) -> dict | None:
-    """Fallback 5: Puxa o vídeo via igram.world."""
+    """Fallback: Puxa mídia via igram.world. Suporta posts, reels e stories."""
     log.info("Tentando download via igram.world para: %s", url)
     try:
         async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-            # Passo 1: Obter o ID do post
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
                 'Content-Type': 'application/x-www-form-urlencoded',
@@ -415,29 +512,89 @@ async def download_via_igram(url: str) -> dict | None:
             
             payload = {'url': url, 'lang': 'en'}
             
-            resp = await client.post("https://igram.world/api/ig/story", data=payload, headers=headers)
+            # Tenta os dois endpoints: /api/ig/post para posts normais, /api/ig/story para stories/reels
+            is_story = _is_story(url)
+            is_reel = '/reel' in url or '/reels' in url
             
-            if resp.status_code == 200:
-                data = resp.json()
-                if data.get("status") == "ok" and data.get("result"):
-                    # Pega a primeira mídia encontrada (geralmente a melhor qualidade)
-                    media = data["result"][0]
-                    video_url = media.get("url")
-                    
-                    if video_url:
-                        return {
-                            'type': 'video' if media.get("type") == "video" else "photo",
-                            'urls': [video_url],
-                            'title': '',
-                            'uploader': 'Autor'
-                        }
+            # Determina a ordem dos endpoints a tentar
+            if is_story or is_reel:
+                endpoints = ["https://igram.world/api/ig/story", "https://igram.world/api/ig/post"]
             else:
-                log.warning(f"igram.world API falhou com status {resp.status_code}")
+                endpoints = ["https://igram.world/api/ig/post", "https://igram.world/api/ig/story"]
+            
+            for endpoint in endpoints:
+                try:
+                    log.debug("iGram tentando endpoint: %s", endpoint)
+                    resp = await client.post(endpoint, data=payload, headers=headers)
+                    
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        if data.get("status") == "ok" and data.get("result"):
+                            results = data["result"]
+                            
+                            # Coleta todas as mídias disponíveis
+                            all_urls = []
+                            media_type = 'photo'
+                            for media in results:
+                                m_url = media.get("url")
+                                if m_url:
+                                    all_urls.append(m_url)
+                                    if media.get("type") == "video":
+                                        media_type = 'video'
+                            
+                            if all_urls:
+                                # Tenta extrair caption do resultado se disponível
+                                caption = ''
+                                for media in results:
+                                    if media.get("caption"):
+                                        caption = _sanitize_caption(media["caption"])
+                                        break
+                                
+                                return {
+                                    'type': 'carousel' if len(all_urls) > 1 else media_type,
+                                    'urls': all_urls,
+                                    'title': caption,
+                                    'uploader': 'Autor'
+                                }
+                    elif resp.status_code >= 500:
+                        log.debug("iGram endpoint %s retornou %d, tentando próximo...", endpoint, resp.status_code)
+                        continue
+                except Exception as e:
+                    log.debug("iGram endpoint %s falhou: %s", endpoint, str(e)[:100])
+                    continue
+            
+            log.warning("igram.world: nenhum endpoint retornou resultado válido")
 
     except Exception as e:
         log.warning("igram.world falhou: %s", str(e)[:150])
         
     return None
+
+async def _try_fetch_caption(url: str) -> str:
+    """Tenta buscar apenas a caption de um post via embed (sem baixar mídia)."""
+    shortcode = _get_shortcode(url)
+    if not shortcode:
+        return ''
+    try:
+        embed_url = f"https://www.instagram.com/p/{shortcode}/embed/"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+        }
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(embed_url, headers=headers)
+            if resp.status_code == 200:
+                html = resp.text
+                caption_match = re.search(r'"caption"\s*:\s*"((?:[^"\\]|\\.)*)"', html)
+                if caption_match:
+                    raw = caption_match.group(1)
+                    try:
+                        return _sanitize_caption(raw.encode().decode('unicode_escape'))
+                    except Exception:
+                        return _sanitize_caption(raw)
+    except Exception as e:
+        log.debug("Falha ao buscar caption via embed: %s", str(e)[:100])
+    return ''
+
 
 async def download_instagram(
     url: str,
@@ -446,55 +603,85 @@ async def download_instagram(
 ) -> dict | None:
     """
     Fluxo completo de download do Instagram:
-    1. Tenta Instaloader primeiro (excelente para fotos/álbuns)
-    2. Tenta API Externa/Cobalt
-    3. Tenta yt-dlp com cookies
-    4. Fallback para embed endpoint
+    1. Tenta iGram (suporta posts, reels e stories)
+    2. Tenta Instaloader (excelente para fotos/álbuns)
+    3. Tenta API Externa/Cobalt
+    4. Tenta yt-dlp com cookies
+    5. Fallback para embed endpoint
     
-    Retorna dict com info da mdia ou None se tudo falhar.
+    Retorna dict com info da mídia ou None se tudo falhar.
     """
-    log.info("Y\" Tentando download Instagram: %s", url)
+    log.info("📷 Tentando download Instagram: %s", url)
+    is_story_url = _is_story(url)
 
-    # Tentativa 1: iGram
+    # Tentativa 1: iGram (suporta posts, reels e stories)
     result = await download_via_igram(url)
     if result:
-        log.info("o. Instagram download via iGram: %s (%d itens)", url, len(result.get('urls', [])))
+        log.info("✅ Instagram download via iGram: %s (%d itens)", url, len(result.get('urls', [])))
+        # Se iGram não retornou caption, tenta buscar via embed (apenas para posts, não stories)
+        if not result.get('title') and not is_story_url:
+            result['title'] = await _try_fetch_caption(url)
         return result
-    log.info("s? iGram falhou, tentando próxima...")
+    log.info("⚠️ iGram falhou, tentando próxima...")
 
-    # Tentativa 2: Instaloader (Melhor para fotos/carrossel, yt-dlp costuma falhar nelas)
+    # Stories: se é story, tenta yt-dlp com cookies antes dos outros métodos
+    # (Instaloader e embed não funcionam bem com stories)
+    if is_story_url:
+        log.info("📖 URL de story detectada, priorizando yt-dlp...")
+        if os.path.exists(cookie_path):
+            result = await download_with_cookies(url, cookie_path, out_dir)
+            if result:
+                log.info("✅ Story download via cookies/yt-dlp: %s", url)
+                return result
+        log.warning("❌ Todas as tentativas falharam para story: %s", url)
+        return None
+
+    # Tentativa 2: RapidAPI Profissional (Requer chave no .env)
+    result = await download_via_rapidapi_pro(url)
+    if result:
+        log.info("✅ Instagram download via RapidAPI Pro: %s", url)
+        return result
+    log.info("⏭️ RapidAPI Pro não configurada ou falhou, tentando próxima...")
+
+    # Tentativa 3: Instaloader (Necessita cookies recentes, falha em GCP IPs se conta flaggada)
     result = await download_via_instaloader(url, out_dir)
     if result:
-        log.info("o. Instagram download via Instaloader: %s (%d itens)", url, len(result.get('urls', [])))
+        log.info("✅ Instagram download via Instaloader: %s (%d itens)", url, len(result.get('urls', [])))
         return result
-    log.info("s? Instaloader falhou, tentando próxima...")
+    log.info("⚠️ Instaloader falhou, tentando próxima...")
 
-    # Tentativa 3: API Externa (Cobalt)
+    # Tentativa 4: API externa (Cobalt Network / Instâncias Públicas)
     result = await download_via_rapidapi(url)
     if result:
-        log.info("o. Instagram download via Cobalt API: %s (%d itens)", url, len(result.get('urls', [])))
+        log.info("✅ Instagram download via Cobalt API: %s (%d itens)", url, len(result.get('urls', [])))
+        # Cobalt não retorna caption, tenta buscar
+        if not result.get('title'):
+            result['title'] = await _try_fetch_caption(url)
         return result
-    log.info("s? APIs externas falharam, tentando próxima...")
+    log.info("⚠️ APIs externas falharam, tentando próxima...")
 
     # Tentativa 4: yt-dlp com cookies (Bom para vídeos fechados/reels pesados)
     if os.path.exists(cookie_path):
         result = await download_with_cookies(url, cookie_path, out_dir)
         if result:
-            log.info("o. Instagram download via cookies: %s (%d arquivos)", url, len(result.get('files', [])))
+            log.info("✅ Instagram download via cookies: %s (%d arquivos)", url, len(result.get('files', [])))
             return result
-        log.info("s? Cookies/yt-dlp falharam, tentando embed fallback...")
+        log.info("⚠️ Cookies/yt-dlp falharam, tentando embed fallback...")
 
     # Tentativa 5: Embed endpoint
     result = await download_via_embed(url)
     if result:
-        log.info("o. Instagram download via embed: %s (%d itens)", url, len(result.get('files', result.get('urls', []))))
+        log.info("✅ Instagram download via embed: %s (%d itens)", url, len(result.get('files', result.get('urls', []))))
         return result
         
     # Tentativa 6: Embed endpoint Direto/HTML Scraping
     result = await download_via_embed_v2(url)
     if result:
-        log.info("o. Instagram download via embed v2: %s (%d itens)", url, len(result.get('urls', [])))
+        log.info("✅ Instagram download via embed v2: %s (%d itens)", url, len(result.get('urls', [])))
+        # Embed V2 não retorna caption, tenta buscar
+        if not result.get('title'):
+            result['title'] = await _try_fetch_caption(url)
         return result
 
-    log.warning("?O Todas as tentativas falharam para: %s", url)
+    log.warning("❌ Todas as tentativas falharam para: %s", url)
     return None
