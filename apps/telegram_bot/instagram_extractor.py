@@ -321,48 +321,70 @@ async def download_via_rapidapi_pro(url: str) -> dict | None:
 
     log.info("Tentando RapidAPI Profissional para shortcode: %s", shortcode)
     try:
-        # Usando a API 'Instagram Scraper API' (instagram-scraper-api2.p.rapidapi.com)
-        # Ela tem um plano gratuito ótimo (500-1000 requests/mês)
-        api_host = "instagram-scraper-api2.p.rapidapi.com"
-        api_url = "https://instagram-scraper-api2.p.rapidapi.com/v1/post_info"
+        # Usando a API 'instagram-scraper2' do autor JoTucker no RapidAPI
+        api_host = "instagram-scraper2.p.rapidapi.com"
+        api_url = "https://instagram-scraper2.p.rapidapi.com/media_info_v2"
         
         headers = {
             "x-rapidapi-key": rapidapi_key,
-            "x-rapidapi-host": api_host
+            "x-rapidapi-host": api_host,
+            "Content-Type": "application/json"
         }
-        params = {"code_or_id_or_url": shortcode}
+        params = {"short_code": shortcode}
         
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.get(api_url, headers=headers, params=params)
             if resp.status_code == 200:
                 data = resp.json()
-                if "data" in data:
-                    item = data["data"]
-                    caption = item.get("caption", {}).get("text", "")
-                    uploader = item.get("user", {}).get("username", "Autor")
-                    urls = []
+                
+                # A API retorna um dicionário, geralmente dentro de uma chave principal ou direto na raiz
+                item = data.get("data", data)
+                if isinstance(item, list) and len(item) > 0:
+                    item = item[0]
                     
-                    # Carrossel
-                    if "carousel_media" in item:
-                        for m in item["carousel_media"]:
-                            if m.get("video_versions"):
-                                urls.append(m["video_versions"][0]["url"])
-                            elif m.get("image_versions2"):
-                                urls.append(m["image_versions2"]["candidates"][0]["url"])
-                    # Vídeo único (Reel/IGTV)
-                    elif item.get("video_versions"):
-                        urls.append(item["video_versions"][0]["url"])
-                    # Foto única
-                    elif item.get("image_versions2"):
-                        urls.append(item["image_versions2"]["candidates"][0]["url"])
-                        
-                    if urls:
-                        return {
-                            'urls': urls,
-                            'type': 'carousel' if len(urls) > 1 else 'video' if item.get("video_versions") else 'photo',
-                            'title': caption,
-                            'uploader': uploader
-                        }
+                caption = item.get("caption", {}).get("text", "") if isinstance(item.get("caption"), dict) else item.get("caption", "")
+                if not caption and "edge_media_to_caption" in item:
+                    edges = item.get("edge_media_to_caption", {}).get("edges", [])
+                    if edges: caption = edges[0].get("node", {}).get("text", "")
+                    
+                uploader = item.get("user", {}).get("username", "Autor")
+                if "owner" in item: uploader = item.get("owner", {}).get("username", uploader)
+                
+                urls = []
+                
+                # Formato 1: carousel_media
+                if "carousel_media" in item:
+                    for m in item["carousel_media"]:
+                        if m.get("video_versions"):
+                            urls.append(m["video_versions"][0]["url"])
+                        elif m.get("image_versions2"):
+                            urls.append(m["image_versions2"]["candidates"][0]["url"])
+                # Formato 2: edge_sidecar_to_children (GraphQL)
+                elif "edge_sidecar_to_children" in item:
+                    for edge in item["edge_sidecar_to_children"].get("edges", []):
+                        node = edge.get("node", {})
+                        if node.get("is_video") and node.get("video_url"):
+                            urls.append(node["video_url"])
+                        elif node.get("display_url"):
+                            urls.append(node["display_url"])
+                # Vídeo único
+                elif item.get("video_versions"):
+                    urls.append(item["video_versions"][0]["url"])
+                elif item.get("is_video") and item.get("video_url"):
+                    urls.append(item.get("video_url"))
+                # Foto única
+                elif item.get("image_versions2"):
+                    urls.append(item["image_versions2"]["candidates"][0]["url"])
+                elif item.get("display_url"):
+                    urls.append(item.get("display_url"))
+                    
+                if urls:
+                    return {
+                        'urls': urls,
+                        'type': 'carousel' if len(urls) > 1 else 'video' if (item.get("video_versions") or item.get("is_video")) else 'photo',
+                        'title': caption,
+                        'uploader': uploader
+                    }
             else:
                 log.warning("RapidAPI retornou erro: %d - %s", resp.status_code, resp.text)
     except Exception as e:
