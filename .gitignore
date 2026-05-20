@@ -9,6 +9,7 @@ venv/
 ENV/
 
 # Dados persistentes (Ignora o conteúdo, mantém a pasta se tiver um .gitkeep)
+downloads/
 data/downloads/*
 !data/downloads/.gitkeep
 data/logs/*

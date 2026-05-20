@@ -154,18 +154,20 @@ async def executar_comando_personalizado(client, message, nome, info):
         tipo = info.get('tipo', 'texto')
         conteudo = info.get('conteudo', '')
         
+        reply_to = message.reply_to_message.id if message.reply_to_message else message.id
+        
         if tipo == 'texto':
-            await message.reply_text(conteudo)
+            await client.send_message(message.chat.id, conteudo, reply_to_message_id=reply_to)
         elif tipo == 'foto' and 'media_id' in info:
-            await client.send_photo(message.chat.id, info['media_id'], caption=conteudo)
+            await client.send_photo(message.chat.id, info['media_id'], caption=conteudo, reply_to_message_id=reply_to)
         elif tipo == 'video' and 'media_id' in info:
-            await client.send_video(message.chat.id, info['media_id'], caption=conteudo)
+            await client.send_video(message.chat.id, info['media_id'], caption=conteudo, reply_to_message_id=reply_to)
         elif tipo == 'audio' and 'media_id' in info:
-            await client.send_audio(message.chat.id, info['media_id'], caption=conteudo)
+            await client.send_audio(message.chat.id, info['media_id'], caption=conteudo, reply_to_message_id=reply_to)
         elif tipo == 'voice' and 'media_id' in info:
-            await client.send_voice(message.chat.id, info['media_id'], caption=conteudo)
+            await client.send_voice(message.chat.id, info['media_id'], caption=conteudo, reply_to_message_id=reply_to)
         elif tipo == 'gif' and 'media_id' in info:
-            await client.send_animation(message.chat.id, info['media_id'], caption=conteudo)
+            await client.send_animation(message.chat.id, info['media_id'], caption=conteudo, reply_to_message_id=reply_to)
         else:
             await message.reply_text(f"❌ Erro: tipo de comando não suportado")
     except Exception as e:
@@ -221,7 +223,8 @@ async def cmd_instance(client, message):
         
     gif_escolhido = random.choice(gifs_catolicos)
     try:
-        await client.send_animation(message.chat.id, gif_escolhido, reply_to_message_id=message.id)
+        reply_to = message.reply_to_message.id if message.reply_to_message else message.id
+        await client.send_animation(message.chat.id, gif_escolhido, reply_to_message_id=reply_to)
     except Exception as e:
         log.error(f"Erro ao enviar gif /instance: {e}")
 
@@ -238,7 +241,8 @@ async def cmd_duvida(client, message):
         
     gif_escolhido = random.choice(gifs_duvida)
     try:
-        await client.send_animation(message.chat.id, gif_escolhido, reply_to_message_id=message.id)
+        reply_to = message.reply_to_message.id if message.reply_to_message else message.id
+        await client.send_animation(message.chat.id, gif_escolhido, reply_to_message_id=reply_to)
     except Exception as e:
         log.error(f"Erro ao enviar gif /duvida: {e}")
 

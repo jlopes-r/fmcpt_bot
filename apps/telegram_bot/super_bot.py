@@ -67,6 +67,112 @@ DOMINIOS_PERMITIDOS = [
     "pinterest.com", "pin.it"
 ]
 
+# -----------------------------------------
+# MENSAGENS DE ERRO (NaaS Style - Grupo dos Cria)
+# -----------------------------------------
+ERROS_RATE_LIMIT = [
+    "⏳ Calma, arrombado! Tá mandando link mais rápido que tua mãe desce do caminhoneiro. 10/min.",
+    "🐌 Devagar, filho da puta! Tua mãe já faz tudo rápido demais no motel, tu puxou a ela? 10/min.",
+    "🚦 PARA DE SPAMMAR! Tua mãe aceita qualquer um, mas eu não. 10 links por minuto, imbecil.",
+    "☕ Tu é afobado igual tua mãe quando vê caminhão estacionando. Limite: 10/min, retardado.",
+    "🛑 Mais desesperado que tua mãe no grupo de swing. 10 por minuto, corno demente.",
+    "📵 Ô jumento, vai com calma. Nem tua mãe atende tanta gente assim por minuto. 10/min.",
+    "🦧 Ô anta, tu acha que eu sou o Google? 10 links por minuto, burro do caralho.",
+    "🧠 Usa o cérebro, retardado. Se é que tua mãe não deixou cair quando tu nasceu. 10/min.",
+]
+
+ERROS_VIDEO_LONGO = [
+    "🎬 Caralho, isso é mais longo que a fila de amante da tua mãe gorda. Limite: {min}min.",
+    "⏰ Puta merda, dura mais que tua mãe safada na esquina num sábado à noite. Máximo {min}min.",
+    "📺 Nem o vídeo da tua mãe no xvideos dura tanto, burro. Limite: {min}min.",
+    "🍿 Isso aí é mais longo que a lista de contato da tua mãe no Tinder. Máximo {min}min, demente.",
+    "😴 Esse vídeo dura mais que todos os casamentos da tua mãe juntos. Limite: {min}min, imbecil.",
+    "📼 Tu é retardado? Isso aí é uma série inteira, não um vídeo. Máximo {min}min, jumento.",
+]
+
+ERROS_ARQUIVO_GRANDE = [
+    "📦 Mais pesado que tua mãe de calcinha depois da ceia de Natal. 50MB é o limite, anta.",
+    "🏋️ Porra, isso pesa mais que tua mãe subindo escada. Máximo 50MB, desgraçado.",
+    "💾 Mais pesado que tua mãe sentando na cara do teu padrasto. Limite: 50MB, demente.",
+    "🐘 Nem tua mãe é tão pesada. Mentira, é sim. Mas o limite é 50MB, retardado.",
+    "📱 Arquivo mais gordo que tua mãe de sunga. 50MB é o limite, burro do caralho.",
+    "⚖️ Isso aí pesa mais que a consciência da tua mãe... ah pera, ela não tem. 50MB, imbecil.",
+]
+
+ERROS_EXTRACAO = [
+    "❌ Deu merda. Esse post tá mais fechado que as pernas da tua mãe deveriam ter ficado, anta.",
+    "🔒 Não rolou, chifrudo demente. Post mais escondido que a amante do teu pai.",
+    "🕵️ Post escondido igual os 47 amantes da tua mãe gorda e safada.",
+    "🚪 Bati na porta e ninguém atendeu. Tua mãe também não atende quando tá ocupada com o vizinho.",
+    "💨 Sumiu igual a calcinha da tua mãe quando o carteiro chega. Post privado ou deletado.",
+    "🤷 Deu zica. Esse post não existe, igual a fidelidade da tua mãe, seu retardado.",
+    "🧠 Post mais sumido que neurônio na tua cabeça, jumento. Privado ou deletado.",
+]
+
+ERROS_INESPERADO = [
+    "💥 Deu merda! Pior que o dia que a camisinha do teu pai furou e tu nasceu, imbecil.",
+    "🔥 Explodiu tudo! Igual a saia da tua mãe gorda quando ela senta. Tenta mais tarde, demente.",
+    "🤖 Erro inesperado! Tipo tua mãe quando descobriu que tava grávida de ti, retardado.",
+    "⚡ Curto circuito! Mais confuso que a tua mãe tentando lembrar quem é teu pai de verdade.",
+    "🎰 Deu errado. A única coisa que deu mais errado foi o parto da tua mãe, burro.",
+    "🫠 Derreti. Mais derretido que tua mãe safada quando vê o personal trainer, jumento.",
+    "💀 Morri processando isso. Tipo a dignidade da tua família, anta demente.",
+]
+
+ERROS_INSTAGRAM = [
+    "📸 Instagram me rejeitou. Igual tua mãe rejeita dieta e casamento fiel, imbecil.",
+    "🤳 Instagram me deu um fora. Mas relaxa, eu não cobro por hora igual tua mãe, retardado.",
+    "📱 Instagram tá mais difícil que achar a calcinha da tua mãe (ninguém sabe onde ela larga).",
+    "🙅 Instagram disse: 'link seu eu não mando'. Tua mãe safada diz o contrário, manda pra todo mundo.",
+    "🔐 Esse post tá mais protegido que... nada, ia falar da tua mãe mas ela não protege nada, burro.",
+    "😤 Instagram me bloqueou. A única coisa que tua mãe gorda não bloqueia é a entrada do motel.",
+    "📵 Instagram tá de cu doce. Diferente da tua mãe que é de cu fácil, demente.",
+]
+
+ERROS_X = [
+    "❌ O X não colaborou. Mais inútil que cinta de castidade na tua mãe safada, anta.",
+    "🐦 Esse passarinho voou igual a roupa da tua mãe quando o marido viaja, retardado.",
+    "💀 RIP esse link. Morreu mais rápido que o casamento dos teus pais, imbecil.",
+    "🤡 O X tá mais bugado que a moral da tua mãe, palhaço demente.",
+    "🔇 O X me deixou no vácuo. Coisa que tua mãe nunca faz com ninguém, jumento.",
+    "🐦 X (ex-Twitter, ex-funcional, ex igual o teu) não quis colaborar, burro do caralho.",
+]
+
+ERROS_LINK_PROCESSANDO = [
+    "⏳ Calma, caralho! Tô ocupado igual tua mãe gorda no rodízio, retardado.",
+    "🔄 Já tô nessa porra! Não sou tua mãe pra dar conta de tudo e todos ao mesmo tempo, anta.",
+    "⌛ Folgado do caralho! Já tô processando. Impaciente igual tua mãe na fila do motel, demente.",
+    "🦧 Espera, jumento! Eu sou um bot, não o vibrador da tua mãe que funciona na hora.",
+]
+
+ERROS_COOLDOWN = [
+    "⏳ Esse link deu merda há pouco. Espera {tempo}. Vai assistir o onlyfans da tua mãe enquanto isso, anta.",
+    "🧊 Cooldown de {tempo}. Vai fazer algo útil, tipo perguntar pra tua mãe quem é teu pai, retardado.",
+    "⏰ Link em cooldown. Volta em {tempo}. Enquanto isso pede pra tua mãe te ensinar paciência, burro.",
+    "❄️ Em cooldown ({tempo}). Aproveita e vai contar quantos padrastos tu já teve, demente.",
+]
+
+ERROS_RETRY_SEM_MSG = [
+    "⚠️ Esqueci o link. Igual tua mãe esqueceu de fechar as pernas. Manda de novo, imbecil.",
+    "🤔 Não lembro desse link. Minha memória é curta, mas não tanto quanto o pau do teu pai, retardado.",
+    "🧠 Memória RAM zerou. Manda de novo, e reza pra tua mãe não mandar nudes no grupo por engano, anta.",
+    "💾 Perdi o link, burro. Envia de novo antes que eu perca a paciência igual tua mãe perde a roupa.",
+]
+
+ERROS_RETRY_SEM_RESPOSTA = [
+    "⚠️ Responde uma msg de erro minha com /retry, jumento. Ou tua mãe te deixou cair de cabeça?",
+    "💡 Usa /retry respondendo a mensagem de erro. Preciso desenhar, retardado? Tua mãe não te alfabetizou?",
+    "🎯 É /retry NA mensagem de erro, burro demente. A inteligência passou longe da tua família.",
+    "📌 Responde a msg de erro, anta. Se tua mãe te ensinou a ler, usa essa habilidade agora.",
+]
+
+def erro_aleatorio(lista, **kwargs):
+    """Escolhe uma mensagem de erro aleatória da lista, formatando com kwargs."""
+    msg = random.choice(lista)
+    if kwargs:
+        msg = msg.format(**kwargs)
+    return msg
+
 PACKS = {"repetido": "POSTREPETIDO", "meus": "Meus325", "monkes": "Monkes"}
 
 semaforo = asyncio.Semaphore(MAX_DOWNLOADS)
@@ -374,18 +480,18 @@ async def extrair_e_enviar_midia(client, message, url, usuario, msg_espera):
                 erro_str = str(e)
                 # Erros de limite não fazem sentido tentar de novo
                 if "Video tem" in erro_str:
-                    erro_msg = await msg_espera.edit_text(f"🚫 Vídeo Extenso! O limite é de {LIMITE_DURACAO // 60} minutos.")
+                    erro_msg = await msg_espera.edit_text(erro_aleatorio(ERROS_VIDEO_LONGO, min=LIMITE_DURACAO // 60))
                     _retry_cache[msg_espera.id] = (url, usuario, message.chat.id, message.id)
                     return False
                 elif "File is larger" in erro_str:
-                    await msg_espera.edit_text("📦 Arquivo muito grande! O limite é de 50MB.")
+                    await msg_espera.edit_text(erro_aleatorio(ERROS_ARQUIVO_GRANDE))
                     _retry_cache[msg_espera.id] = (url, usuario, message.chat.id, message.id)
                     return False
                 # Outros erros: tenta de novo se tiver tentativas restantes
                 if tentativa >= MAX_RETRIES:
                     log.error(f"Erro yt-dlp (após {MAX_RETRIES} tentativas): {e}")
                     try:
-                        await msg_espera.edit_text("❌ Falha na extração. Post privado ou indisponível.")
+                        await msg_espera.edit_text(erro_aleatorio(ERROS_EXTRACAO))
                         _retry_cache[msg_espera.id] = (url, usuario, message.chat.id, message.id)
                     except Exception:
                         pass
@@ -394,7 +500,7 @@ async def extrair_e_enviar_midia(client, message, url, usuario, msg_espera):
                 if tentativa >= MAX_RETRIES:
                     log.error(f"Erro Motor (após {MAX_RETRIES} tentativas): {e}")
                     try:
-                        await msg_espera.edit_text("💥 Erro inesperado ao processar mídia.")
+                        await msg_espera.edit_text(erro_aleatorio(ERROS_INESPERADO))
                         _retry_cache[msg_espera.id] = (url, usuario, message.chat.id, message.id)
                     except Exception:
                         pass
@@ -424,7 +530,7 @@ async def processar_instagram(client, message, url, usuario, msg_espera, link_du
 
             if not result:
                 if tentativa >= MAX_RETRIES:
-                    await msg_espera.edit_text("📸 Não foi possível baixar do Instagram. O post pode ser privado ou estar indisponível.")
+                    await msg_espera.edit_text(erro_aleatorio(ERROS_INSTAGRAM))
                     return False
                 continue
 
@@ -508,7 +614,7 @@ async def processar_instagram(client, message, url, usuario, msg_espera, link_du
                 if "login" in str(e).lower() or "cookie" in str(e).lower():
                     await avisar_admin_cookies(client, "expirados ou inválidos")
                 try:
-                    await msg_espera.edit_text("⚠️ Erro ao processar Instagram. Tente novamente mais tarde.")
+                    await msg_espera.edit_text(erro_aleatorio(ERROS_INSTAGRAM))
                     _retry_cache[msg_espera.id] = (url, usuario, message.chat.id, message.id)
                 except Exception:
                     pass
@@ -668,12 +774,12 @@ async def cmd_retry(client, message):
     if not chat_autorizado(message.chat.id):
         return
     if not message.reply_to_message:
-        await message.reply_text("⚠️ Responda a uma mensagem de erro do bot com /retry.")
+        await message.reply_text(erro_aleatorio(ERROS_RETRY_SEM_RESPOSTA))
         return
     
     erro_msg_id = message.reply_to_message.id
     if erro_msg_id not in _retry_cache:
-        await message.reply_text("⚠️ Não encontrei o link dessa mensagem. Envie o link novamente.")
+        await message.reply_text(erro_aleatorio(ERROS_RETRY_SEM_MSG))
         return
     
     url, usuario_orig, chat_id, original_msg_id = _retry_cache.pop(erro_msg_id)
@@ -815,7 +921,7 @@ async def processar_links(client, message):
 
     if url_raw:
         if user_id and not verificar_rate_limit(user_id):
-            aviso = await message.reply_text("⏳ Rate limit! Máximo 10 links por minuto.")
+            aviso = await message.reply_text(erro_aleatorio(ERROS_RATE_LIMIT))
             await asyncio.sleep(5)
             try:
                 await aviso.delete()
@@ -830,7 +936,7 @@ async def processar_links(client, message):
         # Race condition lock
         async with _processing_lock:
             if url_norm in _processing_urls:
-                await message.reply_text("⏳ Esse link já está sendo processado. Aguarde um instante...")
+                await message.reply_text(erro_aleatorio(ERROS_LINK_PROCESSANDO))
                 return
             _processing_urls.add(url_norm)
 
@@ -871,7 +977,7 @@ async def processar_links(client, message):
                             video_url = m['url']
 
                             if duracao_s > LIMITE_DURACAO:
-                                await msg_espera.edit_text(f"🚫 Vídeo muito longo! ({int(duracao_s // 60)}min). Limite: {LIMITE_DURACAO // 60}min.")
+                                await msg_espera.edit_text(erro_aleatorio(ERROS_VIDEO_LONGO, min=LIMITE_DURACAO // 60))
                                 return
 
                             log.info(f"X: baixando video ({int(duracao_s)}s) via yt-dlp...")
@@ -977,7 +1083,7 @@ async def processar_links(client, message):
                     await enviar_aviso_duplicado(client, message, {}, info_db, usuario)
         except Exception as e:
             log.error(f"Erro X: {e}")
-            await msg_espera.edit_text("❌ Falha ao processar post do X.")
+            await msg_espera.edit_text(erro_aleatorio(ERROS_X))
             _retry_cache[msg_espera.id] = (url_raw, usuario, message.chat.id, message.id)
         finally:
             for p in arquivos_x:
@@ -992,7 +1098,8 @@ async def processar_links(client, message):
         agora_ts = time.time()
         if url_norm in _failed_url_cache and agora_ts - _failed_url_cache[url_norm] < 300:
             tr = int(300 - (agora_ts - _failed_url_cache[url_norm]))
-            await message.reply_text(f"⏳ Esse link falhou há pouco tempo. Tente em {tr // 60}min {tr % 60}s.")
+            tempo_str = f"{tr // 60}min {tr % 60}s"
+            await message.reply_text(erro_aleatorio(ERROS_COOLDOWN, tempo=tempo_str))
             async with _processing_lock:
                 _processing_urls.discard(url_norm)
             return
