@@ -68,103 +68,19 @@ DOMINIOS_PERMITIDOS = [
 ]
 
 # -----------------------------------------
-# MENSAGENS DE ERRO (NaaS Style - Grupo dos Cria)
-# -----------------------------------------
-ERROS_RATE_LIMIT = [
-    "⏳ Calma, arrombado! Tá mandando link mais rápido que tua mãe desce do caminhoneiro. 10/min.",
-    "🐌 Devagar, filho da puta! Tua mãe já faz tudo rápido demais no motel, tu puxou a ela? 10/min.",
-    "🚦 PARA DE SPAMMAR! Tua mãe aceita qualquer um, mas eu não. 10 links por minuto, imbecil.",
-    "☕ Tu é afobado igual tua mãe quando vê caminhão estacionando. Limite: 10/min, retardado.",
-    "🛑 Mais desesperado que tua mãe no grupo de swing. 10 por minuto, corno demente.",
-    "📵 Ô jumento, vai com calma. Nem tua mãe atende tanta gente assim por minuto. 10/min.",
-    "🦧 Ô anta, tu acha que eu sou o Google? 10 links por minuto, burro do caralho.",
-    "🧠 Usa o cérebro, retardado. Se é que tua mãe não deixou cair quando tu nasceu. 10/min.",
-]
-
-ERROS_VIDEO_LONGO = [
-    "🎬 Caralho, isso é mais longo que a fila de amante da tua mãe gorda. Limite: {min}min.",
-    "⏰ Puta merda, dura mais que tua mãe safada na esquina num sábado à noite. Máximo {min}min.",
-    "📺 Nem o vídeo da tua mãe no xvideos dura tanto, burro. Limite: {min}min.",
-    "🍿 Isso aí é mais longo que a lista de contato da tua mãe no Tinder. Máximo {min}min, demente.",
-    "😴 Esse vídeo dura mais que todos os casamentos da tua mãe juntos. Limite: {min}min, imbecil.",
-    "📼 Tu é retardado? Isso aí é uma série inteira, não um vídeo. Máximo {min}min, jumento.",
-]
-
-ERROS_ARQUIVO_GRANDE = [
-    "📦 Mais pesado que tua mãe de calcinha depois da ceia de Natal. 50MB é o limite, anta.",
-    "🏋️ Porra, isso pesa mais que tua mãe subindo escada. Máximo 50MB, desgraçado.",
-    "💾 Mais pesado que tua mãe sentando na cara do teu padrasto. Limite: 50MB, demente.",
-    "🐘 Nem tua mãe é tão pesada. Mentira, é sim. Mas o limite é 50MB, retardado.",
-    "📱 Arquivo mais gordo que tua mãe de sunga. 50MB é o limite, burro do caralho.",
-    "⚖️ Isso aí pesa mais que a consciência da tua mãe... ah pera, ela não tem. 50MB, imbecil.",
-]
-
-ERROS_EXTRACAO = [
-    "❌ Deu merda. Esse post tá mais fechado que as pernas da tua mãe deveriam ter ficado, anta.",
-    "🔒 Não rolou, chifrudo demente. Post mais escondido que a amante do teu pai.",
-    "🕵️ Post escondido igual os 47 amantes da tua mãe gorda e safada.",
-    "🚪 Bati na porta e ninguém atendeu. Tua mãe também não atende quando tá ocupada com o vizinho.",
-    "💨 Sumiu igual a calcinha da tua mãe quando o carteiro chega. Post privado ou deletado.",
-    "🤷 Deu zica. Esse post não existe, igual a fidelidade da tua mãe, seu retardado.",
-    "🧠 Post mais sumido que neurônio na tua cabeça, jumento. Privado ou deletado.",
-]
-
-ERROS_INESPERADO = [
-    "💥 Deu merda! Pior que o dia que a camisinha do teu pai furou e tu nasceu, imbecil.",
-    "🔥 Explodiu tudo! Igual a saia da tua mãe gorda quando ela senta. Tenta mais tarde, demente.",
-    "🤖 Erro inesperado! Tipo tua mãe quando descobriu que tava grávida de ti, retardado.",
-    "⚡ Curto circuito! Mais confuso que a tua mãe tentando lembrar quem é teu pai de verdade.",
-    "🎰 Deu errado. A única coisa que deu mais errado foi o parto da tua mãe, burro.",
-    "🫠 Derreti. Mais derretido que tua mãe safada quando vê o personal trainer, jumento.",
-    "💀 Morri processando isso. Tipo a dignidade da tua família, anta demente.",
-]
-
-ERROS_INSTAGRAM = [
-    "📸 Instagram me rejeitou. Igual tua mãe rejeita dieta e casamento fiel, imbecil.",
-    "🤳 Instagram me deu um fora. Mas relaxa, eu não cobro por hora igual tua mãe, retardado.",
-    "📱 Instagram tá mais difícil que achar a calcinha da tua mãe (ninguém sabe onde ela larga).",
-    "🙅 Instagram disse: 'link seu eu não mando'. Tua mãe safada diz o contrário, manda pra todo mundo.",
-    "🔐 Esse post tá mais protegido que... nada, ia falar da tua mãe mas ela não protege nada, burro.",
-    "😤 Instagram me bloqueou. A única coisa que tua mãe gorda não bloqueia é a entrada do motel.",
-    "📵 Instagram tá de cu doce. Diferente da tua mãe que é de cu fácil, demente.",
-]
-
-ERROS_X = [
-    "❌ O X não colaborou. Mais inútil que cinta de castidade na tua mãe safada, anta.",
-    "🐦 Esse passarinho voou igual a roupa da tua mãe quando o marido viaja, retardado.",
-    "💀 RIP esse link. Morreu mais rápido que o casamento dos teus pais, imbecil.",
-    "🤡 O X tá mais bugado que a moral da tua mãe, palhaço demente.",
-    "🔇 O X me deixou no vácuo. Coisa que tua mãe nunca faz com ninguém, jumento.",
-    "🐦 X (ex-Twitter, ex-funcional, ex igual o teu) não quis colaborar, burro do caralho.",
-]
-
-ERROS_LINK_PROCESSANDO = [
-    "⏳ Calma, caralho! Tô ocupado igual tua mãe gorda no rodízio, retardado.",
-    "🔄 Já tô nessa porra! Não sou tua mãe pra dar conta de tudo e todos ao mesmo tempo, anta.",
-    "⌛ Folgado do caralho! Já tô processando. Impaciente igual tua mãe na fila do motel, demente.",
-    "🦧 Espera, jumento! Eu sou um bot, não o vibrador da tua mãe que funciona na hora.",
-]
-
-ERROS_COOLDOWN = [
-    "⏳ Esse link deu merda há pouco. Espera {tempo}. Vai assistir o onlyfans da tua mãe enquanto isso, anta.",
-    "🧊 Cooldown de {tempo}. Vai fazer algo útil, tipo perguntar pra tua mãe quem é teu pai, retardado.",
-    "⏰ Link em cooldown. Volta em {tempo}. Enquanto isso pede pra tua mãe te ensinar paciência, burro.",
-    "❄️ Em cooldown ({tempo}). Aproveita e vai contar quantos padrastos tu já teve, demente.",
-]
-
-ERROS_RETRY_SEM_MSG = [
-    "⚠️ Esqueci o link. Igual tua mãe esqueceu de fechar as pernas. Manda de novo, imbecil.",
-    "🤔 Não lembro desse link. Minha memória é curta, mas não tanto quanto o pau do teu pai, retardado.",
-    "🧠 Memória RAM zerou. Manda de novo, e reza pra tua mãe não mandar nudes no grupo por engano, anta.",
-    "💾 Perdi o link, burro. Envia de novo antes que eu perca a paciência igual tua mãe perde a roupa.",
-]
-
-ERROS_RETRY_SEM_RESPOSTA = [
-    "⚠️ Responde uma msg de erro minha com /retry, jumento. Ou tua mãe te deixou cair de cabeça?",
-    "💡 Usa /retry respondendo a mensagem de erro. Preciso desenhar, retardado? Tua mãe não te alfabetizou?",
-    "🎯 É /retry NA mensagem de erro, burro demente. A inteligência passou longe da tua família.",
-    "📌 Responde a msg de erro, anta. Se tua mãe te ensinou a ler, usa essa habilidade agora.",
-]
+from apps.telegram_bot.mensagens_erro import (
+    ERROS_RATE_LIMIT,
+    ERROS_VIDEO_LONGO,
+    ERROS_ARQUIVO_GRANDE,
+    ERROS_EXTRACAO,
+    ERROS_INESPERADO,
+    ERROS_INSTAGRAM,
+    ERROS_X,
+    ERROS_LINK_PROCESSANDO,
+    ERROS_COOLDOWN,
+    ERROS_RETRY_SEM_MSG,
+    ERROS_RETRY_SEM_RESPOSTA
+)
 
 def erro_aleatorio(lista, **kwargs):
     """Escolhe uma mensagem de erro aleatória da lista, formatando com kwargs."""
