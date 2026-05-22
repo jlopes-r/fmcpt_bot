@@ -62,6 +62,15 @@ def _is_story(url: str) -> bool:
     return bool(STORIES_REGEX.search(url))
 
 
+def _get_story_info(url: str) -> tuple[str, str] | None:
+    """Extrai username e media_id de uma URL de story.
+    O ID numérico no URL do story JÁ é o media_id."""
+    match = STORIES_REGEX.search(url)
+    if match:
+        return match.group(1), match.group(2)
+    return None
+
+
 def _sanitize_caption(text: str) -> str:
     """Limpa a caption removendo caracteres problemáticos."""
     if not text:
@@ -568,7 +577,7 @@ async def _extract_via_ytdlp(url: str, cookie_path: str, out_dir: str) -> dict |
         log.info("   ⏰ yt-dlp timeout")
         return None
     except Exception as e:
-        log.info("   ❌ yt-dlp falhou: %s", str(e)[:150])
+        log.warning("   ❌ yt-dlp falhou: %s", str(e)[:300])
         return None
 
 
@@ -603,12 +612,50 @@ async def download_instagram(
     # Carrega cookies para autenticar as requisições
     cookies = _load_cookies_from_file(cookie_path)
 
-    # Stories: vai direto pro yt-dlp (único método que funciona)
+    # Stories: tenta API primeiro (story_id = media_id), depois yt-dlp
     if _is_story(url):
-        log.info("📖 URL de Story detectada, usando yt-dlp direto...")
-        result = await _extract_via_ytdlp(url, cookie_path, out_dir)
-        if result:
-            return result
+        story_info = _get_story_info(url)
+        if story_info:
+            username, story_media_id = story_info
+            log.info("📖 Story detectado: @%s, media_id=%s", username, story_media_id)
+
+            # Camada 1: API Interna (funciona para stories com cookies válidos)
+            if cookies:
+                try:
+                    async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+                        csrf = cookies.get('csrftoken', '')
+                        api_url = f'https://i.instagram.com/api/v1/media/{story_media_id}/info/'
+                        headers = {
+                            **BROWSER_HEADERS,
+                            **IG_APP_HEADERS,
+                        }
+                        if csrf:
+                            headers['X-CSRFToken'] = csrf
+                        headers['Cookie'] = _build_cookie_header(cookies)
+
+                        resp = await client.get(api_url, headers=headers)
+                        log.info("   Story API status: %d", resp.status_code)
+
+                        if resp.status_code == 200:
+                            data = resp.json()
+                            items = data.get('items', [])
+                            if items:
+                                result = _parse_api_item(items[0])
+                                if result:
+                                    log.info("   ✅ Story via API: %d URLs", len(result['urls']))
+                                    return result
+                            log.info("   API retornou 200 mas sem itens válidos para story")
+                        else:
+                            log.info("   Story API retornou %d", resp.status_code)
+                except Exception as e:
+                    log.info("   ❌ Story API falhou: %s", str(e)[:200])
+
+            # Camada 2: yt-dlp (fallback)
+            log.info("   Tentando yt-dlp para story...")
+            result = await _extract_via_ytdlp(url, cookie_path, out_dir)
+            if result:
+                return result
+
         log.warning("❌ Todas as tentativas falharam para Story: %s", url)
         return None
 
