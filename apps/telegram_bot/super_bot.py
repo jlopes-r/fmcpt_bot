@@ -173,6 +173,40 @@ async def metralhadora_stickers(client, chat_id):
 # -----------------------------------------
 # UTILITÁRIOS
 # -----------------------------------------
+def _detectar_extensao(url: str, content_type: str = '') -> str:
+    """Detecta extensão de arquivo a partir do Content-Type e/ou URL da CDN do Instagram.
+    
+    Instagram CDN URLs têm dots no path (ex: t51.2885-15) que confundem split('.'),
+    então priorizamos o Content-Type header e validamos contra extensões conhecidas.
+    """
+    # 1. Content-Type header (mais confiável)
+    if content_type:
+        ct = content_type.lower().split(';')[0].strip()
+        ct_map = {
+            'image/jpeg': 'jpg', 'image/jpg': 'jpg', 'image/png': 'png',
+            'image/webp': 'webp', 'image/gif': 'gif', 'image/heic': 'heic',
+            'image/heif': 'heif', 'video/mp4': 'mp4', 'video/quicktime': 'mov',
+            'video/webm': 'webm',
+        }
+        if ct in ct_map:
+            return ct_map[ct]
+
+    # 2. Extensão do último segmento da URL (apenas o filename, não o path todo)
+    extensoes_validas = {'jpg', 'jpeg', 'png', 'gif', 'webp', 'mp4', 'mov', 'm4v', 'webm', 'heic'}
+    try:
+        path_sem_query = url.split('?')[0]
+        ultimo_segmento = path_sem_query.rsplit('/', 1)[-1]  # pega só o filename
+        if '.' in ultimo_segmento:
+            ext = ultimo_segmento.rsplit('.', 1)[-1].lower()
+            if ext in extensoes_validas:
+                return ext
+    except Exception:
+        pass
+
+    # 3. Fallback: jpg para imagens (caso mais comum no Instagram)
+    return 'jpg'
+
+
 def limpar_texto(texto: str) -> str:
     if not texto:
         return ""
@@ -473,27 +507,51 @@ async def processar_instagram(client, message, url, usuario, msg_espera, link_du
                 midias_urls = result['urls']
                 await msg_espera.edit_text(f"✨ Extraído! Baixando {len(midias_urls)} {'item' if len(midias_urls) == 1 else 'itens'}...")
                 
-                async with aiohttp.ClientSession() as session:
+                # Headers para CDN do Instagram (evita 403)
+                cdn_headers = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+                    'Referer': 'https://www.instagram.com/',
+                }
+                async with aiohttp.ClientSession(headers=cdn_headers) as session:
                     for i, m_url in enumerate(midias_urls):
                         try:
                             async with session.get(m_url) as response:
                                 if response.status == 200:
-                                    ext = m_url.split('?')[0].split('.')[-1].lower() if '.' in m_url.split('?')[0] else 'mp4'
+                                    content_type = response.headers.get('Content-Type', '')
+                                    ext = _detectar_extensao(m_url, content_type)
+                                    data = await response.read()
+                                    
+                                    # Converte webp/heic → jpg (Telegram rejeita esses formatos como foto)
+                                    if ext in ('webp', 'heic', 'heif'):
+                                        try:
+                                            from PIL import Image
+                                            import io
+                                            img = Image.open(io.BytesIO(data))
+                                            buf = io.BytesIO()
+                                            img.convert('RGB').save(buf, format='JPEG', quality=95)
+                                            data = buf.getvalue()
+                                            ext = 'jpg'
+                                            log.info(f"   Convertido {ext} → jpg para compatibilidade Telegram")
+                                        except Exception as conv_err:
+                                            log.warning(f"Falha ao converter {ext} para jpg: {conv_err}")
+                                            ext = 'jpg'  # Tenta enviar mesmo assim
+                                    
                                     caminho_temp = PASTA_DOWNLOADS / f"temp_insta_{message.id}_{i}.{ext}"
                                     
                                     with open(caminho_temp, 'wb') as f:
-                                        f.write(await response.read())
+                                        f.write(data)
                                     
                                     arquivos_para_deletar.append(str(caminho_temp))
                                     cap = legenda_final if i == 0 else ""
-                                    is_video = any(v in ext for v in ['mp4', 'mov', 'm4v'])
+                                    is_video = ext in ('mp4', 'mov', 'm4v', 'webm')
 
                                     if is_video:
                                         lista_telegram.append(InputMediaVideo(str(caminho_temp), caption=cap, supports_streaming=True))
                                     else:
                                         lista_telegram.append(InputMediaPhoto(str(caminho_temp), caption=cap))
+                                    log.info(f"   Mídia {i+1}/{len(midias_urls)} baixada: ext={ext}, size={len(data)} bytes")
                                 else:
-                                    log.warning(f"Falha ao baixar URL do Instagram ({response.status}): {m_url}")
+                                    log.warning(f"Falha ao baixar URL do Instagram ({response.status}): {m_url[:100]}")
                         except Exception as e:
                             log.error(f"Erro ao baixar midia individual do Instagram: {e}")
 
