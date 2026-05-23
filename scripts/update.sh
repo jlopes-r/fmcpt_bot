@@ -61,11 +61,30 @@ echo "📋 Commits novos:"
 git log --oneline --no-merges ${OLD_HEAD}..${NEW_HEAD}
 echo ""
 
-# Gera os arquivos de changelog para cada bot
+# Gera os arquivos de changelog
 CHANGELOG=$(git log --oneline --no-merges ${OLD_HEAD}..${NEW_HEAD})
 
+# Verifica quais arquivos mudaram para notificar apenas o bot correto
+CHANGED_FILES=$(git diff --name-only ${OLD_HEAD}..${NEW_HEAD})
+
+export MUDOU_SUPERBOT=false
+export MUDOU_COMANDOS=false
+
+if echo "$CHANGED_FILES" | grep -qE "apps/telegram_bot|packages/|assets/|scripts/|data/"; then
+    export MUDOU_SUPERBOT=true
+fi
+
+if echo "$CHANGED_FILES" | grep -qE "apps/comandos"; then
+    export MUDOU_COMANDOS=true
+fi
+
+# Se nada específico bateu, notifica o principal por padrão
+if [ "$MUDOU_SUPERBOT" = "false" ] && [ "$MUDOU_COMANDOS" = "false" ]; then
+    export MUDOU_SUPERBOT=true
+fi
+
 echo "$CHANGELOG" | python3 -c "
-import json, sys
+import json, sys, os
 from datetime import datetime
 
 commits = []
@@ -83,12 +102,15 @@ data = {
     'updated_at': datetime.now().strftime('%d/%m/%Y às %H:%M')
 }
 
-# Cria um arquivo para cada bot
-for fname in ['data/update_superbot.json', 'data/update_comandos.json']:
-    with open(fname, 'w', encoding='utf-8') as f:
+if os.environ.get('MUDOU_SUPERBOT') == 'true':
+    with open('data/update_superbot.json', 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
-print(f'📋 {len(commits)} commit(s) registrado(s) para notificação.')
+if os.environ.get('MUDOU_COMANDOS') == 'true':
+    with open('data/update_comandos.json', 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+print(f'📋 {len(commits)} commit(s) processado(s). SuperBot={os.environ.get(\"MUDOU_SUPERBOT\")}, Comandos={os.environ.get(\"MUDOU_COMANDOS\")}')
 "
 
 # Reinicia os serviços
