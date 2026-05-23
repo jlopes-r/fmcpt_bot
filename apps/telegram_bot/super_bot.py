@@ -1,3 +1,4 @@
+# Teste do sistema de atualização
 import sys
 import os
 import re
