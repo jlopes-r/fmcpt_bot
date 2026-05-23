@@ -1,6 +1,7 @@
 import sys
 import os
 import re
+import json
 import time
 import random
 import asyncio
@@ -1141,6 +1142,51 @@ async def processar_links(client, message):
             _processing_urls.discard(url_norm)
 
 # -----------------------------------------
+# NOTIFICAÇÃO DE ATUALIZAÇÃO
+# -----------------------------------------
+async def notificar_atualizacao():
+    """Envia notificação nos grupos quando o bot reinicia após um git pull com mudanças."""
+    await asyncio.sleep(5)  # Aguarda a conexão do bot estabilizar
+    changelog_file = Path(RAIZ) / "data" / "update_superbot.json"
+    if not changelog_file.exists():
+        return
+    try:
+        with open(changelog_file, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+
+        commits = data.get('commits', [])
+        if not commits:
+            changelog_file.unlink(missing_ok=True)
+            return
+
+        txt = "🔄 **Super Bot Atualizado!** 🚀\n\n"
+        txt += "📋 **Mudanças nesta atualização:**\n"
+        for c in commits:
+            txt += f"• `{c['hash']}` — {c['message']}\n"
+        txt += f"\n🕐 {data.get('updated_at', 'N/A')}"
+
+        enviados = 0
+        for grupo_id in GRUPOS_AUTORIZADOS:
+            try:
+                await app.send_message(grupo_id, txt)
+                enviados += 1
+            except Exception as e:
+                log.error(f"Erro ao enviar notificação de update para {grupo_id}: {e}")
+
+        # Fallback: se não há grupos autorizados, envia para o admin
+        if not GRUPOS_AUTORIZADOS and ADMIN_ID:
+            try:
+                await app.send_message(ADMIN_ID, txt)
+                enviados += 1
+            except Exception as e:
+                log.error(f"Erro ao enviar notificação de update para admin: {e}")
+
+        changelog_file.unlink(missing_ok=True)
+        log.info(f"Notificação de atualização enviada para {enviados} chat(s).")
+    except Exception as e:
+        log.error(f"Erro ao processar changelog de atualização: {e}")
+
+# -----------------------------------------
 # INICIALIZACAO
 # -----------------------------------------
 if __name__ == "__main__":
@@ -1167,4 +1213,5 @@ if __name__ == "__main__":
 
     log.info("Super Bot iniciado!")
     asyncio.get_event_loop().create_task(limpeza_periodica())
+    asyncio.get_event_loop().create_task(notificar_atualizacao())
     app.run()

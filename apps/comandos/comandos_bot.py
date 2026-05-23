@@ -39,7 +39,7 @@ GIFS_DUVIDA_FILE = Path(CAMINHO_RAIZ_PROJETO) / "data" / "gifs_interrogacao.json
 user_states = {}
 
 # Lista de comandos internos que o bot reconhece nativamente
-COMANDOS_INTERNOS = ["start", "help", "menu", "id", "create", "list", "delete", "instance", "duvida"]
+COMANDOS_INTERNOS = ["start", "help", "menu", "id", "create", "list", "delete", "instance", "duvida", "add", "removegif", "gifstats", "sync"]
 
 # Decorator para verificar se o usuário está autorizado
 def admin_only(func):
@@ -80,6 +80,17 @@ def carregar_gifs(filepath):
         log.error(f"Erro ao carregar GIFs de {filepath}: {e}")
     return []
 
+def salvar_gifs(filepath, gifs_list):
+    """Salva a lista de GIFs em um arquivo JSON."""
+    try:
+        filepath.parent.mkdir(parents=True, exist_ok=True)
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(gifs_list, f, ensure_ascii=False, indent=4)
+        return True
+    except Exception as e:
+        log.error(f"Erro ao salvar GIFs em {filepath}: {e}")
+        return False
+
 # Carrega as bases de dados de GIFs
 gifs_catolicos = carregar_gifs(GIFS_CATOLICOS_FILE)
 gifs_duvida = carregar_gifs(GIFS_DUVIDA_FILE)
@@ -96,6 +107,9 @@ async def atualizar_menu_comandos(client):
             BotCommand("delete", "Deleta um comando"),
             BotCommand("instance", "Envia um GIF de bom dia abençoado"),
             BotCommand("duvida", "Envia um GIF de dúvida/interrogação"),
+            BotCommand("add", "➕ Adiciona um GIF (responda a um GIF)"),
+            BotCommand("removegif", "🗑️ Remove um GIF da base"),
+            BotCommand("gifstats", "📊 Estatísticas dos GIFs"),
             BotCommand("sync", "Sincroniza o menu de comandos")
         ]
         
@@ -198,9 +212,13 @@ async def cmd_menu(client, message):
         "▫️ `/id` - Mostra o ID desta conversa\n"
         "▫️ `/create` - 🆕 Cria um novo comando personalizado\n"
         "▫️ `/list` - 📋 Lista todos os seus comandos\n"
-        "▫️ `/delete NOME` - 🗑️ Deleta um comando\n"
+        "▫️ `/delete NOME` - 🗑️ Deleta um comando\n\n"
+        "**🎞️ GIFs:**\n"
         "▫️ `/instance` - 🙏 Envia um GIF de bom dia abençoado\n"
-        "▫️ `/duvida` - ❓ Envia um GIF de dúvida/interrogação\n\n"
+        "▫️ `/duvida` - ❓ Envia um GIF de dúvida/interrogação\n"
+        "▫️ `/add instance` ou `/add duvida` - ➕ Adiciona um GIF (responda a um GIF)\n"
+        "▫️ `/removegif` - 🗑️ Remove um GIF (responda a um GIF do bot)\n"
+        "▫️ `/gifstats` - 📊 Mostra quantos GIFs tem em cada base\n\n"
     )
     
     if comandos_personalizados:
@@ -245,6 +263,147 @@ async def cmd_duvida(client, message):
         await client.send_animation(message.chat.id, gif_escolhido, reply_to_message_id=reply_to)
     except Exception as e:
         log.error(f"Erro ao enviar gif /duvida: {e}")
+
+@app.on_message(filters.command("add"))
+@admin_only
+async def cmd_add_gif(client, message):
+    """Adiciona um GIF à base de /instance ou /duvida. Uso: responder a um GIF com /add instance ou /add duvida."""
+    global gifs_catolicos, gifs_duvida
+    
+    # Verifica se o comando tem argumento
+    if len(message.command) < 2:
+        await message.reply_text(
+            "❌ **Uso:** Responda a um GIF com:\n\n"
+            "▫️ `/add instance` - para adicionar à base de bom dia abençoado\n"
+            "▫️ `/add duvida` - para adicionar à base de dúvida/interrogação"
+        )
+        return
+    
+    categoria = message.command[1].lower()
+    if categoria not in ("instance", "duvida"):
+        await message.reply_text(
+            "❌ Categoria inválida! Use:\n\n"
+            "▫️ `/add instance` - GIFs de bom dia abençoado\n"
+            "▫️ `/add duvida` - GIFs de dúvida/interrogação"
+        )
+        return
+    
+    # Verifica se está respondendo a uma mensagem
+    if not message.reply_to_message:
+        await message.reply_text("❌ Você precisa **responder a um GIF** com este comando!")
+        return
+    
+    # Verifica se a mensagem respondida contém uma animation (GIF)
+    replied = message.reply_to_message
+    if not replied.animation:
+        await message.reply_text("❌ A mensagem respondida não é um **GIF**! Encaminhe ou envie um GIF e responda com `/add`.")
+        return
+    
+    gif_file_id = replied.animation.file_id
+    
+    # Determina a base e o arquivo correspondente
+    if categoria == "instance":
+        gif_list = gifs_catolicos
+        gif_file = GIFS_CATOLICOS_FILE
+        nome_base = "bom dia abençoado (instance)"
+    else:
+        gif_list = gifs_duvida
+        gif_file = GIFS_DUVIDA_FILE
+        nome_base = "dúvida/interrogação (duvida)"
+    
+    # Verifica duplicata
+    if gif_file_id in gif_list:
+        await message.reply_text("⚠️ Esse GIF já existe na base!")
+        return
+    
+    # Adiciona e salva
+    gif_list.append(gif_file_id)
+    if salvar_gifs(gif_file, gif_list):
+        # Atualiza a referência global
+        if categoria == "instance":
+            gifs_catolicos = gif_list
+        else:
+            gifs_duvida = gif_list
+        
+        usuario = message.from_user.first_name or "Alguém"
+        await message.reply_text(
+            f"✅ **GIF adicionado com sucesso!**\n\n"
+            f"📂 Base: {nome_base}\n"
+            f"📊 Total de GIFs: **{len(gif_list)}**\n"
+            f"👤 Adicionado por: {usuario}"
+        )
+        log.info(f"GIF adicionado à base '{categoria}' por {usuario}. Total: {len(gif_list)}")
+    else:
+        await message.reply_text("❌ Erro ao salvar o GIF. Tente novamente.")
+
+@app.on_message(filters.command("removegif"))
+@admin_only
+async def cmd_remove_gif(client, message):
+    """Remove um GIF de qualquer base. Uso: responder a um GIF com /removegif."""
+    global gifs_catolicos, gifs_duvida
+    
+    if not message.reply_to_message:
+        await message.reply_text("❌ Você precisa **responder a um GIF** com `/removegif` para removê-lo.")
+        return
+    
+    replied = message.reply_to_message
+    if not replied.animation:
+        await message.reply_text("❌ A mensagem respondida não é um **GIF**!")
+        return
+    
+    gif_file_id = replied.animation.file_id
+    removido = False
+    base_nome = ""
+    
+    # Procura nas duas bases
+    if gif_file_id in gifs_catolicos:
+        gifs_catolicos.remove(gif_file_id)
+        salvar_gifs(GIFS_CATOLICOS_FILE, gifs_catolicos)
+        removido = True
+        base_nome = "bom dia abençoado (instance)"
+    
+    if gif_file_id in gifs_duvida:
+        gifs_duvida.remove(gif_file_id)
+        salvar_gifs(GIFS_DUVIDA_FILE, gifs_duvida)
+        removido = True
+        base_nome = "dúvida/interrogação (duvida)" if not base_nome else base_nome + " e dúvida/interrogação (duvida)"
+    
+    if removido:
+        usuario = message.from_user.first_name or "Alguém"
+        await message.reply_text(
+            f"🗑️ **GIF removido com sucesso!**\n\n"
+            f"📂 Base: {base_nome}\n"
+            f"👤 Removido por: {usuario}"
+        )
+        log.info(f"GIF removido da base '{base_nome}' por {usuario}")
+    else:
+        await message.reply_text(
+            "❌ Esse GIF **não foi encontrado** em nenhuma base.\n\n"
+            "💡 Dica: O `/removegif` só funciona com GIFs que foram adicionados via `/add`. "
+            "GIFs antigos (por URL) precisam ser removidos manualmente."
+        )
+
+@app.on_message(filters.command("gifstats"))
+@admin_only
+async def cmd_gifstats(client, message):
+    """Mostra estatísticas das bases de GIFs."""
+    urls_catolicos = sum(1 for g in gifs_catolicos if g.startswith('http'))
+    ids_catolicos = len(gifs_catolicos) - urls_catolicos
+    urls_duvida = sum(1 for g in gifs_duvida if g.startswith('http'))
+    ids_duvida = len(gifs_duvida) - urls_duvida
+    
+    txt = (
+        "**📊 Estatísticas dos GIFs**\n\n"
+        f"🙏 **Instance** (Bom dia abençoado):\n"
+        f"   Total: **{len(gifs_catolicos)}** GIFs\n"
+        f"   ├ URLs: {urls_catolicos}\n"
+        f"   └ Telegram: {ids_catolicos}\n\n"
+        f"❓ **Dúvida** (Interrogação):\n"
+        f"   Total: **{len(gifs_duvida)}** GIFs\n"
+        f"   ├ URLs: {urls_duvida}\n"
+        f"   └ Telegram: {ids_duvida}"
+    )
+    await message.reply_text(txt)
 
 @app.on_message(filters.command("id"))
 async def cmd_id(client, message):
@@ -438,6 +597,46 @@ async def processar_media_criacao(client, message):
         # Se não está criando comando, mas manda mídia, ignora ou avisa
         await message.reply_text("🤔 Para criar um comando com mídia, primeiro use /create e siga os passos.")
 
+# -----------------------------------------
+# NOTIFICAÇÃO DE ATUALIZAÇÃO
+# -----------------------------------------
+import asyncio
+
+async def notificar_atualizacao():
+    """Envia notificação nos grupos quando o bot reinicia após um git pull com mudanças."""
+    await asyncio.sleep(5)  # Aguarda a conexão do bot estabilizar
+    changelog_file = Path(CAMINHO_RAIZ_PROJETO) / "data" / "update_comandos.json"
+    if not changelog_file.exists():
+        return
+    try:
+        with open(changelog_file, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+
+        commits = data.get('commits', [])
+        if not commits:
+            changelog_file.unlink(missing_ok=True)
+            return
+
+        txt = "🔄 **Bot de Comandos Atualizado!** 🚀\n\n"
+        txt += "📋 **Mudanças nesta atualização:**\n"
+        for c in commits:
+            txt += f"• `{c['hash']}` — {c['message']}\n"
+        txt += f"\n🕐 {data.get('updated_at', 'N/A')}"
+
+        enviados = 0
+        for grupo_id in GRUPOS_AUTORIZADOS:
+            try:
+                await app.send_message(grupo_id, txt)
+                enviados += 1
+            except Exception as e:
+                log.error(f"Erro ao enviar notificação de update para {grupo_id}: {e}")
+
+        changelog_file.unlink(missing_ok=True)
+        log.info(f"Notificação de atualização enviada para {enviados} chat(s).")
+    except Exception as e:
+        log.error(f"Erro ao processar changelog de atualização: {e}")
+
 if __name__ == "__main__":
     log.info("Bot de Comandos iniciando...")
+    asyncio.get_event_loop().create_task(notificar_atualizacao())
     app.run()
