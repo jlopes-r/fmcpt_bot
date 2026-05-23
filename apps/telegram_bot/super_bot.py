@@ -907,6 +907,12 @@ async def processar_links(client, message):
 
         # Apenas CHECA se é duplicado (sem registrar). Registro acontece só após sucesso.
         url_norm = urlunparse(urlparse(url_raw)._replace(query="")).lower().rstrip("/")
+        
+        # Normalização específica para Twitter/X (ignora nome de usuário para evitar falsos negativos)
+        tw_match = re.search(r'(?:x|twitter)\.com/[^/]+/status/(\d+)', url_norm)
+        if tw_match:
+            url_norm = f"https://x.com/i/status/{tw_match.group(1)}"
+
         repetido_db, info_db = db.checar_link(url_norm)
 
         # Race condition lock
