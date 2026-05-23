@@ -14,7 +14,10 @@ ERROS_RATE_LIMIT = [
     "Tu é desocupado nível extremo ou não tem amigos mesmo pra ficar mendigando atenção de bot? 10/min.",
     # Recusa
     "Não vou processar essa merda. Foda-se. Tá mandando muito rápido. (10/min)",
-    "Nem fudendo que eu vou baixar tudo isso agora. Recusado. 10/min e cala a boca."
+    "Nem fudendo que eu vou baixar tudo isso agora. Recusado. 10/min e cala a boca.",
+    # Extras (Pesadas)
+    "Seu verme insignificante, quer derrubar o bot de tanto spam? Vai chupar um canavial de rola, caralho. (10/min)",
+    "Puta que pariu, o maluco não tem o que fazer da vida mesmo. Arruma um emprego seu inútil fodido e para de me flodar. (10/min)"
 ]
 
 ERROS_VIDEO_LONGO = [
@@ -29,7 +32,10 @@ ERROS_VIDEO_LONGO = [
     "O seu nível de falta de noção é achar que alguém tem tempo livre pra ver isso. Máximo {min}min.",
     # Recusa
     "Não vou baixar. Passou de {min}min eu não faço, se vira.",
-    "Deu o tempo e eu cansei. Não vou baixar esse lixo, tchau."
+    "Deu o tempo e eu cansei. Não vou baixar esse lixo, tchau.",
+    # Extras (Pesadas)
+    "Tu é doente mental de querer que eu baixe um filme inteiro, seu arrombado? Passou de {min}min vai pro caralho.",
+    "Foda-se você e a sua falta de noção. {min}min é o limite, enfia esse vídeo longo no meio do seu cu."
 ]
 
 ERROS_ARQUIVO_GRANDE = [
@@ -44,7 +50,10 @@ ERROS_ARQUIVO_GRANDE = [
     "Manda arquivo leve, imbecil. Você não tem internet pra baixar isso e eu não tenho paciência. Limite 50MB.",
     # Recusa
     "Nem fudendo que vou gastar minha banda com isso. Muito grande, recuso. Limite é 50MB.",
-    "Eu não vou baixar e ponto final. Muito pesado essa merda (limite 50MB)."
+    "Eu não vou baixar e ponto final. Muito pesado essa merda (limite 50MB).",
+    # Extras (Pesadas)
+    "Você acha que meu servidor é a buceta arrombada da tua mãe pra caber tanta coisa? 50MB no máximo, filho da puta.",
+    "Toma no teu cu, maluco. Arquivo gigante do caralho, vai hospedar essa porra na casa do caralho. Limite 50MB."
 ]
 
 ERROS_EXTRACAO = [
@@ -74,7 +83,10 @@ ERROS_INESPERADO = [
     "O servidor crashou só de olhar pra tua cara. Tudo que envolve você dá errado, impressionante.",
     # Recusa
     "Explodiu. Não vou processar essa porra. Sai do meu pé.",
-    "Me recuso a tentar de novo. Deu erro e é isso, o universo não te quer vendo esse link."
+    "Me recuso a tentar de novo. Deu erro e é isso, o universo não te quer vendo esse link.",
+    # Extras (Pesadas)
+    "Deu uma merda tão grande aqui que eu preferia ter desligado. Puta que pariu, vai tomar no cu você e esse link.",
+    "Erro fatal. Fatal vai ser o câncer que tu vai pegar se continuar mandando essas bostas quebradas, arrombado."
 ]
 
 ERROS_INSTAGRAM = [
