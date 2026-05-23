@@ -85,7 +85,7 @@ fi
 
 echo "$CHANGELOG" | python3 -c "
 import json, sys, os
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 
 commits = []
 for line in sys.stdin:
@@ -97,9 +97,10 @@ for line in sys.stdin:
             'message': parts[1] if len(parts) > 1 else '(sem mensagem)'
         })
 
+tz_br = timezone(timedelta(hours=-3))
 data = {
     'commits': commits,
-    'updated_at': datetime.now().strftime('%d/%m/%Y às %H:%M')
+    'updated_at': datetime.now(tz_br).strftime('%d/%m/%Y às %H:%M')
 }
 
 if os.environ.get('MUDOU_SUPERBOT') == 'true':
