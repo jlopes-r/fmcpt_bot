@@ -11,9 +11,12 @@ from pyrogram.types import InputMediaPhoto, InputMediaVideo, InputMediaAudio
 from dotenv import load_dotenv
 
 # Configuração
-# O caminho para o arquivo .env é definido de forma absoluta para garantir
-# que o bot funcione corretamente quando executado como um serviço na VM.
-CAMINHO_ENV = "/home/juanl/fmcpt_bot/apps/telegram_bot/.env"
+# O caminho para a raiz do projeto é determinado dinamicamente a partir da localização do script.
+# Isso garante que o bot funcione tanto localmente quanto no servidor.
+CAMINHO_RAIZ_PROJETO = Path(__file__).resolve().parent.parent.parent
+
+# O caminho para o arquivo .env é construído a partir da raiz do projeto.
+CAMINHO_ENV = CAMINHO_RAIZ_PROJETO / "apps" / "telegram_bot" / ".env"
 load_dotenv(CAMINHO_ENV)
 
 API_ID = int(os.getenv("API_ID"))
@@ -26,10 +29,8 @@ GRUPOS_AUTORIZADOS = [int(chat_id.strip()) for chat_id in GRUPOS_AUTORIZADOS_STR
 log = logging.getLogger("ComandosBot")
 logging.basicConfig(level=logging.INFO)
 
-# Caminho para arquivo de comandos personalizados, usando caminho absoluto
-# para garantir que seja encontrado quando executado como serviço.
-CAMINHO_RAIZ_PROJETO = "/home/juanl/fmcpt_bot"
-COMANDOS_FILE = Path(CAMINHO_RAIZ_PROJETO) / "data" / "comandos_personalizados.json"
+# Caminhos para arquivos de dados são construídos a partir da raiz do projeto.
+COMANDOS_FILE = CAMINHO_RAIZ_PROJETO / "data" / "comandos_personalizados.json"
 
 # Caminhos para as bases de dados de GIFs
 GIFS_CATOLICOS_FILE = Path(CAMINHO_RAIZ_PROJETO) / "data" / "gifs_catolicos.json"
