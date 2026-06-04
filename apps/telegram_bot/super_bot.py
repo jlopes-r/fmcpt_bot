@@ -743,16 +743,15 @@ async def cmd_bloq(client, message):
         return await message.reply_text("Vai se foder, não vou bloquear um bot.")
         
     agora = time.time()
-    # Verifica limite diário (3x por dia por usuário que aplica o comando)
-    admin_id = message.from_user.id
-    _uso_bloq[admin_id] = [t for t in _uso_bloq[admin_id] if agora - t < 86400]
+    # Verifica limite diário (3x por dia por pessoa que RECEBE o castigo)
+    target_id = target_user.id
+    _uso_bloq[target_id] = [t for t in _uso_bloq[target_id] if agora - t < 86400]
     
-    # Bypass pro admin supremo, se quiser
-    if admin_id != ADMIN_ID and len(_uso_bloq[admin_id]) >= 3:
-        return await message.reply_text("⚠️ Você já aplicou seus 3 castigos diários! Deixe o pessoal em paz um pouco. Volta amanhã.")
+    if len(_uso_bloq[target_id]) >= 3:
+        return await message.reply_text(f"⚠️ O {target_user.mention} já tomou 3 castigos hoje! Deixa o coitado em paz, já sofreu demais por hoje.")
         
-    _uso_bloq[admin_id].append(agora)
-    _usuarios_bloqueados[target_user.id] = agora + 300
+    _uso_bloq[target_id].append(agora)
+    _usuarios_bloqueados[target_id] = agora + 300
     
     msg = erro_aleatorio(ERROS_BLOQ_CMD, mention=target_user.mention)
     await message.reply_text(msg)
