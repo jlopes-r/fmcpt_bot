@@ -958,12 +958,7 @@ async def processar_links(client, message):
                 tr = int(_usuarios_bloqueados[user_id] - agora_atual)
                 tempo_str = f"{tr // 60}min {tr % 60}s"
                 msg_erro = erro_aleatorio(ERROS_BLOQ_TENTATIVA, mention=message.from_user.mention, tempo=tempo_str)
-                aviso = await message.reply_text(msg_erro)
-                await asyncio.sleep(5)
-                try:
-                    await aviso.delete()
-                except Exception:
-                    pass
+                await message.reply_text(msg_erro)
                 return
             else:
                 del _usuarios_bloqueados[user_id]
