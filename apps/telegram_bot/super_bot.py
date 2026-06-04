@@ -81,7 +81,9 @@ from apps.telegram_bot.mensagens_erro import (
     ERROS_LINK_PROCESSANDO,
     ERROS_COOLDOWN,
     ERROS_RETRY_SEM_MSG,
-    ERROS_RETRY_SEM_RESPOSTA
+    ERROS_RETRY_SEM_RESPOSTA,
+    ERROS_BLOQ_CMD,
+    ERROS_BLOQ_TENTATIVA
 )
 
 def erro_aleatorio(lista, **kwargs):
@@ -101,6 +103,8 @@ _retry_cache = {}  # msg_erro_id -> (url, usuario, chat_id, original_msg_id)
 _failed_url_cache = {}  # url_norm -> timestamp (cooldown para URLs que falharam recentemente)
 _processing_urls = set()  # URLs em processamento (evita downloads duplicados simultâneos)
 _processing_lock = asyncio.Lock()
+_usuarios_bloqueados = {}  # user_id -> timestamp (cooldown de castigo de 5min)
+_uso_bloq = defaultdict(list)  # admin_id -> [timestamps dos blocks aplicados hoje]
 
 # -----------------------------------------
 # LOGGING
@@ -715,6 +719,44 @@ async def cmd_comi(client, message):
     except Exception as e:
         log.error(f"Erro no /comi: {e}")
 
+@app.on_message(filters.command("bloq"))
+async def cmd_bloq(client, message):
+    if not chat_autorizado(message.chat.id):
+        return
+    # Deve mencionar alguém
+    if not message.reply_to_message and len(message.command) < 2:
+        return await message.reply_text("Uso: /bloq @usuario ou responda a alguém.")
+    
+    target_user = None
+    if message.reply_to_message:
+        target_user = message.reply_to_message.from_user
+    else:
+        try:
+            target_user = await client.get_users(message.command[1])
+        except Exception:
+            pass
+
+    if not target_user:
+        return await message.reply_text("Não consegui identificar o usuário. Mencione ou responda.")
+    
+    if getattr(target_user, "is_bot", False):
+        return await message.reply_text("Vai se foder, não vou bloquear um bot.")
+        
+    agora = time.time()
+    # Verifica limite diário (3x por dia por usuário que aplica o comando)
+    admin_id = message.from_user.id
+    _uso_bloq[admin_id] = [t for t in _uso_bloq[admin_id] if agora - t < 86400]
+    
+    # Bypass pro admin supremo, se quiser
+    if admin_id != ADMIN_ID and len(_uso_bloq[admin_id]) >= 3:
+        return await message.reply_text("⚠️ Você já aplicou seus 3 castigos diários! Deixe o pessoal em paz um pouco. Volta amanhã.")
+        
+    _uso_bloq[admin_id].append(agora)
+    _usuarios_bloqueados[target_user.id] = agora + 300
+    
+    msg = erro_aleatorio(ERROS_BLOQ_CMD, mention=target_user.mention)
+    await message.reply_text(msg)
+
 @app.on_message(filters.command("id"))
 async def cmd_id(client, message):
     if not chat_autorizado(message.chat.id):
@@ -826,6 +868,15 @@ async def limpeza_periodica():
             expirados = [u for u, ts in _failed_url_cache.items() if agora - ts > 600]
             for u in expirados:
                 del _failed_url_cache[u]
+                
+            # Limpa _uso_bloq (limite diário)
+            para_deletar_bloq = []
+            for u, ts_list in _uso_bloq.items():
+                _uso_bloq[u] = [t for t in ts_list if agora - t < 86400]
+                if not _uso_bloq[u]:
+                    para_deletar_bloq.append(u)
+            for u in para_deletar_bloq:
+                del _uso_bloq[u]
         except Exception:
             pass
 
@@ -860,7 +911,7 @@ async def enviar_aviso_duplicado(client, message, info_original: dict, repetido_
 # -----------------------------------------
 # ESCUTA DE MENSAGENS
 # -----------------------------------------
-COMANDOS = {"ranking", "bocadeleite", "anual", "stats", "help", "repetido", "id", "comi", "ping", "retry"}
+COMANDOS = {"ranking", "bocadeleite", "anual", "stats", "help", "repetido", "id", "comi", "ping", "retry", "bloq"}
 
 @app.on_message(filters.text & ~filters.command(list(COMANDOS)))
 async def processar_links(client, message):
@@ -896,6 +947,22 @@ async def processar_links(client, message):
             url_raw = None
 
     if url_raw:
+        agora_atual = time.time()
+        if user_id in _usuarios_bloqueados:
+            if agora_atual < _usuarios_bloqueados[user_id]:
+                tr = int(_usuarios_bloqueados[user_id] - agora_atual)
+                tempo_str = f"{tr // 60}min {tr % 60}s"
+                msg_erro = erro_aleatorio(ERROS_BLOQ_TENTATIVA, mention=message.from_user.mention, tempo=tempo_str)
+                aviso = await message.reply_text(msg_erro)
+                await asyncio.sleep(5)
+                try:
+                    await aviso.delete()
+                except Exception:
+                    pass
+                return
+            else:
+                del _usuarios_bloqueados[user_id]
+
         if user_id and not verificar_rate_limit(user_id):
             aviso = await message.reply_text(erro_aleatorio(ERROS_RATE_LIMIT))
             await asyncio.sleep(5)

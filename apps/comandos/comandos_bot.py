@@ -39,7 +39,7 @@ GIFS_DUVIDA_FILE = Path(CAMINHO_RAIZ_PROJETO) / "data" / "gifs_interrogacao.json
 user_states = {}
 
 # Lista de comandos internos que o bot reconhece nativamente
-COMANDOS_INTERNOS = ["start", "help", "menu", "id", "create", "list", "delete", "instance", "duvida", "add", "removegif", "gifstats", "sync"]
+COMANDOS_INTERNOS = ["start", "help", "menu", "id", "create", "list", "delete", "instance", "duvida", "add", "removegif", "gifstats", "sync", "cancelar"]
 
 # Decorator para verificar se o usuário está autorizado
 def admin_only(func):
@@ -419,8 +419,17 @@ async def cmd_create(client, message):
     }
     await message.reply_text(
         "📝 **Criação de Comando Personalizado**\n\n"
-        "Digite o nome do comando (sem a barra, ex: `frias`):"
+        "Digite o nome do comando (sem a barra, ex: `frias`):\n\n"
+        "*(Digite /cancelar a qualquer momento para desistir)*"
     )
+
+@app.on_message(filters.command("cancelar") & filters.create(filtro_estado_usuario))
+@admin_only
+async def cmd_cancelar(client, message):
+    user_id = message.from_user.id
+    if user_id in user_states:
+        del user_states[user_id]
+        await message.reply_text("❌ Criação/edição de comando cancelada.")
 
 @app.on_message(filters.command("list"))
 @admin_only
