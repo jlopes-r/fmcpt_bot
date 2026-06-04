@@ -750,13 +750,20 @@ async def cmd_bloq(client, message):
         tr = int(_usuarios_bloqueados[target_id] - agora)
         return await message.reply_text(f"⚠️ O {target_user.mention} já tá de castigo, calma! Faltam {tr // 60}min {tr % 60}s ainda.")
     
-    # Verifica limite diário (3x por dia por pessoa que RECEBE o castigo)
-    _uso_bloq[target_id] = [t for t in _uso_bloq[target_id] if agora - t < 86400]
-    
-    if len(_uso_bloq[target_id]) >= 3:
-        return await message.reply_text(f"⚠️ O {target_user.mention} já tomou 3 castigos hoje! Deixa o coitado em paz, já sofreu demais por hoje.")
+    # Se não for um autobloqueio, verifica o limite diário de 3 blocks
+    is_self_block = message.from_user and target_id == message.from_user.id
+
+    if not is_self_block:
+        # Limpa usos de block de mais de 24h atrás
+        _uso_bloq[target_id] = [t for t in _uso_bloq[target_id] if agora - t < 86400]
         
-    _uso_bloq[target_id].append(agora)
+        if len(_uso_bloq[target_id]) >= 3:
+            return await message.reply_text(f"⚠️ O {target_user.mention} já tomou 3 castigos hoje! Deixa o coitado em paz, já sofreu demais por hoje.")
+        
+        # Adiciona o block ao histórico diário do alvo
+        _uso_bloq[target_id].append(agora)
+
+    # Aplica o castigo de 5 minutos
     _usuarios_bloqueados[target_id] = agora + 300
     
     msg = erro_aleatorio(ERROS_BLOQ_CMD, mention=target_user.mention)

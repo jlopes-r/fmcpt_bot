@@ -409,6 +409,10 @@ async def cmd_gifstats(client, message):
 async def cmd_id(client, message):
     await message.reply_text(f"O ID desta conversa é: `{message.chat.id}`")
 
+# Filtro para verificar se o usuário está no processo de criação de um comando
+async def filtro_estado_usuario(_, __, message):
+    return message.from_user.id in user_states
+
 @app.on_message(filters.command("create"))
 @admin_only
 async def cmd_create(client, message):
@@ -422,6 +426,7 @@ async def cmd_create(client, message):
         "Digite o nome do comando (sem a barra, ex: `frias`):\n\n"
         "*(Digite /cancelar a qualquer momento para desistir)*"
     )
+
 
 @app.on_message(filters.command("cancelar") & filters.create(filtro_estado_usuario))
 @admin_only
@@ -471,10 +476,6 @@ async def cmd_sync(client, message):
         await message.reply_text("✅ Menu do Telegram (botão /) atualizado com todos os comandos!")
     else:
         await message.reply_text("❌ Erro ao atualizar o menu. Veja os logs.")
-
-# Filtro para verificar se o usuário está no processo de criação de um comando
-async def filtro_estado_usuario(_, __, message):
-    return message.from_user.id in user_states
 
 # Handler para mensagens de texto durante criação de comando (agora com filtro específico)
 @app.on_message(filters.text & ~filters.command(COMANDOS_INTERNOS) & filters.create(filtro_estado_usuario))
