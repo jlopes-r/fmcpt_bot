@@ -73,12 +73,20 @@ def salvar_comandos(comandos):
 
 def carregar_gifs(filepath):
     """Carrega uma lista de GIFs de um arquivo JSON."""
+    log.info(f"Tentando carregar GIFs do arquivo: {filepath}")
     try:
         if filepath.exists():
+            log.info(f"Arquivo encontrado. Lendo o conteúdo...")
             with open(filepath, 'r', encoding='utf-8') as f:
-                return json.load(f)
+                gifs = json.load(f)
+                log.info(f"Sucesso! {len(gifs)} GIFs carregados de {filepath}.")
+                return gifs
+        else:
+            log.warning(f"O arquivo de GIFs não foi encontrado em: {filepath}")
+    except json.JSONDecodeError as e:
+        log.error(f"Erro de sintaxe no JSON em {filepath}: {e}")
     except Exception as e:
-        log.error(f"Erro ao carregar GIFs de {filepath}: {e}")
+        log.error(f"Erro inesperado ao carregar GIFs de {filepath}: {e}")
     return []
 
 def salvar_gifs(filepath, gifs_list):
