@@ -289,35 +289,35 @@ ERROS_RETRY_SEM_RESPOSTA = [
 
 ERROS_BLOQ_CMD = [
     # Mãe
-    "🚫 {mention} tá de castigo por 5 minutos! Tua mãe não te ensinou a não mandar merda? Agora chupa o dedo.",
-    "🚫 5 minutos de block pro {mention}. Já que tua mãe não te educou, eu educo, seu merda.",
+    "🚫 {mention} tá de castigo por {tempo}! Tua mãe não te ensinou a não mandar merda? Agora chupa o dedo.",
+    "🚫 {tempo} de block pro {mention}. Já que tua mãe não te educou, eu educo, seu merda.",
     # Má vontade
-    "🚫 Cala a boca um pouco, {mention}. 5 minutos sem mandar link, porque eu não aguento mais suas merdas.",
-    "🚫 Bloqueado por 5 minutos, {mention}. Tudo que você manda é um lixo radioativo. Vai ler um livro.",
+    "🚫 Cala a boca um pouco, {mention}. {tempo} sem mandar link, porque eu não aguento mais suas merdas.",
+    "🚫 Bloqueado por {tempo}, {mention}. Tudo que você manda é um lixo radioativo. Vai ler um livro.",
     # Desfeita
-    "🚫 {mention} tomou timeout de 5 minutos. Dá um tempo pra humanidade respirar das suas postagens lixo.",
-    "🚫 Você só manda porcaria, {mention}. Fica 5 minutinhos em silêncio aí, fazendo o favor.",
+    "🚫 {mention} tomou timeout de {tempo}. Dá um tempo pra humanidade respirar das suas postagens lixo.",
+    "🚫 Você só manda porcaria, {mention}. Fica {tempo} em silêncio aí, fazendo o favor.",
     # Recusa
-    "🚫 {mention} bloqueado de mandar link por 5 minutos. Ninguém quer ver suas merdas.",
-    "🚫 Chega de você por hoje, {mention}. 5 minutos no cantinho da disciplina.",
+    "🚫 {mention} bloqueado de mandar link por {tempo}. Ninguém quer ver suas merdas.",
+    "🚫 Chega de você por hoje, {mention}. {tempo} no cantinho da disciplina.",
     # Extras
-    "🚫 O {mention} só manda link podre. 5 minutos de ban pra você aprender a ser gente.",
-    "🚫 Calou a boca, {mention}! 5 minutos de castigo por excesso de burrice nas postagens.",
-    "🚫 Castigado por 5 minutos! O {mention} só manda coisa de doente.",
-    "🚫 5 minutos no cantinho. O {mention} é uma vergonha para a sociedade humana.",
-    "🚫 Silêncio, {mention}. 5 minutos de paz sem as atrocidades que você envia.",
-    "🚫 O {mention} tomou ban de 5 min. Aproveita pra fazer uma terapia.",
+    "🚫 O {mention} só manda link podre. {tempo} de ban pra você aprender a ser gente.",
+    "🚫 Calou a boca, {mention}! {tempo} de castigo por excesso de burrice nas postagens.",
+    "🚫 Castigado por {tempo}! O {mention} só manda coisa de doente.",
+    "🚫 {tempo} no cantinho. O {mention} é uma vergonha para a sociedade humana.",
+    "🚫 Silêncio, {mention}. {tempo} de paz sem as atrocidades que você envia.",
+    "🚫 O {mention} tomou ban de {tempo}. Aproveita pra fazer uma terapia.",
     "🚫 Mordaça aplicada no {mention}. Você é um desperdício de oxigênio.",
-    "🚫 Fica pianinho aí, {mention}. 5 min bloqueado pra gente não vomitar com teus links.",
+    "🚫 Fica pianinho aí, {mention}. {tempo} bloqueado pra gente não vomitar com teus links.",
     "🚫 Bloqueado por excesso de radiação. O {mention} só manda material pra chernobyl.",
-    "🚫 {mention} perdeu o direito de fala. 5 minutos por perturbação do sossego mental.",
-    "🚫 Já deu de você, {mention}. Vai refletir sobre seus crimes na parede por 5 min."
+    "🚫 {mention} perdeu o direito de fala. {tempo} por perturbação do sossego mental.",
+    "🚫 Já deu de você, {mention}. Vai refletir sobre seus crimes na parede por {tempo}."
 ]
 
 ERROS_BLOQ_TENTATIVA = [
     # Mãe
     "🚫 Tu tá de castigo, arrombado! Esqueceu? Vai procurar tua mãe gorda. Só daqui a {tempo}.",
-    "🚫 Tua punição de 5 minutos ainda não acabou, doente. Falta {tempo}. Pergunta pra tua mãe que horas acaba.",
+    "🚫 Tua punição de {tempo} ainda não acabou, doente. Falta {tempo}. Pergunta pra tua mãe que horas acaba.",
     # Má vontade
     "🚫 Vai mandar bosta no zap, aqui tu tá bloqueado por mais {tempo}.",
     "🚫 Que saco, cara. Você está PROIBIDO de mandar link. Falta {tempo}.",
