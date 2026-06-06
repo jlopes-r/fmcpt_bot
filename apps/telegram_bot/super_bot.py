@@ -922,6 +922,114 @@ async def limpeza_periodica():
             pass
 
 # -----------------------------------------
+# MÍDIA DE QUOTE
+# -----------------------------------------
+async def enviar_midia_quote(client, message, qrt_info, user_name_quote, match, msg_espera, usuario_orig):
+    """Envia a mídia do tweet quoteado como mensagem separada."""
+    midias = qrt_info.get('media_extended', [])
+    if not midias:
+        return
+
+    quote_user = qrt_info.get('user_name', user_name_quote)
+    quote_text = limpar_texto(qrt_info.get('text', ''))
+    legenda_quote = f"📎 Mídia do quote de **{quote_user}**"
+    if quote_text:
+        legenda_quote += f":\n{quote_text}"
+    legenda_quote += f"\n\n👤 Enviado por: {usuario_orig}"
+
+    tem_video = any(m['type'] in ['video', 'gif'] for m in midias)
+
+    if tem_video:
+        lista_quote = []
+        arquivos_quote = []
+
+        for m in midias:
+            if m['type'] not in ['video', 'gif']:
+                lista_quote.append(InputMediaPhoto(m['url'], caption=legenda_quote if not lista_quote else ""))
+                continue
+
+            duracao_s = m.get('duration_millis', 0) / 1000
+            if duracao_s > LIMITE_DURACAO:
+                continue
+
+            video_url = m['url']
+            log.info(f"X quote: baixando video ({int(duracao_s)}s) via yt-dlp...")
+            ydl_opts = {
+                'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+                'outtmpl': str(PASTA_DOWNLOADS / f"quote_{match.group(2)}_%(index)s.%(ext)s"),
+                'paths': {'home': str(PASTA_DOWNLOADS)},
+                'quiet': True,
+                'no_warnings': True,
+                'noplaylist': False,
+                'match_filter': _filtro_duracao,
+                'max_filesize': LIMITE_TAMANHO,
+            }
+            try:
+                loop = asyncio.get_running_loop()
+                info = await loop.run_in_executor(None, partial(_processar_com_ytdlp, video_url, ydl_opts))
+                item = info.get('entries', [info])[0]
+                path = None
+                if 'requested_downloads' in item:
+                    for dl in item['requested_downloads']:
+                        if 'filepath' in dl and os.path.exists(dl['filepath']):
+                            path = dl['filepath']
+                            break
+                if not path:
+                    path = item.get('filepath')
+                    if not path or not os.path.exists(path):
+                        path = yt_dlp.YoutubeDL(ydl_opts).prepare_filename(item)
+                arquivos_quote.append(path)
+                caption_video = legenda_quote if not lista_quote else ""
+                lista_quote.append(InputMediaVideo(path, caption=caption_video, supports_streaming=True))
+            except Exception as e:
+                log.error(f"X quote yt-dlp erro: {e}")
+                log.info(f"X quote: tentando download direto: {video_url}")
+                try:
+                    video_path = str(PASTA_DOWNLOADS / f"x_quote_{match.group(2)}_{int(time.time())}.mp4")
+                    async with aiohttp.ClientSession() as dl_session:
+                        async with dl_session.get(video_url, timeout=60) as dl_resp:
+                            if dl_resp.status == 200:
+                                with open(video_path, 'wb') as vf:
+                                    vf.write(await dl_resp.read())
+                                arquivos_quote.append(video_path)
+                                caption_video = legenda_quote if not lista_quote else ""
+                                lista_quote.append(InputMediaVideo(video_path, caption=caption_video, supports_streaming=True))
+                            else:
+                                raise Exception("Download direto falhou")
+                except Exception as e2:
+                    log.error(f"X quote direct download erro: {e2}")
+
+        if not lista_quote:
+            return
+
+        if len(lista_quote) == 1:
+            midia = lista_quote[0]
+            if isinstance(midia, InputMediaPhoto):
+                await client.send_photo(message.chat.id, midia.media, caption=midia.caption, reply_to_message_id=message.id)
+            else:
+                if isinstance(midia.media, str) and midia.media.startswith('http'):
+                    await client.send_video(message.chat.id, midia.media, caption=midia.caption, supports_streaming=True, reply_to_message_id=message.id, progress=_progresso_upload(msg_espera))
+                else:
+                    await client.send_video(message.chat.id, midia.media, caption=midia.caption, supports_streaming=True, reply_to_message_id=message.id, progress=_progresso_upload(msg_espera))
+        else:
+            for i in range(0, len(lista_quote), 10):
+                lote = lista_quote[i:i+10]
+                await client.send_media_group(message.chat.id, lote, reply_to_message_id=message.id)
+                if len(lista_quote) > 10:
+                    await asyncio.sleep(2)
+
+        for p in arquivos_quote:
+            if os.path.exists(p):
+                os.remove(p)
+    else:
+        lista_quote = []
+        for idx, m in enumerate(midias):
+            c = legenda_quote if idx == 0 else ""
+            lista_quote.append(InputMediaPhoto(m['url'], caption=c))
+        await client.send_media_group(message.chat.id, lista_quote[:10], reply_to_message_id=message.id)
+
+
+# -----------------------------------------
 # CASTIGO DUPLICADO
 # -----------------------------------------
 async def enviar_aviso_duplicado(client, message, info_original: dict, repetido_db_info: dict = None, quem_enviou_ago: str = None):
@@ -1168,6 +1276,10 @@ async def processar_links(client, message):
                     except Exception:
                         pass
                     log.info(f"Sucesso X (texto): {url_raw}")
+
+                # Se o tweet quoteado tiver mídia, envia separado
+                if 'qrt' in res and res['qrt'] and 'media_extended' in res['qrt'] and res['qrt']['media_extended']:
+                    await enviar_midia_quote(client, message, res['qrt'], res['qrt'].get('user_name', 'Autor'), match, msg_espera, usuario)
 
                 # Registra link e verifica duplicata SOMENTE após sucesso
                 repetido_db, info_db = db.registrar_link_e_checar(url_norm, message.from_user.first_name or "Membro", user_id)
