@@ -755,7 +755,17 @@ async def cmd_bloq(client, message):
         link_motivo = link_info["url_norm"]
 
     if not link_motivo:
-        return await message.reply_text(f"⏱️ O {target_user.mention} não mandou link nos últimos 10 minutos. Passou o tempo, já era.")
+        url_no_cmd = re.search(r'((?:https?://|www\.)?[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?:/[^\s]*)?)', message.text or "")
+        if url_no_cmd and link_info:
+            url_raw_cmd = url_no_cmd.group(1)
+            if not url_raw_cmd.startswith('http'):
+                url_raw_cmd = 'https://' + url_raw_cmd
+            url_norm_cmd = urlunparse(urlparse(url_raw_cmd)._replace(query="")).lower().rstrip("/")
+            if url_norm_cmd == link_info["url_norm"]:
+                link_motivo = url_norm_cmd
+
+        if not link_motivo:
+            return await message.reply_text(f"O {target_user.mention} não enviou link recentemente. Sem motivo pra bloqueio.")
 
     # Verifica se esse link já foi motivo de bloqueio antes
     if link_motivo in _bloqueios_por_link.get(target_id, set()):
