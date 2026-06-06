@@ -750,29 +750,14 @@ async def cmd_bloq(client, message):
     link_info = _ultimo_link_por_usuario.get(target_id)
     link_motivo = None
 
-    # Caso 1: usuário enviou um link nos últimos 10 minutos
+    # Usuário enviou link nos últimos 10 minutos?
     if link_info and (agora - link_info["timestamp"] < 600):
         link_motivo = link_info["url_norm"]
 
-    # Caso 2: sem link recente, verifica se o comando menciona um link
     if not link_motivo:
-        url_no_cmd = re.search(r'((?:https?://|www\.)?[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?:/[^\s]*)?)', message.text or "")
-        if url_no_cmd and link_info:
-            url_raw_cmd = url_no_cmd.group(1)
-            if not url_raw_cmd.startswith('http'):
-                url_raw_cmd = 'https://' + url_raw_cmd
-            url_norm_cmd = urlunparse(urlparse(url_raw_cmd)._replace(query="")).lower().rstrip("/")
-            # Aplica a mesma normalização de Twitter/X usada no processar_links()
-            tw_match = re.search(r'(?:x|twitter)\.com/[^/]+/status/(\d+)', url_norm_cmd)
-            if tw_match:
-                url_norm_cmd = f"https://x.com/i/status/{tw_match.group(1)}"
-            if url_norm_cmd == link_info["url_norm"]:
-                link_motivo = url_norm_cmd
+        return await message.reply_text(f"⏱️ O {target_user.mention} não mandou link nos últimos 10 minutos. Passou o tempo, já era.")
 
-        if not link_motivo:
-            return await message.reply_text(f"O {target_user.mention} não enviou link recentemente. Sem motivo pra bloqueio.")
-
-    # Caso 3: verifica se esse link já foi motivo de bloqueio antes
+    # Verifica se esse link já foi motivo de bloqueio antes
     if link_motivo in _bloqueios_por_link.get(target_id, set()):
         return await message.reply_text(f"O {target_user.mention} já foi bloqueado por esse link antes. Não vou bloquear de novo.")
 
