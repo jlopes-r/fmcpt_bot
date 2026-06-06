@@ -1267,7 +1267,6 @@ async def processar_links(client, message):
                         pass
                 else:
                     log.info(f"X: tweet sem midia, enviando texto...")
-                    cap_limpa = limpar_texto(res.get('text', ''))
                     msg = f"📝 {res.get('user_name', 'Autor')}:\n{cap_limpa}\n\n👤 Enviado por: {usuario}"
                     for parte in dividir_texto_longo(msg):
                         await message.reply_text(parte)
