@@ -762,6 +762,10 @@ async def cmd_bloq(client, message):
             if not url_raw_cmd.startswith('http'):
                 url_raw_cmd = 'https://' + url_raw_cmd
             url_norm_cmd = urlunparse(urlparse(url_raw_cmd)._replace(query="")).lower().rstrip("/")
+            # Aplica a mesma normalização de Twitter/X usada no processar_links()
+            tw_match = re.search(r'(?:x|twitter)\.com/[^/]+/status/(\d+)', url_norm_cmd)
+            if tw_match:
+                url_norm_cmd = f"https://x.com/i/status/{tw_match.group(1)}"
             if url_norm_cmd == link_info["url_norm"]:
                 link_motivo = url_norm_cmd
 
