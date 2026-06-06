@@ -105,6 +105,8 @@ _processing_urls = set()  # URLs em processamento (evita downloads duplicados si
 _processing_lock = asyncio.Lock()
 _usuarios_bloqueados = {}  # user_id -> timestamp (cooldown de castigo de 5min)
 _uso_bloq = defaultdict(list)  # admin_id -> [timestamps dos blocks aplicados hoje]
+_ultimo_link_por_usuario = {}  # user_id -> {"url_norm": str, "url_raw": str, "timestamp": float}
+_bloqueios_por_link = defaultdict(set)  # user_id -> set de url_norms que já causaram bloqueio
 
 # -----------------------------------------
 # LOGGING
@@ -723,7 +725,6 @@ async def cmd_comi(client, message):
 async def cmd_bloq(client, message):
     if not chat_autorizado(message.chat.id):
         return
-    # Deve mencionar alguém
     if not message.reply_to_message and len(message.command) < 2:
         return await message.reply_text("Uso: /bloq @usuario ou responda a alguém.")
     
@@ -745,6 +746,33 @@ async def cmd_bloq(client, message):
     agora = time.time()
     target_id = target_user.id
     
+    # --- Verifica se há motivo válido para o bloqueio ---
+    link_info = _ultimo_link_por_usuario.get(target_id)
+    link_motivo = None
+
+    # Caso 1: usuário enviou um link nos últimos 10 minutos
+    if link_info and (agora - link_info["timestamp"] < 600):
+        link_motivo = link_info["url_norm"]
+
+    # Caso 2: sem link recente, verifica se o comando menciona um link
+    if not link_motivo:
+        url_no_cmd = re.search(r'((?:https?://|www\.)?[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?:/[^\s]*)?)', message.text or "")
+        if url_no_cmd and link_info:
+            url_raw_cmd = url_no_cmd.group(1)
+            if not url_raw_cmd.startswith('http'):
+                url_raw_cmd = 'https://' + url_raw_cmd
+            url_norm_cmd = urlunparse(urlparse(url_raw_cmd)._replace(query="")).lower().rstrip("/")
+            if url_norm_cmd == link_info["url_norm"]:
+                link_motivo = url_norm_cmd
+
+        if not link_motivo:
+            return await message.reply_text(f"O {target_user.mention} não enviou link recentemente. Sem motivo pra bloqueio.")
+
+    # Caso 3: verifica se esse link já foi motivo de bloqueio antes
+    if link_motivo in _bloqueios_por_link.get(target_id, set()):
+        return await message.reply_text(f"O {target_user.mention} já foi bloqueado por esse link antes. Não vou bloquear de novo.")
+
+    # --- Aplica o bloqueio ---
     is_self_block = message.from_user and target_id == message.from_user.id
 
     if not is_self_block:
@@ -757,7 +785,7 @@ async def cmd_bloq(client, message):
 
     if not is_self_block and len(_uso_bloq[target_id]) >= 3:
         ts_list = _uso_bloq[target_id]
-        if max(ts_list) - min(ts_list) <= 1200:  # 20 min = flood
+        if max(ts_list) - min(ts_list) <= 1200:
             duracao, tempo_str = 300, "5 minutos"
         else:
             duracao, tempo_str = 3600, "1 hora"
@@ -765,6 +793,7 @@ async def cmd_bloq(client, message):
         duracao, tempo_str = 300, "5 minutos"
 
     _usuarios_bloqueados[target_id] = agora + duracao
+    _bloqueios_por_link[target_id].add(link_motivo)
 
     msg = erro_aleatorio(ERROS_BLOQ_CMD, mention=target_user.mention, tempo=tempo_str)
     await message.reply_text(msg)
@@ -988,6 +1017,13 @@ async def processar_links(client, message):
             url_norm = f"https://x.com/i/status/{tw_match.group(1)}"
 
         repetido_db, info_db = db.checar_link(url_norm)
+
+        # Registra o último link enviado pelo usuário (para validar /bloq)
+        _ultimo_link_por_usuario[user_id] = {
+            "url_norm": url_norm,
+            "url_raw": url_raw,
+            "timestamp": time.time()
+        }
 
         # Race condition lock
         async with _processing_lock:
