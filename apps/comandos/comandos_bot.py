@@ -1,5 +1,6 @@
 import os
 import sys
+import re
 import json
 import logging
 from pathlib import Path
@@ -31,6 +32,7 @@ logging.basicConfig(level=logging.INFO)
 # para garantir que seja encontrado quando executado como serviço.
 CAMINHO_RAIZ_PROJETO = "/home/juanl/fmcpt_bot"
 COMANDOS_FILE = Path(CAMINHO_RAIZ_PROJETO) / "data" / "comandos_personalizados.json"
+BACKLOG_FILE = Path(CAMINHO_RAIZ_PROJETO) / "data" / "backlog.json"
 
 # Caminhos para as bases de dados de GIFs
 GIFS_CATOLICOS_FILE = Path(CAMINHO_RAIZ_PROJETO) / "data" / "gifs_catolicos.json"
@@ -40,7 +42,7 @@ GIFS_DUVIDA_FILE = Path(CAMINHO_RAIZ_PROJETO) / "data" / "gifs_interrogacao.json
 user_states = {}
 
 # Lista de comandos internos que o bot reconhece nativamente
-COMANDOS_INTERNOS = ["start", "help", "menu", "id", "create", "list", "delete", "instance", "duvida", "add", "removegif", "gifstats", "sync", "cancelar"]
+COMANDOS_INTERNOS = ["start", "help", "menu", "id", "create", "list", "delete", "instance", "duvida", "add", "removegif", "gifstats", "sync", "cancelar", "backlog", "done"]
 
 # Decorator para verificar se o usuário está autorizado
 def admin_only(func):
@@ -70,6 +72,21 @@ def salvar_comandos(comandos):
     COMANDOS_FILE.parent.mkdir(parents=True, exist_ok=True)
     with open(COMANDOS_FILE, 'w', encoding='utf-8') as f:
         json.dump(comandos, f, ensure_ascii=False, indent=2)
+
+# Carrega e salva backlog de sugestões
+def carregar_backlog():
+    if BACKLOG_FILE.exists():
+        try:
+            with open(BACKLOG_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except (json.JSONDecodeError, Exception) as e:
+            log.error(f"Erro ao carregar backlog: {e}")
+    return []
+
+def salvar_backlog(backlog):
+    BACKLOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(BACKLOG_FILE, 'w', encoding='utf-8') as f:
+        json.dump(backlog, f, ensure_ascii=False, indent=2)
 
 def carregar_gifs(filepath):
     """Carrega uma lista de GIFs de um arquivo JSON."""
@@ -119,14 +136,19 @@ async def atualizar_menu_comandos(client):
             BotCommand("add", "➕ Adiciona um GIF (responda a um GIF)"),
             BotCommand("removegif", "🗑️ Remove um GIF da base"),
             BotCommand("gifstats", "📊 Estatísticas dos GIFs"),
-            BotCommand("sync", "Sincroniza o menu de comandos")
+            BotCommand("backlog", "💡 Sugestões para o bot"),
+            BotCommand("done", "✅ Marca sugestão como feita"),
+            BotCommand("sync", "🔄 Sincroniza o menu de comandos")
         ]
         
         adicionados = 0
         tipo_emoji = {'texto': '📝', 'foto': '🖼️', 'video': '🎬', 'audio': '🎵', 'voice': '🎤', 'gif': '🎞️'}
-        import re
         for cmd, info in comandos_personalizados.items():
-            if adicionados >= 90:
+            # Limite do Telegram: 100 comandos no total
+            if len(lista_comandos) + adicionados >= 100:
+                log.warning("Limite de 100 comandos do Telegram atingido. Alguns comandos personalizados não serão exibidos.")
+                break
+            if adicionados >= 87:  # 13 internos + 87 personalizados = 100
                 break
             
             cmd_formatado = cmd.lower()
@@ -144,10 +166,10 @@ async def atualizar_menu_comandos(client):
             adicionados += 1
             
         await client.set_bot_commands(lista_comandos)
-        log.info("Menu de comandos atualizado no Telegram!")
+        log.info(f"Menu de comandos atualizado no Telegram! ({len(lista_comandos)} comandos)")
         return True
     except Exception as e:
-        log.error(f"Erro ao atualizar menu: {e}")
+        log.error(f"Erro ao atualizar menu: {e}", exc_info=True)
         return False
 
 # Cliente
@@ -221,13 +243,18 @@ async def cmd_menu(client, message):
         "▫️ `/id` - Mostra o ID desta conversa\n"
         "▫️ `/create` - 🆕 Cria um novo comando personalizado\n"
         "▫️ `/list` - 📋 Lista todos os seus comandos\n"
-        "▫️ `/delete NOME` - 🗑️ Deleta um comando\n\n"
+        "▫️ `/delete NOME` - 🗑️ Deleta um comando\n"
+        "▫️ `/sync` - 🔄 Sincroniza o menu do Telegram\n\n"
         "**🎞️ GIFs:**\n"
         "▫️ `/instance` - 🙏 Envia um GIF de bom dia abençoado\n"
         "▫️ `/duvida` - ❓ Envia um GIF de dúvida/interrogação\n"
         "▫️ `/add instance` ou `/add duvida` - ➕ Adiciona um GIF (responda a um GIF)\n"
         "▫️ `/removegif` - 🗑️ Remove um GIF (responda a um GIF do bot)\n"
         "▫️ `/gifstats` - 📊 Mostra quantos GIFs tem em cada base\n\n"
+        "**💡 Backlog:**\n"
+        "▫️ `/backlog` - 📋 Lista todas as sugestões pendentes\n"
+        "▫️ `/backlog SUGESTÃO` - ➕ Adiciona uma nova sugestão\n"
+        "▫️ `/done TEXTO` - ✅ Marca uma sugestão como concluída\n\n"
     )
     
     if comandos_personalizados:
@@ -485,6 +512,111 @@ async def cmd_sync(client, message):
         await message.reply_text("✅ Menu do Telegram (botão /) atualizado com todos os comandos!")
     else:
         await message.reply_text("❌ Erro ao atualizar o menu. Veja os logs.")
+
+# -----------------------------------------
+# BACKLOG DE SUGESTÕES
+# -----------------------------------------
+backlog_sugestoes = carregar_backlog()
+
+@app.on_message(filters.command("backlog"))
+@admin_only
+async def cmd_backlog(client, message):
+    global backlog_sugestoes
+    
+    # Se tem argumento, adiciona nova sugestão
+    texto_cmd = message.text or ""
+    # Remove o /backlog (e possível @nomedobot) do início
+    partes = texto_cmd.split(maxsplit=1)
+    sugestao_texto = partes[1].strip() if len(partes) > 1 else ""
+    
+    if sugestao_texto:
+        # Gera próximo ID
+        proximo_id = max((s.get('id', 0) for s in backlog_sugestoes), default=0) + 1
+        
+        nova_sugestao = {
+            'id': proximo_id,
+            'sugestao': sugestao_texto,
+            'autor': message.from_user.first_name or "Anônimo",
+            'autor_id': message.from_user.id,
+            'data': str(datetime.now().strftime('%d/%m/%Y %H:%M'))
+        }
+        backlog_sugestoes.append(nova_sugestao)
+        salvar_backlog(backlog_sugestoes)
+        
+        await message.reply_text(
+            f"✅ **Sugestão adicionada ao backlog!**\n\n"
+            f"📝 #{proximo_id}: {sugestao_texto}\n"
+            f"👤 Por: {nova_sugestao['autor']}\n"
+            f"📊 Total no backlog: **{len(backlog_sugestoes)}** sugestões"
+        )
+        return
+    
+    # Sem argumento: lista o backlog
+    if not backlog_sugestoes:
+        await message.reply_text(
+            "📭 **Backlog vazio!**\n\n"
+            "Nenhuma sugestão pendente. Use:\n"
+            "`/backlog sua sugestão aqui` para adicionar uma."
+        )
+        return
+    
+    txt = "**💡 BACKLOG DE SUGESTÕES**\n\n"
+    for s in backlog_sugestoes:
+        txt += (
+            f"**#{s.get('id', '?')}** — {s['sugestao']}\n"
+            f"   👤 {s.get('autor', '?')} • 📅 {s.get('data', '?')}\n\n"
+        )
+    txt += f"📊 **Total: {len(backlog_sugestoes)} sugestões pendentes**\n\n"
+    txt += "💡 Use `/done texto` para remover uma sugestão concluída."
+    
+    await message.reply_text(txt)
+
+@app.on_message(filters.command("done"))
+@admin_only
+async def cmd_done(client, message):
+    global backlog_sugestoes
+    
+    if len(message.command) < 2:
+        await message.reply_text(
+            "❌ **Uso:** `/done texto_da_sugestão`\n\n"
+            "Busca por texto parcial. Exemplo:\n"
+            "`/done piada` remove a sugestão que contém \"piada\"."
+        )
+        return
+    
+    texto_busca = " ".join(message.command[1:]).lower().strip()
+    
+    # Busca por match parcial case-insensitive
+    encontradas = [
+        s for s in backlog_sugestoes 
+        if texto_busca in s['sugestao'].lower()
+    ]
+    
+    if not encontradas:
+        await message.reply_text(
+            f"❌ Nenhuma sugestão encontrada com \"**{texto_busca}**\".\n\n"
+            "Use `/backlog` para ver a lista completa."
+        )
+        return
+    
+    if len(encontradas) > 1:
+        txt = f"⚠️ Encontrei **{len(encontradas)} sugestões** com \"**{texto_busca}**\":\n\n"
+        for s in encontradas:
+            txt += f"▫️ **#{s.get('id', '?')}** — {s['sugestao']}\n"
+        txt += "\nSeja mais específico no texto para remover uma só."
+        await message.reply_text(txt)
+        return
+    
+    # Exatamente 1 encontrada: remove
+    sugestao_removida = encontradas[0]
+    backlog_sugestoes = [s for s in backlog_sugestoes if s.get('id') != sugestao_removida.get('id')]
+    salvar_backlog(backlog_sugestoes)
+    
+    await message.reply_text(
+        f"✅ **Sugestão concluída e removida!**\n\n"
+        f"🗑️ #{sugestao_removida.get('id', '?')}: {sugestao_removida['sugestao']}\n"
+        f"📊 Restam **{len(backlog_sugestoes)}** sugestões no backlog."
+    )
 
 # Handler para mensagens de texto durante criação de comando (agora com filtro específico)
 @app.on_message(filters.text & ~filters.command(COMANDOS_INTERNOS) & filters.create(filtro_estado_usuario))

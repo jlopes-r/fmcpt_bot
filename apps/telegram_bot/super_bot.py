@@ -827,6 +827,44 @@ async def cmd_ping(client, message):
     uptime = str(timedelta(seconds=int(time.time() - START_TIME)))
     await message.reply_text(f"🏓 Pong! Bot online há `{uptime}`")
 
+# -----------------------------------------
+# SYNC DO MENU DE COMANDOS
+# -----------------------------------------
+async def atualizar_menu_comandos_super(client):
+    """Atualiza o menu de comandos (botão /) no Telegram para o Super Bot."""
+    try:
+        from pyrogram.types import BotCommand
+        lista_comandos = [
+            BotCommand("help", "📖 Guia do Super Bot"),
+            BotCommand("ranking", "📊 Ranking semanal de vacilos"),
+            BotCommand("bocadeleite", "🏆 Pódio do mês atual"),
+            BotCommand("anual", "👑 Hall da Fama do ano"),
+            BotCommand("repetido", "🎯 Castigo manual (responda a alguém)"),
+            BotCommand("comi", "😈 Escolhe uma vítima aleatória"),
+            BotCommand("bloq", "🚫 Bloqueia alguém de mandar link"),
+            BotCommand("id", "🆔 Mostra o ID deste chat"),
+            BotCommand("stats", "📊 Status técnico do bot"),
+            BotCommand("ping", "🏓 Verifica se o bot está online"),
+            BotCommand("retry", "🔄 Tenta baixar novamente (responda ao erro)"),
+            BotCommand("sync", "🔄 Sincroniza o menu de comandos"),
+        ]
+        await client.set_bot_commands(lista_comandos)
+        log.info(f"Menu de comandos do Super Bot atualizado no Telegram! ({len(lista_comandos)} comandos)")
+        return True
+    except Exception as e:
+        log.error(f"Erro ao atualizar menu do Super Bot: {e}", exc_info=True)
+        return False
+
+@app.on_message(filters.command("sync"))
+async def cmd_sync(client, message):
+    if not chat_autorizado(message.chat.id):
+        return
+    sucesso = await atualizar_menu_comandos_super(client)
+    if sucesso:
+        await message.reply_text("✅ Menu do Telegram (botão /) atualizado com todos os comandos!")
+    else:
+        await message.reply_text("❌ Erro ao atualizar o menu. Veja os logs.")
+
 @app.on_message(filters.command("retry"))
 async def cmd_retry(client, message):
     """Responder a uma mensagem de erro do bot com /retry para tentar de novo."""
@@ -1060,7 +1098,7 @@ async def enviar_aviso_duplicado(client, message, info_original: dict, repetido_
 # -----------------------------------------
 # ESCUTA DE MENSAGENS
 # -----------------------------------------
-COMANDOS = {"ranking", "bocadeleite", "anual", "stats", "help", "repetido", "id", "comi", "ping", "retry", "bloq"}
+COMANDOS = {"ranking", "bocadeleite", "anual", "stats", "help", "repetido", "id", "comi", "ping", "retry", "bloq", "sync"}
 
 @app.on_message(filters.text & ~filters.command(list(COMANDOS)))
 async def processar_links(client, message):
