@@ -26,6 +26,36 @@ except ImportError:
 from dotenv import load_dotenv
 from pathlib import Path
 
+def flex_command(commands, prefixes="/", case_sensitive=False):
+    if isinstance(commands, str):
+        commands = [commands]
+    if isinstance(prefixes, str):
+        prefixes = [prefixes]
+    
+    commands = [c if case_sensitive else c.lower() for c in commands]
+    
+    async def func(flt, client, message):
+        text = message.text or message.caption
+        message.command = None
+        if not text:
+            return False
+            
+        words = text.split()
+        for i, word in enumerate(words):
+            for prefix in prefixes:
+                if word.startswith(prefix):
+                    cmd_name = word[len(prefix):].split('@')[0]
+                    if not case_sensitive:
+                        cmd_name = cmd_name.lower()
+                    if cmd_name in flt.commands:
+                        message.command = [cmd_name] + words[i+1:]
+                        return True
+        return False
+        
+    return filters.create(func, commands=commands)
+
+filters.command = flex_command
+
 # Fix the import and RAÍZ problem:
 RAIZ = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, RAIZ)

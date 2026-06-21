@@ -12,6 +12,36 @@ from pyrogram.types import InputMediaPhoto, InputMediaVideo, InputMediaAudio
 from dotenv import load_dotenv
 
 # Configuração
+def flex_command(commands, prefixes="/", case_sensitive=False):
+    if isinstance(commands, str):
+        commands = [commands]
+    if isinstance(prefixes, str):
+        prefixes = [prefixes]
+    
+    commands = [c if case_sensitive else c.lower() for c in commands]
+    
+    async def func(flt, client, message):
+        text = message.text or message.caption
+        message.command = None
+        if not text:
+            return False
+            
+        words = text.split()
+        for i, word in enumerate(words):
+            for prefix in prefixes:
+                if word.startswith(prefix):
+                    cmd_name = word[len(prefix):].split('@')[0]
+                    if not case_sensitive:
+                        cmd_name = cmd_name.lower()
+                    if cmd_name in flt.commands:
+                        message.command = [cmd_name] + words[i+1:]
+                        return True
+        return False
+        
+    return filters.create(func, commands=commands)
+
+filters.command = flex_command
+
 # O caminho para o arquivo .env é definido de forma absoluta para garantir
 # que o bot funcione corretamente quando executado como um serviço na VM.
 CAMINHO_ENV = "/home/juanl/fmcpt_bot/apps/telegram_bot/.env"
@@ -43,7 +73,7 @@ GIFS_DUVIDA_FILE = Path(CAMINHO_RAIZ_PROJETO) / "data" / "gifs_interrogacao.json
 user_states = {}
 
 # Lista de comandos internos que o bot reconhece nativamente
-COMANDOS_INTERNOS = ["start", "help", "menu", "id", "create", "list", "delete", "instance", "duvida", "add", "removegif", "gifstats", "sync", "cancelar", "backlog", "done", "merda", "clearbacklog"]
+COMANDOS_INTERNOS = ["start", "help", "menu", "id", "create", "list", "delete", "instance", "duvida", "add", "removegif", "gifstats", "sync", "cancelar", "backlog", "done", "merda", "clearbacklog", "backlogmerda"]
 
 # Decorator para verificar se o usuário está autorizado
 def admin_only(func):
@@ -154,6 +184,7 @@ async def atualizar_menu_comandos(client):
             BotCommand("backlog", "💡 Sugestões para o bot"),
             BotCommand("done", "✅ Marca sugestão como feita"),
             BotCommand("merda", "💩 Move sugestão pro lixo"),
+            BotCommand("backlogmerda", "💩 Lista as sugestões no lixo"),
             BotCommand("clearbacklog", "🧹 Limpa todo o backlog"),
             BotCommand("sync", "🔄 Sincroniza o menu de comandos")
         ]
@@ -271,7 +302,9 @@ async def cmd_menu(client, message):
         "**💡 Backlog:**\n"
         "▫️ `/backlog` - 📋 Lista todas as sugestões pendentes\n"
         "▫️ `/backlog SUGESTÃO` - ➕ Adiciona uma nova sugestão\n"
-        "▫️ `/done TEXTO` - ✅ Marca uma sugestão como concluída\n\n"
+        "▫️ `/done TEXTO` - ✅ Marca uma sugestão como concluída\n"
+        "▫️ `/merda TEXTO` - 💩 Move uma sugestão pro lixo\n"
+        "▫️ `/backlogmerda` - 💩 Ver a lista da lixeira\n\n"
     )
     
     if comandos_personalizados:
@@ -649,30 +682,39 @@ async def cmd_done(client, message):
 
 sugestoes_merda = carregar_merda()
 
+@app.on_message(filters.command("backlogmerda"))
+@admin_only
+async def cmd_backlogmerda(client, message):
+    if not sugestoes_merda:
+        await message.reply_text(
+            "📭 **Lixeira vazia!**\n\n"
+            "Nenhuma sugestão descartada até agora."
+        )
+        return
+    
+    txt = "**💩 SUGESTÕES DESCARTADAS (Lixeira)**\n\n"
+    for i, s in enumerate(sugestoes_merda, 1):
+        txt += (
+            f"**{i}. #{s.get('id', '?')}** — {s['sugestao']}\n"
+            f"   👤 {s.get('autor', '?')} • 📅 {s.get('data', '?')}\n\n"
+        )
+    txt += f"📊 **Total: {len(sugestoes_merda)} sugestões descartadas**"
+    await message.reply_text(txt)
+
 @app.on_message(filters.command("merda"))
 @admin_only
 async def cmd_merda(client, message):
     global backlog_sugestoes, sugestoes_merda
     
     if len(message.command) < 2:
-        if not sugestoes_merda:
-            await message.reply_text(
-                "📭 **Lixeira vazia!**\n\n"
-                "Nenhuma sugestão descartada até agora."
-            )
-            return
-        
-        txt = "**💩 SUGESTÕES DESCARTADAS (Lixeira)**\n\n"
-        for i, s in enumerate(sugestoes_merda, 1):
-            txt += (
-                f"**{i}. #{s.get('id', '?')}** — {s['sugestao']}\n"
-                f"   👤 {s.get('autor', '?')} • 📅 {s.get('data', '?')}\n\n"
-            )
-        txt += f"📊 **Total: {len(sugestoes_merda)} sugestões descartadas**"
-        await message.reply_text(txt)
+        await message.reply_text(
+            "❌ **Uso:** `/merda id_ou_texto, outro_id...`\n\n"
+            "Remove sugestões ruins do backlog e guarda na pasta de lixo."
+        )
         return
     
     argumentos = " ".join(message.command[1:]).split(',')
+
     buscas = [arg.strip().lower() for arg in argumentos if arg.strip()]
     
     removidas = []
