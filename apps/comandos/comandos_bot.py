@@ -33,6 +33,7 @@ logging.basicConfig(level=logging.INFO)
 CAMINHO_RAIZ_PROJETO = "/home/juanl/fmcpt_bot"
 COMANDOS_FILE = Path(CAMINHO_RAIZ_PROJETO) / "data" / "comandos_personalizados.json"
 BACKLOG_FILE = Path(CAMINHO_RAIZ_PROJETO) / "data" / "backlog.json"
+MERDA_FILE = Path(CAMINHO_RAIZ_PROJETO) / "data" / "sugestoes_de_merda.json"
 
 # Caminhos para as bases de dados de GIFs
 GIFS_CATOLICOS_FILE = Path(CAMINHO_RAIZ_PROJETO) / "data" / "gifs_catolicos.json"
@@ -42,7 +43,7 @@ GIFS_DUVIDA_FILE = Path(CAMINHO_RAIZ_PROJETO) / "data" / "gifs_interrogacao.json
 user_states = {}
 
 # Lista de comandos internos que o bot reconhece nativamente
-COMANDOS_INTERNOS = ["start", "help", "menu", "id", "create", "list", "delete", "instance", "duvida", "add", "removegif", "gifstats", "sync", "cancelar", "backlog", "done"]
+COMANDOS_INTERNOS = ["start", "help", "menu", "id", "create", "list", "delete", "instance", "duvida", "add", "removegif", "gifstats", "sync", "cancelar", "backlog", "done", "merda", "clearbacklog"]
 
 # Decorator para verificar se o usuário está autorizado
 def admin_only(func):
@@ -87,6 +88,20 @@ def salvar_backlog(backlog):
     BACKLOG_FILE.parent.mkdir(parents=True, exist_ok=True)
     with open(BACKLOG_FILE, 'w', encoding='utf-8') as f:
         json.dump(backlog, f, ensure_ascii=False, indent=2)
+
+def carregar_merda():
+    if MERDA_FILE.exists():
+        try:
+            with open(MERDA_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except (json.JSONDecodeError, Exception) as e:
+            log.error(f"Erro ao carregar sugestões de merda: {e}")
+    return []
+
+def salvar_merda(merda):
+    MERDA_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(MERDA_FILE, 'w', encoding='utf-8') as f:
+        json.dump(merda, f, ensure_ascii=False, indent=2)
 
 def carregar_gifs(filepath):
     """Carrega uma lista de GIFs de um arquivo JSON."""
@@ -138,6 +153,8 @@ async def atualizar_menu_comandos(client):
             BotCommand("gifstats", "📊 Estatísticas dos GIFs"),
             BotCommand("backlog", "💡 Sugestões para o bot"),
             BotCommand("done", "✅ Marca sugestão como feita"),
+            BotCommand("merda", "💩 Move sugestão pro lixo"),
+            BotCommand("clearbacklog", "🧹 Limpa todo o backlog"),
             BotCommand("sync", "🔄 Sincroniza o menu de comandos")
         ]
         
@@ -561,13 +578,14 @@ async def cmd_backlog(client, message):
         return
     
     txt = "**💡 BACKLOG DE SUGESTÕES**\n\n"
-    for s in backlog_sugestoes:
+    for i, s in enumerate(backlog_sugestoes, 1):
         txt += (
-            f"**#{s.get('id', '?')}** — {s['sugestao']}\n"
+            f"**{i}. #{s.get('id', '?')}** — {s['sugestao']}\n"
             f"   👤 {s.get('autor', '?')} • 📅 {s.get('data', '?')}\n\n"
         )
     txt += f"📊 **Total: {len(backlog_sugestoes)} sugestões pendentes**\n\n"
-    txt += "💡 Use `/done texto` para remover uma sugestão concluída."
+    txt += "💡 Use `/done id1, id2` ou textos para remover sugestões concluídas.\n"
+    txt += "💩 Use `/merda id1, id2` para descartar sugestões ruins."
     
     await message.reply_text(txt)
 
@@ -578,45 +596,139 @@ async def cmd_done(client, message):
     
     if len(message.command) < 2:
         await message.reply_text(
-            "❌ **Uso:** `/done texto_da_sugestão`\n\n"
-            "Busca por texto parcial. Exemplo:\n"
-            "`/done piada` remove a sugestão que contém \"piada\"."
+            "❌ **Uso:** `/done id_ou_texto, outro_id...`\n\n"
+            "Você pode remover múltiplos itens separando por vírgula.\n"
+            "Exemplo: `/done 5, 7, macarrão`."
         )
         return
     
-    texto_busca = " ".join(message.command[1:]).lower().strip()
+    argumentos = " ".join(message.command[1:]).split(',')
+    buscas = [arg.strip().lower() for arg in argumentos if arg.strip()]
     
-    # Busca por match parcial case-insensitive
-    encontradas = [
-        s for s in backlog_sugestoes 
-        if texto_busca in s['sugestao'].lower()
-    ]
+    removidas = []
+    nao_encontradas = []
     
-    if not encontradas:
+    for busca in buscas:
+        encontradas = []
+        if busca.isdigit():
+            id_busca = int(busca)
+            encontradas = [s for s in backlog_sugestoes if s.get('id') == id_busca]
+        else:
+            encontradas = [s for s in backlog_sugestoes if busca in s['sugestao'].lower()]
+            
+        if not encontradas:
+            nao_encontradas.append(f"\"{busca}\" (Não encontrada)")
+        elif len(encontradas) > 1:
+            nao_encontradas.append(f"\"{busca}\" (Múltiplas encontradas, seja mais específico)")
+        else:
+            if encontradas[0] not in removidas:
+                removidas.append(encontradas[0])
+    
+    if not removidas:
         await message.reply_text(
-            f"❌ Nenhuma sugestão encontrada com \"**{texto_busca}**\".\n\n"
-            "Use `/backlog` para ver a lista completa."
+            f"❌ Nenhuma sugestão pôde ser removida.\n" +
+            ("\n".join(nao_encontradas) if nao_encontradas else "")
         )
         return
-    
-    if len(encontradas) > 1:
-        txt = f"⚠️ Encontrei **{len(encontradas)} sugestões** com \"**{texto_busca}**\":\n\n"
-        for s in encontradas:
-            txt += f"▫️ **#{s.get('id', '?')}** — {s['sugestao']}\n"
-        txt += "\nSeja mais específico no texto para remover uma só."
-        await message.reply_text(txt)
-        return
-    
-    # Exatamente 1 encontrada: remove
-    sugestao_removida = encontradas[0]
-    backlog_sugestoes = [s for s in backlog_sugestoes if s.get('id') != sugestao_removida.get('id')]
+        
+    ids_removidos = [s.get('id') for s in removidas]
+    backlog_sugestoes = [s for s in backlog_sugestoes if s.get('id') not in ids_removidos]
     salvar_backlog(backlog_sugestoes)
     
-    await message.reply_text(
-        f"✅ **Sugestão concluída e removida!**\n\n"
-        f"🗑️ #{sugestao_removida.get('id', '?')}: {sugestao_removida['sugestao']}\n"
-        f"📊 Restam **{len(backlog_sugestoes)}** sugestões no backlog."
-    )
+    txt = f"✅ **{len(removidas)} Sugestão(ões) concluída(s)!**\n\n"
+    for s in removidas:
+        txt += f"✅ #{s.get('id', '?')}: {s['sugestao']}\n"
+        
+    if nao_encontradas:
+        txt += "\n⚠️ **Não foi possível remover:**\n"
+        for n in nao_encontradas:
+            txt += f"▫️ {n}\n"
+            
+    txt += f"\n📊 Restam **{len(backlog_sugestoes)}** sugestões no backlog."
+    await message.reply_text(txt)
+
+sugestoes_merda = carregar_merda()
+
+@app.on_message(filters.command("merda"))
+@admin_only
+async def cmd_merda(client, message):
+    global backlog_sugestoes, sugestoes_merda
+    
+    if len(message.command) < 2:
+        await message.reply_text(
+            "❌ **Uso:** `/merda id_ou_texto, outro_id...`\n\n"
+            "Remove sugestões ruins do backlog e guarda na pasta de lixo."
+        )
+        return
+    
+    argumentos = " ".join(message.command[1:]).split(',')
+    buscas = [arg.strip().lower() for arg in argumentos if arg.strip()]
+    
+    removidas = []
+    nao_encontradas = []
+    
+    for busca in buscas:
+        encontradas = []
+        if busca.isdigit():
+            id_busca = int(busca)
+            encontradas = [s for s in backlog_sugestoes if s.get('id') == id_busca]
+        else:
+            encontradas = [s for s in backlog_sugestoes if busca in s['sugestao'].lower()]
+            
+        if not encontradas:
+            nao_encontradas.append(f"\"{busca}\" (Não encontrada)")
+        elif len(encontradas) > 1:
+            nao_encontradas.append(f"\"{busca}\" (Múltiplas encontradas)")
+        else:
+            if encontradas[0] not in removidas:
+                removidas.append(encontradas[0])
+                
+    if not removidas:
+        await message.reply_text(f"❌ Nenhuma sugestão pôde ser movida.\n" + ("\n".join(nao_encontradas) if nao_encontradas else ""))
+        return
+        
+    ids_removidos = [s.get('id') for s in removidas]
+    backlog_sugestoes = [s for s in backlog_sugestoes if s.get('id') not in ids_removidos]
+    sugestoes_merda.extend(removidas)
+    
+    salvar_backlog(backlog_sugestoes)
+    salvar_merda(sugestoes_merda)
+    
+    txt = f"💩 **{len(removidas)} Sugestão(ões) mandada(s) pro lixo!**\n\n"
+    for s in removidas:
+        txt += f"💩 #{s.get('id', '?')}: {s['sugestao']}\n"
+        
+    if nao_encontradas:
+        txt += "\n⚠️ **Falhas:**\n"
+        for n in nao_encontradas:
+            txt += f"▫️ {n}\n"
+            
+    await message.reply_text(txt)
+
+@app.on_message(filters.command("clearbacklog"))
+@admin_only
+async def cmd_clearbacklog(client, message):
+    global backlog_sugestoes, sugestoes_merda
+    
+    if len(message.command) < 2 or message.command[1].lower() != "confirmar":
+        await message.reply_text(
+            "⚠️ **Atenção!** Isso vai mover **TODAS** as sugestões atuais para o lixo.\n\n"
+            "Se você tem certeza, digite: `/clearbacklog confirmar`"
+        )
+        return
+        
+    if not backlog_sugestoes:
+        await message.reply_text("📭 O backlog já está vazio.")
+        return
+        
+    qtd = len(backlog_sugestoes)
+    sugestoes_merda.extend(backlog_sugestoes)
+    backlog_sugestoes = []
+    
+    salvar_backlog(backlog_sugestoes)
+    salvar_merda(sugestoes_merda)
+    
+    await message.reply_text(f"🧹 **Backlog limpo!**\n\nForam movidas **{qtd}** sugestões para a lista de descartadas.")
 
 # Handler para mensagens de texto durante criação de comando (agora com filtro específico)
 @app.on_message(filters.text & ~filters.command(COMANDOS_INTERNOS) & filters.create(filtro_estado_usuario))
