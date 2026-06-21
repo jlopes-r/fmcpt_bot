@@ -547,13 +547,28 @@ async def cmd_list(client, message):
     if not comandos_personalizados:
         await message.reply_text("📭 Nenhum comando personalizado criado.")
         return
-    
-    txt = "**📋 Comandos Personalizados:**\n\n"
+
     tipo_emoji = {'texto': '📝', 'foto': '🖼️', 'video': '🎬', 'audio': '🎵', 'voice': '🎤', 'gif': '🎞️'}
+    tipo_nome = {'texto': 'Texto', 'foto': 'Foto', 'video': 'Vídeo', 'audio': 'Áudio', 'voice': 'Voz', 'gif': 'GIF'}
+
+    grupos = {}
     for cmd, info in comandos_personalizados.items():
-        emoji = tipo_emoji.get(info.get('tipo', 'texto'), '❓')
-        txt += f"▫️ `/{cmd}` {emoji} - {info.get('descricao', 'Sem descrição')}\n"
-    
+        t = info.get('tipo', 'texto')
+        grupos.setdefault(t, []).append(cmd)
+
+    for t in grupos:
+        grupos[t].sort()
+
+    txt = f"**📋 Comandos Personalizados:** {len(comandos_personalizados)} no total\n\n"
+    for tipo in ['video', 'foto', 'audio', 'gif', 'texto', 'voice']:
+        cmds = grupos.get(tipo)
+        if not cmds:
+            continue
+        emoji = tipo_emoji.get(tipo, '❓')
+        nome = tipo_nome.get(tipo, tipo)
+        lista = ', '.join(f'/{c}' for c in cmds)
+        txt += f"{emoji} **{nome}** ({len(cmds)}):\n{lista}\n\n"
+
     for parte in dividir_texto_longo(txt):
         await message.reply_text(parte)
 
