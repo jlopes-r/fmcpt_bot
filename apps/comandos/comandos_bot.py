@@ -119,6 +119,24 @@ def salvar_backlog(backlog):
     with open(BACKLOG_FILE, 'w', encoding='utf-8') as f:
         json.dump(backlog, f, ensure_ascii=False, indent=2)
 
+def dividir_texto_longo(texto: str, limite: int = 4096) -> list[str]:
+    """Divide texto longo em múltiplas mensagens respeitando o limite do Telegram."""
+    if len(texto) <= limite:
+        return [texto]
+    partes = []
+    while texto:
+        if len(texto) <= limite:
+            partes.append(texto)
+            break
+        corte = texto.rfind('\n', 0, limite)
+        if corte == -1 or corte < limite // 2:
+            corte = texto.rfind(' ', 0, limite)
+        if corte == -1 or corte < limite // 2:
+            corte = limite
+        partes.append(texto[:corte])
+        texto = texto[corte:].lstrip()
+    return partes
+
 def carregar_merda():
     if MERDA_FILE.exists():
         try:
@@ -250,7 +268,8 @@ async def executar_comando_personalizado(client, message, nome, info):
         reply_to = message.reply_to_message.id if message.reply_to_message else message.id
         
         if tipo == 'texto':
-            await client.send_message(message.chat.id, conteudo, reply_to_message_id=reply_to)
+            for parte in dividir_texto_longo(conteudo):
+                await client.send_message(message.chat.id, parte, reply_to_message_id=reply_to)
         elif tipo == 'foto' and 'media_id' in info:
             await client.send_photo(message.chat.id, info['media_id'], caption=conteudo, reply_to_message_id=reply_to)
         elif tipo == 'video' and 'media_id' in info:
@@ -535,7 +554,8 @@ async def cmd_list(client, message):
         emoji = tipo_emoji.get(info.get('tipo', 'texto'), '❓')
         txt += f"▫️ `/{cmd}` {emoji} - {info.get('descricao', 'Sem descrição')}\n"
     
-    await message.reply_text(txt)
+    for parte in dividir_texto_longo(txt):
+        await message.reply_text(parte)
 
 @app.on_message(filters.command("delete"))
 @admin_only
@@ -619,8 +639,9 @@ async def cmd_backlog(client, message):
     txt += f"📊 **Total: {len(backlog_sugestoes)} sugestões pendentes**\n\n"
     txt += "💡 Use `/done id1, id2` ou textos para remover sugestões concluídas.\n"
     txt += "💩 Use `/merda id1, id2` para descartar sugestões ruins."
-    
-    await message.reply_text(txt)
+
+    for parte in dividir_texto_longo(txt):
+        await message.reply_text(parte)
 
 @app.on_message(filters.command("done"))
 @admin_only
@@ -939,10 +960,12 @@ async def notificar_atualizacao():
             txt += f"• `{c['hash']}` — {c['message']}\n"
         txt += f"\n🕐 {data.get('updated_at', 'N/A')}"
 
+        partes = dividir_texto_longo(txt)
         enviados = 0
         for grupo_id in GRUPOS_AUTORIZADOS:
             try:
-                await app.send_message(grupo_id, txt)
+                for parte in partes:
+                    await app.send_message(grupo_id, parte)
                 enviados += 1
             except Exception as e:
                 log.error(f"Erro ao enviar notificação de update para {grupo_id}: {e}")

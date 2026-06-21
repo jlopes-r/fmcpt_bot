@@ -1486,10 +1486,12 @@ async def notificar_atualizacao():
             txt += f"• `{c['hash']}` — {c['message']}\n"
         txt += f"\n🕐 {data.get('updated_at', 'N/A')}"
 
+        partes = dividir_texto_longo(txt)
         enviados = 0
         for grupo_id in GRUPOS_AUTORIZADOS:
             try:
-                await app.send_message(grupo_id, txt)
+                for parte in partes:
+                    await app.send_message(grupo_id, parte)
                 enviados += 1
             except Exception as e:
                 log.error(f"Erro ao enviar notificação de update para {grupo_id}: {e}")
@@ -1497,7 +1499,8 @@ async def notificar_atualizacao():
         # Fallback: se não há grupos autorizados, envia para o admin
         if not GRUPOS_AUTORIZADOS and ADMIN_ID:
             try:
-                await app.send_message(ADMIN_ID, txt)
+                for parte in partes:
+                    await app.send_message(ADMIN_ID, parte)
                 enviados += 1
             except Exception as e:
                 log.error(f"Erro ao enviar notificação de update para admin: {e}")
