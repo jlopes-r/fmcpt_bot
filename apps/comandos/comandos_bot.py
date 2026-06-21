@@ -655,10 +655,21 @@ async def cmd_merda(client, message):
     global backlog_sugestoes, sugestoes_merda
     
     if len(message.command) < 2:
-        await message.reply_text(
-            "❌ **Uso:** `/merda id_ou_texto, outro_id...`\n\n"
-            "Remove sugestões ruins do backlog e guarda na pasta de lixo."
-        )
+        if not sugestoes_merda:
+            await message.reply_text(
+                "📭 **Lixeira vazia!**\n\n"
+                "Nenhuma sugestão descartada até agora."
+            )
+            return
+        
+        txt = "**💩 SUGESTÕES DESCARTADAS (Lixeira)**\n\n"
+        for i, s in enumerate(sugestoes_merda, 1):
+            txt += (
+                f"**{i}. #{s.get('id', '?')}** — {s['sugestao']}\n"
+                f"   👤 {s.get('autor', '?')} • 📅 {s.get('data', '?')}\n\n"
+            )
+        txt += f"📊 **Total: {len(sugestoes_merda)} sugestões descartadas**"
+        await message.reply_text(txt)
         return
     
     argumentos = " ".join(message.command[1:]).split(',')
