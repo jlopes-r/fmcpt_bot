@@ -1245,8 +1245,11 @@ async def processar_links(client, message):
 
                 tem_midia_no_quote = qrt_info and 'media_extended' in qrt_info and len(qrt_info['media_extended']) > 0
                 
-                if qrt_info and 'text' in qrt_info and not tem_midia_no_quote:
-                    texto_base += f"\n\n🔁 [Quote - {qrt_info.get('user_name', 'Autor')}]:\n{qrt_info['text']}"
+                if qrt_info:
+                    if not tem_midia_no_quote and 'text' in qrt_info:
+                        texto_base += f"\n\n🔁 [Quote - {qrt_info.get('user_name', 'Autor')}]:\n{qrt_info['text']}"
+                    elif tem_midia_no_quote:
+                        texto_base += f"\n\n🔁 [Quote de {qrt_info.get('user_name', 'Autor')} logo abaixo 👇]"
                     
                 cap_limpa = limpar_texto(texto_base)
                 legenda = montar_legenda(cap_limpa, res.get('user_name', 'Autor'), usuario, emoji="📸")
