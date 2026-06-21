@@ -1224,8 +1224,30 @@ async def processar_links(client, message):
                         res = await resp.json()
 
                 texto_base = res.get('text', '')
-                if 'qrt' in res and res['qrt'] and 'text' in res['qrt']:
-                    texto_base += f"\n\n🔁 [Quote - {res['qrt'].get('user_name', 'Autor')}]:\n{res['qrt']['text']}"
+                
+                # --- BUSCA DE QUOTE ANTECIPADA ---
+                qrt_info = None
+                if 'qrt' in res and res['qrt']:
+                    qrt_info = res['qrt']
+                    if 'media_extended' not in qrt_info and 'id' in qrt_info:
+                        try:
+                            qrt_user = qrt_info.get('user_screen_name', 'i')
+                            url_qrt = f"https://api.vxtwitter.com/{qrt_user}/status/{qrt_info['id']}"
+                            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as s:
+                                async with s.get(url_qrt) as r:
+                                    qrt_data = await r.json()
+                            if 'media_extended' in qrt_data and qrt_data['media_extended']:
+                                qrt_info['media_extended'] = qrt_data['media_extended']
+                            if 'text' in qrt_data and not qrt_info.get('text'):
+                                qrt_info['text'] = qrt_data['text']
+                        except Exception as e:
+                            log.error(f"Erro ao buscar quote antecipado: {e}")
+
+                tem_midia_no_quote = qrt_info and 'media_extended' in qrt_info and len(qrt_info['media_extended']) > 0
+                
+                if qrt_info and 'text' in qrt_info and not tem_midia_no_quote:
+                    texto_base += f"\n\n🔁 [Quote - {qrt_info.get('user_name', 'Autor')}]:\n{qrt_info['text']}"
+                    
                 cap_limpa = limpar_texto(texto_base)
                 legenda = montar_legenda(cap_limpa, res.get('user_name', 'Autor'), usuario, emoji="📸")
 
@@ -1345,27 +1367,8 @@ async def processar_links(client, message):
                     log.info(f"Sucesso X (texto): {url_raw}")
 
                 # Se o tweet quoteado tiver mídia, envia separado
-                if 'qrt' in res and res['qrt']:
-                    qrt_id = res['qrt'].get('id')
-                    qrt_media = res['qrt'].get('media_extended')
-                    if qrt_media:
-                        await enviar_midia_quote(client, message, res['qrt'], match, msg_espera, usuario)
-                    elif qrt_id:
-                        try:
-                            qrt_user = res['qrt'].get('user_screen_name', 'i')
-                            url_qrt = f"https://api.vxtwitter.com/{qrt_user}/status/{qrt_id}"
-                            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as s:
-                                async with s.get(url_qrt) as r:
-                                    qrt_data = await r.json()
-                            if 'media_extended' in qrt_data and qrt_data['media_extended']:
-                                qrt_info = {
-                                    'media_extended': qrt_data['media_extended'],
-                                    'user_name': qrt_data.get('user_name', res['qrt'].get('user_name', 'Autor')),
-                                    'text': qrt_data.get('text', '')
-                                }
-                                await enviar_midia_quote(client, message, qrt_info, match, msg_espera, usuario)
-                        except Exception as e:
-                            log.error(f"Erro ao buscar quote: {e}")
+                if tem_midia_no_quote:
+                    await enviar_midia_quote(client, message, qrt_info, match, msg_espera, usuario)
 
                 # Registra link e verifica duplicata SOMENTE após sucesso
                 repetido_db, info_db = db.registrar_link_e_checar(url_norm, message.from_user.first_name or "Membro", user_id)
