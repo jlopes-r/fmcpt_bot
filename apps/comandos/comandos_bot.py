@@ -889,19 +889,29 @@ async def processar_criacao(client, message):
         )
 
 # Filtro customizado para identificar comandos personalizados
+# Reconhece comandos em qualquer posição da mensagem (flex_command)
 async def filtro_comando_personalizado(_, __, message):
-    if not message.text or not message.text.startswith('/'):
+    if not message.text:
         return False
-    # Pega o nome do comando sem a "/" e tira o @nomedobot se houver
-    comando = message.text.split()[0][1:].split('@')[0].lower()
-    # Retorna True se o comando NÃO for interno E estiver na lista de personalizados
-    # Fazos lower() para garantir que case insensitive funcione (já que o JSON e o comando do Telegram usam lowercase)
-    return comando not in COMANDOS_INTERNOS and comando in [c.lower() for c in comandos_personalizados.keys()]
+    words = message.text.split()
+    for word in words:
+        if word.startswith('/'):
+            comando = word[1:].split('@')[0].lower()
+            if comando not in COMANDOS_INTERNOS and comando in [c.lower() for c in comandos_personalizados.keys()]:
+                return True
+    return False
 
 @app.on_message(filters.create(filtro_comando_personalizado))
 async def handle_custom_command(client, message):
     """Handler genérico para todos os comandos personalizados que funciona em tempo real."""
-    comando_recebido = message.text.split()[0][1:].split('@')[0].lower()
+    words = message.text.split()
+    comando_recebido = None
+    for word in words:
+        if word.startswith('/'):
+            cmd = word[1:].split('@')[0].lower()
+            if cmd not in COMANDOS_INTERNOS:
+                comando_recebido = cmd
+                break
     
     # Encontra a chave original correspondente ignorando case
     chave_real = next((c for c in comandos_personalizados if c.lower() == comando_recebido), None)

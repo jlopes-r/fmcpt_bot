@@ -830,8 +830,6 @@ async def cmd_bloq(client, message):
 
 @app.on_message(filters.command("id"))
 async def cmd_id(client, message):
-    if not chat_autorizado(message.chat.id):
-        return
     await message.reply_text(f"🆔 ID deste Chat: `{message.chat.id}`")
 
 @app.on_message(filters.command("stats"))
@@ -1391,6 +1389,15 @@ async def processar_links(client, message):
 
     # 2. INSTAGRAM (handler dedicado)
     if url_raw and any(d in url_raw for d in ["instagram.com", "instagr.am"]):
+        # Detecta link de perfil do Instagram (não post/reel/stories)
+        ig_path = urlparse(url_raw).path.strip('/')
+        ig_first = ig_path.split('/')[0] if ig_path else ''
+        if ig_first and ig_first not in ('p', 'reel', 'reels', 'tv', 'ad', 'stories'):
+            await message.reply_text("❌ Não é possível baixar perfis do Instagram.\nEnvie o link de um post, Reels ou Stories específico.")
+            async with _processing_lock:
+                _processing_urls.discard(url_norm)
+            return
+
         agora_ts = time.time()
         if url_norm in _failed_url_cache and agora_ts - _failed_url_cache[url_norm] < 300:
             tr = int(300 - (agora_ts - _failed_url_cache[url_norm]))

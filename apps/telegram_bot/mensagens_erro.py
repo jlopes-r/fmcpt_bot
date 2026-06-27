@@ -33,31 +33,31 @@ ERROS_RATE_LIMIT = [
 
 ERROS_VIDEO_LONGO = [
     # Mãe
-    "🎬 Caralho, isso é mais longo que a fila de amante da tua mãe gorda. Limite: {min}min.",
-    "⏰ Puta merda, dura mais que tua mãe safada na esquina num sábado à noite. Máximo {min}min.",
+    "🎬 Vídeo muito longo! Mais longo que a fila de amante da tua mãe gorda. Máximo {min}min, não vou mandar essa porra.",
+    "⏰ Vídeo longo pra caralho! Dura mais que tua mãe safada na esquina. Máximo {min}min, não vou enviar.",
     # Má vontade
-    "Preguiça do caralho de baixar essa bíblia em formato de vídeo. Vai ler um livro, porra. Máximo {min}min.",
-    "Dura mais de {min}min? Eu lá tenho cara de quem vai ficar renderizando curta-metragem pra ti? Foda-se.",
+    "Preguiça do caralho de baixar essa bíblia em formato de vídeo. Vai ler um livro, porra. Máximo {min}min, não vou postar.",
+    "Dura mais de {min}min? Eu lá tenho cara de quem vai ficar renderizando curta-metragem pra ti? Foda-se, não mando.",
     # Desfeita
-    "Tu realmente acha que alguém se importa o suficiente com você pra assistir esse vídeo infinito? Limite: {min}min, corno.",
-    "O seu nível de falta de noção é achar que alguém tem tempo livre pra ver isso. Máximo {min}min.",
+    "Tu realmente acha que alguém se importa o suficiente com você pra assistir esse vídeo infinito? Limite {min}min, não vou enviar, corno.",
+    "O seu nível de falta de noção é achar que alguém tem tempo livre pra ver isso. Máximo {min}min, não vou mandar.",
     # Recusa
-    "Não vou baixar. Passou de {min}min eu não faço, se vira.",
-    "Deu o tempo e eu cansei. Não vou baixar esse lixo, tchau.",
+    "Não vou baixar nem mandar. Passou de {min}min eu não faço, se vira pra ver isso.",
+    "Nem fudendo que eu mando isso. Passou de {min}min eu cansei. Tchau.",
     # Extras (Pesadas)
-    "Tu é doente mental de querer que eu baixe um filme inteiro, seu arrombado? Passou de {min}min vai pro caralho.",
-    "Foda-se você e a sua falta de noção. {min}min é o limite, enfia esse vídeo longo no meio do seu cu.",
+    "Tu é doente mental de querer que eu baixe e mande um filme inteiro, seu arrombado? Passou de {min}min vai pro caralho.",
+    "Foda-se você e a sua falta de noção. {min}min é o limite, enfia esse vídeo longo no meio do seu cu. Não vou enviar.",
     # Novas
-    "Vai pro cinema se quiser ver um filme longo, seu retardado. Eu não sou a Netflix. Limite de {min}min.",
-    "Que vídeo longo da porra. Você achou que eu tinha o dia todo? Nem fodendo. Máximo de {min}min.",
-    "Puta que pariu, vai alugar um cinema se quiser passar isso. Limite {min}min.",
-    "Eu lá tenho cara de quem vai assistir isso tudo? Máximo {min}min, corno.",
-    "Passou de {min}min eu já sei que é bosta. Não vou baixar.",
-    "Isso aí é mais longo que a paciência de quem convive contigo. Limite: {min}min.",
-    "Manda o link e compra uma pipoca, porque não vou baixar. Máximo {min}min.",
-    "Tua mãe demora menos no banho do que esse vídeo. Foda-se. {min}min é o teto.",
-    "Pede pro diretor fazer um corte menor, eu não sou otário. Limite {min}min.",
-    "Passou de {min}min. Vai resumir isso aí na casa do caralho."
+    "Vai pro cinema se quiser ver um filme longo, seu retardado. Eu não sou a Netflix. Máximo {min}min, não mando.",
+    "Que vídeo longo da porra. Você achou que eu tinha o dia todo? Nem fodendo. Máximo de {min}min, não vou enviar.",
+    "Puta que pariu, vai alugar um cinema se quiser passar isso. Passou de {min}min eu não mando, corno.",
+    "Eu lá tenho cara de quem vai assistir isso tudo? Máximo {min}min, não vou postar essa merda.",
+    "Passou de {min}min eu já sei que é bosta. Não vou baixar nem enviar.",
+    "Isso aí é mais longo que a paciência de quem convive contigo. Limite {min}min, não vou mandar.",
+    "Manda o link e compra uma pipoca, porque não vou baixar nem enviar. Máximo {min}min.",
+    "Tua mãe demora menos no banho do que esse vídeo. Foda-se. {min}min é o teto, não mando.",
+    "Pede pro diretor fazer um corte menor, eu não sou otário. Passou de {min}min não envio.",
+    "Passou de {min}min. Vai resumir isso aí na casa do caralho. Não vou mandar."
 ]
 
 ERROS_ARQUIVO_GRANDE = [
