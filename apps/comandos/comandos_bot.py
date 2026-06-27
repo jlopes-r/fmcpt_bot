@@ -628,8 +628,8 @@ async def cmd_backlog(client, message):
         txt = "**💡 BACKLOG DE SUGESTÕES**\n\n"
         for i, s in enumerate(backlog_sugestoes, 1):
             txt += (
-                f"**{i}. #{s.get("id", "?")}** — {s["sugestao"]}\n"
-                f"   👤 {s.get("autor", "?")} • 📅 {s.get("data", "?")}\n\n"
+                f"**{i}. #{s.get('id', '?')}** — {s['sugestao']}\n"
+                f"   👤 {s.get('autor', '?')} • 📅 {s.get('data', '?')}\n\n"
             )
         txt += f"📊 **Total: {len(backlog_sugestoes)} sugestões pendentes**\n\n"
         txt += "💡 Use `/backlog done id1, id2` para concluir.\n"
@@ -691,7 +691,7 @@ async def cmd_backlog(client, message):
 
         txt = f"✅ **{len(removidas)} Sugestão(ões) concluída(s)!**\n\n"
         for s in removidas:
-            txt += f"✅ #{s.get("id", "?")}: {s["sugestao"]}\n"
+            txt += f"✅ #{s.get('id', '?')}: {s['sugestao']}\n"
         if nao_encontradas:
             txt += "\n⚠️ **Não foi possível remover:**\n"
             for n in nao_encontradas:
@@ -743,7 +743,7 @@ async def cmd_backlog(client, message):
 
         txt = f"💩 **{len(removidas)} Sugestão(ões) mandada(s) pro lixo!**\n\n"
         for s in removidas:
-            txt += f"💩 #{s.get("id", "?")}: {s["sugestao"]}\n"
+            txt += f"💩 #{s.get('id', '?')}: {s['sugestao']}\n"
         if nao_encontradas:
             txt += "\n⚠️ **Falhas:**\n"
             for n in nao_encontradas:
@@ -765,8 +765,8 @@ async def cmd_backlog(client, message):
         txt = "**💩 SUGESTÕES DESCARTADAS (Lixeira)**\n\n"
         for i, s in enumerate(sugestoes_merda, 1):
             txt += (
-                f"**{i}. #{s.get("id", "?")}** — {s["sugestao"]}\n"
-                f"   👤 {s.get("autor", "?")} • 📅 {s.get("data", "?")}\n\n"
+                f"**{i}. #{s.get('id', '?')}** — {s['sugestao']}\n"
+                f"   👤 {s.get('autor', '?')} • 📅 {s.get('data', '?')}\n\n"
             )
         txt += f"📊 **Total: {len(sugestoes_merda)} sugestões descartadas**"
         await message.reply_text(txt)
