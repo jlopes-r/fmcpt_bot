@@ -812,7 +812,7 @@ async def cmd_backlog(client, message):
     await message.reply_text(
         f"✅ **Sugestão adicionada ao backlog!**\n\n"
         f"📝 #{proximo_id}: {sugestao_texto}\n"
-        f"👤 Por: {nova_sugestao["autor"]}\n"
+        f"👤 Por: {nova_sugestao['autor']}\n"
         f"📊 Total no backlog: **{len(backlog_sugestoes)}** sugestões"
     )
 
