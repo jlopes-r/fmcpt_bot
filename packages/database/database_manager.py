@@ -5,21 +5,27 @@ from datetime import datetime, timedelta
 # Localiza a raiz do projeto (bot/) subindo dois níveis
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"))
 DB_PATH = os.path.join(BASE_DIR, "data", "bocadeleite.db")
-
 def init_db():
     """Garante que a pasta data existe e cria o banco."""
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    # Tabela links agora com first_user_id para menções futuras
-    cursor.execute('''CREATE TABLE IF NOT EXISTS links 
-                      (url_norm TEXT PRIMARY KEY, first_user TEXT, first_user_id INTEGER, count INTEGER, timestamp REAL)''')
     
-    # Migração simples: se a coluna first_user_id não existir, adiciona
+    # Cria tabela links (schema novo: composto url_norm + chat_id)
+    cursor.execute('''CREATE TABLE IF NOT EXISTS links 
+                      (url_norm TEXT, chat_id INTEGER, first_user TEXT, first_user_id INTEGER, count INTEGER, timestamp REAL,
+                       PRIMARY KEY (url_norm, chat_id))''')
+    
+    # Migração: se a tabela antiga existir sem chat_id, converte
     try:
-        cursor.execute("ALTER TABLE links ADD COLUMN first_user_id INTEGER")
-    except:
-        pass
+        cursor.execute("SELECT chat_id FROM links LIMIT 1")
+    except sqlite3.OperationalError:
+        cursor.execute("ALTER TABLE links RENAME TO links_old")
+        cursor.execute('''CREATE TABLE links 
+                          (url_norm TEXT, chat_id INTEGER DEFAULT 0, first_user TEXT, first_user_id INTEGER, count INTEGER, timestamp REAL,
+                           PRIMARY KEY (url_norm, chat_id))''')
+        cursor.execute("INSERT INTO links (url_norm, chat_id, first_user, first_user_id, count, timestamp) SELECT url_norm, 0, first_user, first_user_id, count, timestamp FROM links_old")
+        cursor.execute("DROP TABLE links_old")
 
     cursor.execute('''CREATE TABLE IF NOT EXISTS vacilos 
                       (user_id INTEGER, user_name TEXT, timestamp REAL)''')
@@ -28,11 +34,12 @@ def init_db():
     conn.commit()
     conn.close()
 
-def checar_link(url_norm):
-    """Apenas verifica se o link já existe no banco, sem registrar."""
+
+def checar_link(url_norm, chat_id=0):
+    """Apenas verifica se o link já existe no banco para o chat específico."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute("SELECT count, first_user, first_user_id FROM links WHERE url_norm = ?", (url_norm,))
+    cursor.execute("SELECT count, first_user, first_user_id FROM links WHERE url_norm = ? AND chat_id = ?", (url_norm, chat_id))
     res = cursor.fetchone()
     conn.close()
     
@@ -40,10 +47,10 @@ def checar_link(url_norm):
         return True, {"primeiro_user": res[1], "primeiro_id": res[2], "vezes": res[0]}
     return False, {}
 
-def registrar_link_e_checar(url_norm, user_name, user_id):
+def registrar_link_e_checar(url_norm, chat_id, user_name, user_id):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute("SELECT count, first_user, first_user_id FROM links WHERE url_norm = ?", (url_norm,))
+    cursor.execute("SELECT count, first_user, first_user_id FROM links WHERE url_norm = ? AND chat_id = ?", (url_norm, chat_id))
     res = cursor.fetchone()
     
     duplicado = False
@@ -52,16 +59,24 @@ def registrar_link_e_checar(url_norm, user_name, user_id):
     if res:
         duplicado = True
         novo_count = res[0] + 1
-        cursor.execute("UPDATE links SET count = ? WHERE url_norm = ?", (novo_count, url_norm))
+        cursor.execute("UPDATE links SET count = ? WHERE url_norm = ? AND chat_id = ?", (novo_count, url_norm, chat_id))
         cursor.execute("INSERT INTO vacilos VALUES (?, ?, ?)", (user_id, user_name, datetime.now().timestamp()))
         info = {"primeiro_user": res[1], "primeiro_id": res[2], "vezes": novo_count}
     else:
-        cursor.execute("INSERT INTO links (url_norm, first_user, first_user_id, count, timestamp) VALUES (?, ?, ?, 1, ?)", 
-                       (url_norm, user_name, user_id, datetime.now().timestamp()))
+        cursor.execute("INSERT INTO links (url_norm, chat_id, first_user, first_user_id, count, timestamp) VALUES (?, ?, ?, ?, 1, ?)", 
+                       (url_norm, chat_id, user_name, user_id, datetime.now().timestamp()))
     
     conn.commit()
     conn.close()
     return duplicado, info
+
+def registrar_vacilo_manual(user_id, user_name):
+    """Registra um vacilo manualmente via /repetido."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO vacilos VALUES (?, ?, ?)", (user_id, user_name, datetime.now().timestamp()))
+    conn.commit()
+    conn.close()
 
 def get_ranking_semanal():
     conn = sqlite3.connect(DB_PATH)

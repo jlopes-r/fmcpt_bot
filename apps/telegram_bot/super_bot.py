@@ -713,8 +713,17 @@ async def cmd_repetido_manual(client, message):
         return await message.reply_text("💡 Dica: Use este comando em resposta a alguém que postou repetido!")
 
     target = message.reply_to_message
+    if target.from_user and target.from_user.is_bot:
+        return await message.reply_text("🚨 BURRO DO CARALHO! Tá marcando o BOT como repetido? Vai tomar no cu, imbecil. O repetido é pra marcar USUÁRIO, não bot seu animal de teta.")
+
     mencao = target.from_user.mention
+    target_name = target.from_user.first_name or "Membro"
+    target_username = f"(@{target.from_user.username})" if target.from_user.username else ""
+    target_full = f"{target_name} {target_username}".strip()
     txt = f"**🚨 BOCA DE LEITE {mencao}! (Castigo Manual)**"
+
+    # Registra vacilo no ranking para a pessoa pega
+    db.registrar_vacilo_manual(target.from_user.id, target_full)
 
     lista_audios = ["boca-de-leite.ogg", "aids.ogg", "de-novo-cac.ogg"]
     for i, nome_audio in enumerate(lista_audios):
@@ -1190,7 +1199,7 @@ async def processar_links(client, message):
         if tw_match:
             url_norm = f"https://x.com/i/status/{tw_match.group(1)}"
 
-        repetido_db, info_db = db.checar_link(url_norm)
+        repetido_db, info_db = db.checar_link(url_norm, message.chat.id)
 
         # Registra o último link enviado pelo usuário (para validar /bloq)
         _ultimo_link_por_usuario[user_id] = {
@@ -1372,7 +1381,7 @@ async def processar_links(client, message):
                     await enviar_midia_quote(client, message, qrt_info, match, msg_espera, usuario)
 
                 # Registra link e verifica duplicata SOMENTE após sucesso
-                repetido_db, info_db = db.registrar_link_e_checar(url_norm, message.from_user.first_name or "Membro", user_id)
+                repetido_db, info_db = db.registrar_link_e_checar(url_norm, message.chat.id, message.from_user.first_name or "Membro", user_id)
                 if repetido_db:
                     await enviar_aviso_duplicado(client, message, {}, info_db, usuario)
         except Exception as e:
@@ -1412,7 +1421,7 @@ async def processar_links(client, message):
 
         if sucesso:
             _failed_url_cache.pop(url_norm, None)
-            repetido_db, info_db = db.registrar_link_e_checar(url_norm, message.from_user.first_name or "Membro", user_id)
+            repetido_db, info_db = db.registrar_link_e_checar(url_norm, message.chat.id, message.from_user.first_name or "Membro", user_id)
             if repetido_db:
                 await enviar_aviso_duplicado(client, message, {}, info_db, usuario)
         else:
@@ -1436,7 +1445,7 @@ async def processar_links(client, message):
         sucesso = await extrair_e_enviar_midia(client, message, url, usuario, msg_espera)
 
         if sucesso and not any(d in url_raw for d in ["youtube.com", "youtu.be"]):
-            repetido_db, info_db = db.registrar_link_e_checar(url_norm, message.from_user.first_name or "Membro", user_id)
+            repetido_db, info_db = db.registrar_link_e_checar(url_norm, message.chat.id, message.from_user.first_name or "Membro", user_id)
             if repetido_db:
                 await enviar_aviso_duplicado(client, message, {}, info_db, usuario)
         async with _processing_lock:
@@ -1462,7 +1471,7 @@ async def processar_links(client, message):
         sucesso = await extrair_e_enviar_midia(client, message, url, usuario, msg_espera)
 
         if sucesso and not any(d in url_raw for d in ["youtube.com", "youtu.be"]):
-            repetido_db, info_db = db.registrar_link_e_checar(url_norm, message.from_user.first_name or "Membro", user_id)
+            repetido_db, info_db = db.registrar_link_e_checar(url_norm, message.chat.id, message.from_user.first_name or "Membro", user_id)
             if repetido_db:
                 await enviar_aviso_duplicado(client, message, {}, info_db, usuario)
         
