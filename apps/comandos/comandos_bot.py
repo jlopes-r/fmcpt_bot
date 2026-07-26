@@ -23,7 +23,7 @@ from packages.config import (
     mini_app_url,
     parse_chat_ids,
 )
-from packages.telegram_ui import build_bot_commands, build_command_menu_text, build_mini_app_markup
+from packages.telegram_ui import build_bot_commands, reply_command_menu
 
 # Configuração
 def flex_command(commands, prefixes="/", case_sensitive=False):
@@ -300,13 +300,18 @@ async def cmd_start(client, message):
 
 @app.on_message(filters.command(["help", "menu"]))
 async def cmd_menu(client, message):
-    txt = build_command_menu_text("🤖 Menu de comandos", COMANDOS_BOT_COMMANDS, bool(MINI_APP_URL))
-    
+    extra_text = ""
     if comandos_personalizados:
-        txt += "\n\n**Comandos personalizados**\n"
-        txt += "Use `/list` ou o painel para ver todos."
-    
-    await message.reply_text(txt, reply_markup=build_mini_app_markup(MINI_APP_URL))
+        extra_text = "\n\n**Comandos personalizados**\nUse `/list` ou o painel para ver todos."
+
+    await reply_command_menu(
+        message,
+        "🤖 Menu de comandos",
+        COMANDOS_BOT_COMMANDS,
+        MINI_APP_URL,
+        log,
+        extra_text=extra_text,
+    )
 
 import random
 

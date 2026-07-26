@@ -40,6 +40,38 @@ def build_mini_app_markup(url: str, label: str = "Abrir painel"):
     ])
 
 
+def _is_button_type_invalid(exc: Exception) -> bool:
+    return exc.__class__.__name__ == "ButtonTypeInvalid" or "BUTTON_TYPE_INVALID" in str(exc)
+
+
+async def reply_command_menu(
+    message,
+    title: str,
+    commands: tuple[CommandSpec, ...],
+    mini_app_url: str,
+    log=None,
+    extra_text: str = "",
+):
+    text = build_command_menu_text(title, commands, bool(mini_app_url)) + extra_text
+    markup = build_mini_app_markup(mini_app_url)
+    if not markup:
+        return await message.reply_text(text)
+
+    try:
+        return await message.reply_text(text, reply_markup=markup)
+    except Exception as exc:
+        if not _is_button_type_invalid(exc):
+            raise
+        if log:
+            log.warning("Telegram rejected Mini App button in this chat: %s", exc)
+        fallback_text = (
+            text
+            + "\n\nO Telegram recusou o botao do Mini App neste chat. "
+            + "Abra o bot no privado e use /menu para acessar o painel."
+        )
+        return await message.reply_text(fallback_text)
+
+
 def mini_app_payload(kind: str, data: dict | None = None) -> str:
     return json.dumps({"kind": kind, "data": data or {}}, ensure_ascii=False)
 
