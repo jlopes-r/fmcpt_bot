@@ -93,7 +93,7 @@ const botMeta = {
 const state = {
   bots: [],
   botId: readPreference("fmcpt.bot") || "super",
-  category: "Todos",
+  category: "category:Todos",
   query: "",
   view: "commands",
   adminMode: "create",
@@ -118,7 +118,9 @@ const elements = {
   commandSheet: document.querySelector("#commandSheet"),
   connectionStatus: document.querySelector("#connectionStatus"),
   createCommandForm: document.querySelector("#createCommandForm"),
+  updateCommandForm: document.querySelector("#updateCommandForm"),
   deleteCommandForm: document.querySelector("#deleteCommandForm"),
+  categoryForm: document.querySelector("#categoryForm"),
   backlogForm: document.querySelector("#backlogForm"),
   resultsCount: document.querySelector("#resultsCount"),
   searchInput: document.querySelector("#searchInput"),
@@ -131,11 +133,25 @@ const elements = {
   sheetDescription: document.querySelector("#sheetDescription"),
   sheetExecute: document.querySelector("#sheetExecute"),
   sheetIcon: document.querySelector("#sheetIcon"),
+  sheetPreview: document.querySelector("#sheetPreview"),
   sheetUsage: document.querySelector("#sheetUsage"),
   sheetUsageRow: document.querySelector("#sheetUsageRow"),
   toast: document.querySelector("#toast"),
   toastMessage: document.querySelector("#toastMessage")
 };
+
+const typeMeta = {
+  texto: { label: "Texto", icon: "file-text", tone: "blue" },
+  foto: { label: "Imagem", icon: "image", tone: "green" },
+  imagem: { label: "Imagem", icon: "image", tone: "green" },
+  image: { label: "Imagem", icon: "image", tone: "green" },
+  video: { label: "Video", icon: "video", tone: "red" },
+  gif: { label: "GIF", icon: "badge-play", tone: "green" },
+  audio: { label: "Audio", icon: "music", tone: "amber" },
+  voice: { label: "Voz", icon: "mic", tone: "amber" }
+};
+
+const categoryActions = new Set(["create_category", "update_category", "delete_category"]);
 
 let toastTimer;
 let lastFocusedElement;
@@ -165,6 +181,92 @@ function escapeHtml(value) {
     .replaceAll("'", "&#039;");
 }
 
+function normalizeText(value) {
+  return String(value ?? "").trim().toLocaleLowerCase("pt-BR");
+}
+
+function normalizeType(command) {
+  return normalizeText(command.type || command.mediaType || command.tipo || "texto");
+}
+
+function mediaUrl(command) {
+  return command.mediaUrl || command.previewUrl || command.thumbnailUrl || command.preview_url || "";
+}
+
+function stillUrl(command) {
+  return command.thumbnailUrl || command.previewUrl || command.posterUrl || command.mediaUrl || "";
+}
+
+function commandContent(command) {
+  return command.content || command.text || command.conteudo || "";
+}
+
+function commandDescription(command) {
+  return command.description || command.descricao || "";
+}
+
+function commandCategory(command) {
+  return command.category || command.categoria || "Comandos personalizados";
+}
+
+function commandPreviewAlt(command) {
+  return `Preview de /${command.name}`;
+}
+
+function isCustomCommand(command) {
+  return Boolean(command.isCustom || command.custom);
+}
+
+function renderCommandIcon(command, size = "small") {
+  const meta = commandMeta(command);
+  const type = normalizeType(command);
+  const preview = stillUrl(command);
+  const isPlayable = ["gif", "video"].includes(type);
+  const canRenderStill = preview && ["foto", "imagem", "image", "gif", "video"].includes(type);
+
+  if (canRenderStill) {
+    return `
+      <span class="command-icon command-icon--media" data-tone="${meta.tone}" aria-hidden="true">
+        <img src="${escapeHtml(preview)}" alt="" loading="${size === "small" ? "lazy" : "eager"}">
+        ${isPlayable ? '<span class="command-icon__badge"><i data-lucide="play"></i></span>' : ""}
+      </span>
+    `;
+  }
+
+  return `
+    <span class="command-icon" data-tone="${meta.tone}" aria-hidden="true">
+      <i data-lucide="${meta.icon}"></i>
+    </span>
+  `;
+}
+
+function renderSheetPreview(command) {
+  const type = normalizeType(command);
+  const src = mediaUrl(command);
+  const content = commandContent(command);
+
+  if (["foto", "imagem", "image", "gif"].includes(type) && src) {
+    return `<img src="${escapeHtml(src)}" alt="${escapeHtml(commandPreviewAlt(command))}">`;
+  }
+
+  if (type === "video" && src) {
+    const poster = stillUrl(command);
+    return `
+      <video src="${escapeHtml(src)}" ${poster ? `poster="${escapeHtml(poster)}"` : ""} controls autoplay muted playsinline loop></video>
+    `;
+  }
+
+  if (["audio", "voice"].includes(type) && src) {
+    return `<audio src="${escapeHtml(src)}" controls autoplay></audio>`;
+  }
+
+  if (type === "texto" && content) {
+    return `<pre class="sheet-preview__text">${escapeHtml(content)}</pre>`;
+  }
+
+  return "";
+}
+
 function refreshIcons() {
   window.lucide?.createIcons({
     attrs: {
@@ -189,16 +291,73 @@ function currentBot() {
   return state.bots.find((bot) => bot.id === state.botId) || state.bots[0];
 }
 
-function commandMeta(command) {
-  return categoryMeta[command.category] || { icon: "terminal", tone: "blue" };
+function customCommandToFrontend(name, info) {
+  return {
+    name,
+    category: info.category || info.categoria || "Comandos personalizados",
+    description: info.description || info.descricao || "Comando personalizado",
+    aliases: info.aliases || [],
+    adminOnly: false,
+    usage: `/${name}`,
+    type: info.type || info.tipo || "texto",
+    content: info.content || info.conteudo || "",
+    mediaUrl: info.mediaUrl || info.media_url || "",
+    previewUrl: info.previewUrl || info.preview_url || "",
+    thumbnailUrl: info.thumbnailUrl || info.thumbnail_url || "",
+    isCustom: true
+  };
 }
 
-function categoryGroups(commands) {
-  const groups = new Map([["Todos", commands.length]]);
-  commands.forEach((command) => {
-    groups.set(command.category, (groups.get(command.category) || 0) + 1);
+function normalizeCatalog(catalog) {
+  const bots = (catalog.bots || []).map((bot) => {
+    const customCommands = bot.customCommands || {};
+    const customList = Array.isArray(customCommands)
+      ? customCommands.map((command) => ({ ...command, isCustom: true }))
+      : Object.entries(customCommands).map(([name, info]) => customCommandToFrontend(name, info || {}));
+    return {
+      ...bot,
+      commands: [...(bot.commands || []), ...customList]
+    };
   });
-  return Array.from(groups.entries());
+  return { ...catalog, bots };
+}
+
+function commandMeta(command) {
+  if (isCustomCommand(command)) {
+    return typeMeta[normalizeType(command)] || categoryMeta[commandCategory(command)] || { icon: "terminal", tone: "blue" };
+  }
+
+  return categoryMeta[commandCategory(command)] || { icon: "terminal", tone: "blue" };
+}
+
+function categoryGroups(bot) {
+  const commands = bot?.commands || [];
+  const groups = new Map([["category:Todos", { label: "Todos", count: commands.length }]]);
+  const typeGroups = new Map();
+  commands.filter(isCustomCommand).forEach((command) => {
+    const type = normalizeType(command);
+    const typeLabel = typeMeta[type]?.label || type;
+    typeGroups.set(type, {
+      label: typeLabel,
+      count: (typeGroups.get(type)?.count || 0) + 1
+    });
+    const category = commandCategory(command);
+    const key = `category:${category}`;
+    groups.set(key, {
+      label: category,
+      count: (groups.get(key)?.count || 0) + 1
+    });
+  });
+  (bot?.customCategories || []).forEach((category) => {
+    const key = `category:${category}`;
+    if (!groups.has(key)) {
+      groups.set(key, { label: category, count: 0 });
+    }
+  });
+  return [
+    ...Array.from(groups.entries()),
+    ...Array.from(typeGroups.entries()).map(([type, group]) => [`type:${type}`, group])
+  ];
 }
 
 function filteredCommands() {
@@ -207,11 +366,17 @@ function filteredCommands() {
 
   const query = state.query.trim().toLocaleLowerCase("pt-BR");
   return bot.commands.filter((command) => {
-    const matchesCategory = state.category === "Todos" || command.category === state.category;
+    const [filterKind, ...filterParts] = state.category.split(":");
+    const filterValue = filterParts.join(":");
+    const matchesCategory =
+      state.category === "category:Todos" ||
+      (isCustomCommand(command) && filterKind === "category" && commandCategory(command) === filterValue) ||
+      (isCustomCommand(command) && filterKind === "type" && normalizeType(command) === filterValue);
     const searchableText = [
       command.name,
-      command.category,
-      command.description,
+      commandCategory(command),
+      commandDescription(command),
+      commandContent(command),
       ...(command.aliases || [])
     ]
       .join(" ")
@@ -254,25 +419,28 @@ function renderOverview() {
 
 function renderCategoryTabs() {
   const bot = currentBot();
-  const groups = categoryGroups(bot?.commands || []);
+  const groups = categoryGroups(bot);
   const availableCategories = groups.map(([category]) => category);
 
   if (!availableCategories.includes(state.category)) {
-    state.category = "Todos";
+    state.category = "category:Todos";
   }
 
   elements.categoryTabs.innerHTML = groups
-    .map(([category, count]) => {
-      const active = category === state.category;
+    .map(([filter, group]) => {
+      const active = filter === state.category;
+      const kind = filter.startsWith("type:") ? "type" : "category";
+      const icon = kind === "type" ? typeMeta[filter.slice(5)]?.icon : null;
       return `
         <button
           class="${active ? "active" : ""}"
-          data-category="${escapeHtml(category)}"
+          data-category="${escapeHtml(filter)}"
           type="button"
           aria-pressed="${active}"
         >
-          ${escapeHtml(category)}
-          <span>${count}</span>
+          ${icon ? `<i data-lucide="${icon}"></i>` : ""}
+          ${escapeHtml(group.label)}
+          <span>${group.count}</span>
         </button>
       `;
     })
@@ -301,13 +469,15 @@ function renderCommands() {
 
   elements.commandList.innerHTML = commands
     .map((command) => {
-      const meta = commandMeta(command);
       const name = escapeHtml(command.name);
+      const type = normalizeType(command);
+      const typeLabel = typeMeta[type]?.label || type;
+      const typeBadge = isCustomCommand(command)
+        ? `<span class="admin-badge">${escapeHtml(typeLabel)}</span>`
+        : "";
       return `
         <article class="command-row">
-          <span class="command-icon" data-tone="${meta.tone}" aria-hidden="true">
-            <i data-lucide="${meta.icon}"></i>
-          </span>
+          ${renderCommandIcon(command)}
           <button
             class="command-summary"
             data-command-details="${name}"
@@ -316,9 +486,10 @@ function renderCommands() {
           >
             <span class="command-name-row">
               <span class="command-name">/${name}</span>
+              ${typeBadge}
               ${command.adminOnly ? '<span class="admin-badge">Admin</span>' : ""}
             </span>
-            <p>${escapeHtml(command.description)}</p>
+            <p>${escapeHtml(commandDescription(command))}</p>
           </button>
           <button
             class="run-command"
@@ -386,7 +557,7 @@ function selectBot(botId) {
   if (!state.bots.some((bot) => bot.id === botId)) return;
 
   state.botId = botId;
-  state.category = "Todos";
+    state.category = "category:Todos";
   state.query = "";
   elements.searchInput.value = "";
   writePreference("fmcpt.bot", botId);
@@ -417,7 +588,7 @@ function selectCategory(category) {
 }
 
 function setAdminMode(mode) {
-  if (!["create", "delete", "backlog"].includes(mode)) return;
+  if (!["create", "update", "delete", "categories", "backlog"].includes(mode)) return;
   state.adminMode = mode;
   tg?.HapticFeedback?.selectionChanged();
   renderAdminMode();
@@ -447,8 +618,12 @@ function actionMessage(kind, data) {
     "/gifstats": "Estatísticas de GIFs solicitadas.",
     "/backlog": "Backlog solicitado.",
     create_text_command: `Comando /${data.name} enviado para criação.`,
+    update_command: `Alteração de /${data.name} enviada.`,
     delete_command: `Comando /${data.name} enviado para exclusão.`,
-    backlog_add: "Sugestão enviada ao backlog."
+    backlog_add: "Sugestão enviada ao backlog.",
+    create_category: `Categoria ${data.name} enviada para criação.`,
+    update_category: `Categoria ${data.name} enviada para alteração.`,
+    delete_category: `Categoria ${data.name} enviada para exclusão.`
   };
   return labels[data.action] || "Ação enviada ao bot.";
 }
@@ -485,10 +660,14 @@ function openCommandSheet(command) {
   lastFocusedElement = document.activeElement;
 
   elements.sheetIcon.dataset.tone = meta.tone;
-  elements.sheetIcon.innerHTML = `<i data-lucide="${meta.icon}"></i>`;
-  elements.sheetCategory.textContent = command.category;
+  elements.sheetIcon.outerHTML = renderCommandIcon(command, "large").replace("command-icon--media", "command-icon--media").replace("<span", '<span id="sheetIcon"');
+  elements.sheetIcon = document.querySelector("#sheetIcon");
+  const previewHtml = renderSheetPreview(command);
+  elements.sheetPreview.innerHTML = previewHtml;
+  elements.sheetPreview.hidden = !previewHtml;
+  elements.sheetCategory.textContent = commandCategory(command);
   elements.sheetCommandName.textContent = `/${command.name}`;
-  elements.sheetDescription.textContent = command.description;
+  elements.sheetDescription.textContent = commandDescription(command);
   elements.sheetUsage.textContent = command.usage || `/${command.name}`;
   elements.sheetAliases.textContent = (command.aliases || []).map((alias) => `/${alias}`).join(", ");
   elements.sheetAccess.textContent = command.adminOnly ? "Somente administradores" : "Todos do grupo";
@@ -591,7 +770,32 @@ elements.createCommandForm.addEventListener("submit", (event) => {
     action: "create_text_command",
     name,
     description: String(form.get("description") || "").trim(),
-    content: String(form.get("content") || "").trim()
+    category: String(form.get("category") || "").trim(),
+    type: String(form.get("type") || "texto"),
+    content: String(form.get("content") || "").trim(),
+    previewUrl: String(form.get("previewUrl") || "").trim()
+  });
+  event.currentTarget.reset();
+});
+
+elements.updateCommandForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  const name = normalizeCommandName(form.get("name"));
+
+  if (!/^[a-z0-9_]{1,32}$/.test(name)) {
+    showToast("Informe um nome de comando válido.");
+    return;
+  }
+
+  sendPayload("admin_action", {
+    action: "update_command",
+    name,
+    description: String(form.get("description") || "").trim(),
+    category: String(form.get("category") || "").trim(),
+    type: String(form.get("type") || "").trim(),
+    content: String(form.get("content") || "").trim(),
+    previewUrl: String(form.get("previewUrl") || "").trim()
   });
   event.currentTarget.reset();
 });
@@ -610,6 +814,27 @@ elements.deleteCommandForm.addEventListener("submit", (event) => {
     action: "delete_command",
     name
   });
+  event.currentTarget.reset();
+});
+
+elements.categoryForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  const action = String(form.get("action") || "");
+  const name = String(form.get("name") || "").trim();
+  const newName = String(form.get("newName") || "").trim();
+
+  if (!categoryActions.has(action) || !name) {
+    showToast("Informe uma categoria válida.");
+    return;
+  }
+
+  if (action === "update_category" && !newName) {
+    showToast("Informe o novo nome da categoria.");
+    return;
+  }
+
+  sendPayload("admin_action", { action, name, newName });
   event.currentTarget.reset();
 });
 
@@ -666,7 +891,7 @@ async function initialize() {
   elements.connectionStatus.classList.toggle("is-connected", isTelegramContext);
   elements.closeApp.hidden = !isTelegramContext;
 
-  const catalog = await loadCatalog();
+  const catalog = normalizeCatalog(await loadCatalog());
   state.bots = catalog.bots || [];
 
   if (!state.bots.some((bot) => bot.id === state.botId)) {

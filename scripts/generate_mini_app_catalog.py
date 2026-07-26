@@ -7,6 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from packages.command_catalog import COMANDOS_BOT_COMMANDS, SUPER_COMMANDS
+from packages.config import DATA_DIR
 
 
 def command_to_frontend(command):
@@ -20,7 +21,18 @@ def command_to_frontend(command):
     }
 
 
+def load_json_file(path: Path, fallback):
+    try:
+        if path.exists():
+            return json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        pass
+    return fallback
+
+
 def build_catalog() -> dict:
+    custom_commands = load_json_file(DATA_DIR / "comandos_personalizados.json", {})
+    custom_categories = load_json_file(DATA_DIR / "categorias_comandos_personalizados.json", [])
     return {
         "bots": [
             {
@@ -34,6 +46,8 @@ def build_catalog() -> dict:
                 "name": "Comandos Bot",
                 "description": "Comandos personalizados, GIFs e backlog.",
                 "commands": [command_to_frontend(command) for command in COMANDOS_BOT_COMMANDS if command.mini_app],
+                "customCommands": custom_commands,
+                "customCategories": custom_categories,
             },
         ]
     }

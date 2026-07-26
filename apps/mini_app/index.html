@@ -63,7 +63,7 @@
               <input
                 id="searchInput"
                 type="search"
-                placeholder="Buscar comando"
+                placeholder="Buscar por comando, texto ou descrição"
                 autocomplete="off"
                 enterkeyhint="search"
               >
@@ -138,9 +138,17 @@
                 <i data-lucide="plus"></i>
                 Criar
               </button>
+              <button data-admin-mode="update" type="button" role="tab" aria-selected="false">
+                <i data-lucide="pencil"></i>
+                Alterar
+              </button>
               <button data-admin-mode="delete" type="button" role="tab" aria-selected="false">
                 <i data-lucide="trash-2"></i>
                 Apagar
+              </button>
+              <button data-admin-mode="categories" type="button" role="tab" aria-selected="false">
+                <i data-lucide="tags"></i>
+                Categorias
               </button>
               <button data-admin-mode="backlog" type="button" role="tab" aria-selected="false">
                 <i data-lucide="list-plus"></i>
@@ -151,7 +159,7 @@
             <div class="admin-editor">
               <form id="createCommandForm" class="admin-form" data-admin-form="create">
                 <div class="form-heading">
-                  <h3>Novo comando de texto</h3>
+                  <h3>Novo comando personalizado</h3>
                   <p>O comando ficará disponível imediatamente no chat.</p>
                 </div>
                 <label class="field">
@@ -174,12 +182,79 @@
                   <input name="description" placeholder="Mensagem de boas-vindas" maxlength="100" required>
                 </label>
                 <label class="field">
+                  <span>Categoria</span>
+                  <input name="category" placeholder="Saudações" maxlength="40">
+                  <small>Esta categoria também aparecerá como pílula de filtro.</small>
+                </label>
+                <label class="field">
+                  <span>Tipo</span>
+                  <select name="type">
+                    <option value="texto">Texto</option>
+                    <option value="foto">Imagem</option>
+                    <option value="gif">GIF</option>
+                    <option value="video">Vídeo</option>
+                    <option value="audio">Áudio</option>
+                    <option value="voice">Voz</option>
+                  </select>
+                </label>
+                <label class="field">
                   <span>Resposta do bot</span>
                   <textarea name="content" placeholder="Escreva o conteúdo enviado pelo comando" maxlength="4000" required></textarea>
+                </label>
+                <label class="field">
+                  <span>URL de preview</span>
+                  <input name="previewUrl" type="url" placeholder="https://.../preview.jpg" maxlength="500">
+                  <small>Use um still para GIF/vídeo. O painel abre a mídia maior quando disponível.</small>
                 </label>
                 <button class="primary-button" type="submit">
                   <i data-lucide="save"></i>
                   Salvar comando
+                </button>
+              </form>
+
+              <form id="updateCommandForm" class="admin-form" data-admin-form="update" hidden>
+                <div class="form-heading">
+                  <h3>Alterar comando</h3>
+                  <p>Atualize descrição, categoria, tipo, conteúdo ou preview.</p>
+                </div>
+                <label class="field">
+                  <span>Nome do comando</span>
+                  <span class="input-prefix">
+                    <span aria-hidden="true">/</span>
+                    <input name="name" placeholder="saudacao" pattern="[A-Za-z0-9_]{1,32}" maxlength="32" autocomplete="off" required>
+                  </span>
+                </label>
+                <label class="field">
+                  <span>Descrição</span>
+                  <input name="description" placeholder="Nova descrição" maxlength="100">
+                </label>
+                <label class="field">
+                  <span>Categoria</span>
+                  <input name="category" placeholder="Nova categoria" maxlength="40">
+                </label>
+                <label class="field">
+                  <span>Tipo</span>
+                  <select name="type">
+                    <option value="">Manter tipo atual</option>
+                    <option value="texto">Texto</option>
+                    <option value="foto">Imagem</option>
+                    <option value="gif">GIF</option>
+                    <option value="video">Vídeo</option>
+                    <option value="audio">Áudio</option>
+                    <option value="voice">Voz</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>Resposta do bot</span>
+                  <textarea name="content" placeholder="Deixe em branco para manter o conteúdo atual" maxlength="4000"></textarea>
+                </label>
+                <label class="field">
+                  <span>URL de preview</span>
+                  <input name="previewUrl" type="url" placeholder="https://.../preview.jpg" maxlength="500">
+                </label>
+                <button class="primary-button" type="submit">
+                  <i data-lucide="save"></i>
+                  Salvar alterações
                 </button>
               </form>
 
@@ -226,6 +301,34 @@
                   Adicionar ao backlog
                 </button>
               </form>
+
+              <form id="categoryForm" class="admin-form" data-admin-form="categories" hidden>
+                <div class="form-heading">
+                  <h3>Categorias de comandos</h3>
+                  <p>Cada categoria salva aparece como uma pílula de filtro.</p>
+                </div>
+                <label class="field">
+                  <span>Ação</span>
+                  <select name="action">
+                    <option value="create_category">Criar categoria</option>
+                    <option value="update_category">Alterar categoria</option>
+                    <option value="delete_category">Excluir categoria</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>Categoria</span>
+                  <input name="name" placeholder="Memes" maxlength="40" required>
+                </label>
+                <label class="field">
+                  <span>Novo nome</span>
+                  <input name="newName" placeholder="Memes do grupo" maxlength="40">
+                  <small>Preencha somente ao alterar uma categoria.</small>
+                </label>
+                <button class="primary-button" type="submit">
+                  <i data-lucide="tags"></i>
+                  Salvar categoria
+                </button>
+              </form>
             </div>
           </section>
         </section>
@@ -266,6 +369,7 @@
         </button>
       </header>
       <p id="sheetDescription" class="sheet-description"></p>
+      <div id="sheetPreview" class="sheet-preview" hidden></div>
       <dl class="command-details">
         <div id="sheetUsageRow">
           <dt>Como usar</dt>

@@ -240,7 +240,9 @@ window.FMCPT_CATALOG = {
           "adminOnly": false,
           "usage": ""
         }
-      ]
+      ],
+      "customCommands": {},
+      "customCategories": []
     }
   ]
 };

@@ -240,7 +240,9 @@
           "adminOnly": false,
           "usage": ""
         }
-      ]
+      ],
+      "customCommands": {},
+      "customCategories": []
     }
   ]
 }

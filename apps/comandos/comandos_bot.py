@@ -71,6 +71,7 @@ logging.basicConfig(level=logging.INFO)
 
 CAMINHO_RAIZ_PROJETO = str(RAIZ)
 COMANDOS_FILE = DATA_DIR / "comandos_personalizados.json"
+CUSTOM_CATEGORIES_FILE = DATA_DIR / "categorias_comandos_personalizados.json"
 BACKLOG_FILE = DATA_DIR / "backlog.json"
 MERDA_FILE = DATA_DIR / "sugestoes_de_merda.json"
 
@@ -112,6 +113,37 @@ def salvar_comandos(comandos):
     COMANDOS_FILE.parent.mkdir(parents=True, exist_ok=True)
     with open(COMANDOS_FILE, 'w', encoding='utf-8') as f:
         json.dump(comandos, f, ensure_ascii=False, indent=2)
+
+def carregar_categorias_personalizadas():
+    if CUSTOM_CATEGORIES_FILE.exists():
+        try:
+            with open(CUSTOM_CATEGORIES_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                if isinstance(data, list):
+                    return [str(item).strip() for item in data if str(item).strip()]
+        except (json.JSONDecodeError, Exception) as e:
+            log.error(f"Erro ao carregar categorias personalizadas: {e}")
+    return []
+
+def salvar_categorias_personalizadas(categorias):
+    CUSTOM_CATEGORIES_FILE.parent.mkdir(parents=True, exist_ok=True)
+    categorias_unicas = []
+    for categoria in categorias:
+        categoria = str(categoria).strip()
+        if categoria and categoria.lower() not in [c.lower() for c in categorias_unicas]:
+            categorias_unicas.append(categoria)
+    with open(CUSTOM_CATEGORIES_FILE, 'w', encoding='utf-8') as f:
+        json.dump(categorias_unicas, f, ensure_ascii=False, indent=2)
+
+def categoria_personalizada_padrao():
+    return "Comandos personalizados"
+
+def normalizar_tipo_comando(tipo):
+    tipo = str(tipo or "texto").strip().lower()
+    return tipo if tipo in {"texto", "foto", "video", "audio", "voice", "gif"} else "texto"
+
+def categoria_existe(categorias, nome):
+    return next((c for c in categorias if c.lower() == nome.lower()), None)
 
 # Carrega e salva backlog de sugestões
 def carregar_backlog():
@@ -214,6 +246,7 @@ app = Client(
 
 # Comandos personalizados carregados
 comandos_personalizados = carregar_comandos()
+categorias_personalizadas = carregar_categorias_personalizadas()
 
 async def executar_comando_personalizado(client, message, nome, info):
     """Executa um comando personalizado"""
@@ -548,7 +581,7 @@ async def filtro_web_app_data(_, __, message):
 
 @app.on_message(filters.create(filtro_web_app_data))
 async def handle_mini_app_data(client, message):
-    global backlog_sugestoes
+    global backlog_sugestoes, categorias_personalizadas
     chat_id = message.chat.id
     if GRUPOS_AUTORIZADOS and chat_id not in GRUPOS_AUTORIZADOS:
         return
@@ -576,23 +609,67 @@ async def handle_mini_app_data(client, message):
             nome = str(data.get("name", "")).strip().lstrip("/").lower()
             descricao = str(data.get("description", "")).strip()
             conteudo = str(data.get("content", "")).strip()
+            categoria = str(data.get("category", "")).strip() or categoria_personalizada_padrao()
+            tipo = normalizar_tipo_comando(data.get("type"))
+            preview_url = str(data.get("previewUrl", "")).strip()
             if not re.match(r"^[a-z0-9_]{1,32}$", nome):
                 await message.reply_text("❌ Nome inválido. Use letras, números e underline, até 32 caracteres.")
                 return
             if not descricao or not conteudo:
                 await message.reply_text("❌ Descrição e conteúdo são obrigatórios.")
                 return
+            if len(categoria) > 40:
+                await message.reply_text("❌ Categoria muito longa. Use até 40 caracteres.")
+                return
             comandos_personalizados[nome] = {
-                "tipo": "texto",
+                "tipo": tipo,
                 "conteudo": conteudo,
                 "media_id": None,
                 "descricao": descricao,
+                "categoria": categoria,
+                "previewUrl": preview_url,
                 "criado_por": message.from_user.id if message.from_user else 0,
                 "data_criacao": str(datetime.now()),
                 "origem": "mini_app",
             }
+            if not categoria_existe(categorias_personalizadas, categoria):
+                categorias_personalizadas.append(categoria)
+                salvar_categorias_personalizadas(categorias_personalizadas)
             salvar_comandos(comandos_personalizados)
             await message.reply_text(f"✅ Comando `/{nome}` salvo pelo painel.")
+            return
+        if action == "update_command":
+            nome = str(data.get("name", "")).strip().lstrip("/").lower()
+            chave_real = next((c for c in comandos_personalizados if c.lower() == nome), None)
+            if not chave_real:
+                await message.reply_text(f"❌ Comando `/{nome}` não encontrado.")
+                return
+            atual = comandos_personalizados[chave_real]
+            descricao = str(data.get("description", "")).strip()
+            categoria = str(data.get("category", "")).strip()
+            tipo = str(data.get("type", "")).strip()
+            conteudo = str(data.get("content", "")).strip()
+            preview_url = str(data.get("previewUrl", "")).strip()
+            if descricao:
+                atual["descricao"] = descricao
+            if categoria:
+                if len(categoria) > 40:
+                    await message.reply_text("❌ Categoria muito longa. Use até 40 caracteres.")
+                    return
+                atual["categoria"] = categoria
+                if not categoria_existe(categorias_personalizadas, categoria):
+                    categorias_personalizadas.append(categoria)
+                    salvar_categorias_personalizadas(categorias_personalizadas)
+            if tipo:
+                atual["tipo"] = normalizar_tipo_comando(tipo)
+            if conteudo:
+                atual["conteudo"] = conteudo
+            if preview_url:
+                atual["previewUrl"] = preview_url
+            atual["data_alteracao"] = str(datetime.now())
+            atual["origem_alteracao"] = "mini_app"
+            salvar_comandos(comandos_personalizados)
+            await message.reply_text(f"✅ Comando `/{nome}` alterado pelo painel.")
             return
         if action == "delete_command":
             nome = str(data.get("name", "")).strip().lstrip("/").lower()
@@ -604,6 +681,49 @@ async def handle_mini_app_data(client, message):
             salvar_comandos(comandos_personalizados)
             await message.reply_text(f"✅ Comando `/{nome}` apagado pelo painel.")
             return
+        if action in {"create_category", "update_category", "delete_category"}:
+            nome = str(data.get("name", "")).strip()
+            novo_nome = str(data.get("newName", "")).strip()
+            if not nome or len(nome) > 40 or len(novo_nome) > 40:
+                await message.reply_text("❌ Categoria inválida. Use até 40 caracteres.")
+                return
+            categoria_atual = categoria_existe(categorias_personalizadas, nome)
+            if action == "create_category":
+                if not categoria_atual:
+                    categorias_personalizadas.append(nome)
+                    salvar_categorias_personalizadas(categorias_personalizadas)
+                await message.reply_text(f"✅ Categoria `{nome}` salva pelo painel.")
+                return
+            if action == "update_category":
+                if not novo_nome:
+                    await message.reply_text("❌ Informe o novo nome da categoria.")
+                    return
+                if not categoria_atual:
+                    await message.reply_text(f"❌ Categoria `{nome}` não encontrada.")
+                    return
+                categorias_personalizadas = [
+                    novo_nome if c.lower() == nome.lower() else c
+                    for c in categorias_personalizadas
+                ]
+                for info in comandos_personalizados.values():
+                    if str(info.get("categoria") or info.get("category") or "").lower() == nome.lower():
+                        info["categoria"] = novo_nome
+                salvar_categorias_personalizadas(categorias_personalizadas)
+                salvar_comandos(comandos_personalizados)
+                await message.reply_text(f"✅ Categoria `{nome}` alterada para `{novo_nome}`.")
+                return
+            if action == "delete_category":
+                if categoria_atual:
+                    categorias_personalizadas = [
+                        c for c in categorias_personalizadas if c.lower() != nome.lower()
+                    ]
+                for info in comandos_personalizados.values():
+                    if str(info.get("categoria") or info.get("category") or "").lower() == nome.lower():
+                        info["categoria"] = categoria_personalizada_padrao()
+                salvar_categorias_personalizadas(categorias_personalizadas)
+                salvar_comandos(comandos_personalizados)
+                await message.reply_text(f"✅ Categoria `{nome}` excluída pelo painel.")
+                return
         if action == "backlog_add":
             sugestao_texto = str(data.get("text", "")).strip()
             if not sugestao_texto:
@@ -908,6 +1028,7 @@ async def processar_criacao(client, message):
             'conteudo': dados.get('conteudo', ''),
             'media_id': dados.get('media_id'),
             'descricao': dados['descricao'],
+            'categoria': categoria_personalizada_padrao(),
             'criado_por': message.from_user.id,
             'data_criacao': str(datetime.now())
         }
