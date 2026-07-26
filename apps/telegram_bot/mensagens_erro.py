@@ -30,7 +30,6 @@ ERROS_RATE_LIMIT = [
     "Se tu mandar mais um link eu vou na tua casa quebrar teu roteador. 10/min.",
     "Vai tomar no teu cu com tanto link. (10/min)"
 ]
-
 ERROS_VIDEO_LONGO = [
     # Mãe
     "🎬 Vídeo muito longo! Mais longo que a fila de amante da tua mãe gorda. Máximo {min}min, não vou mandar essa porra.",
@@ -62,31 +61,31 @@ ERROS_VIDEO_LONGO = [
 
 ERROS_ARQUIVO_GRANDE = [
     # Mãe
-    "📦 Mais pesado que tua mãe de calcinha depois da ceia de Natal. 50MB é o limite, anta.",
-    "🏋️ Porra, isso pesa mais que tua mãe subindo escada. Máximo 50MB, desgraçado.",
+    "📦 Mais pesado que tua mãe de calcinha depois da ceia de Natal. 2GB é o limite, anta.",
+    "🏋️ Porra, isso pesa mais que tua mãe subindo escada. Máximo 2GB, desgraçado.",
     # Má vontade
-    "Porra, quer entupir meu servidor com essa gordura digital? Vai se foder, máximo 50MB.",
-    "Ah não, 50MB é meu limite e eu não vou gastar meu armazenamento com lixo teu. Dá teu jeito.",
+    "Porra, quer entupir meu servidor com essa gordura digital? Vai se foder, máximo 2GB.",
+    "Ah não, 2GB é meu limite e eu não vou gastar meu armazenamento com lixo teu. Dá teu jeito.",
     # Desfeita
-    "Seu celular parcelado em 24x da Multilaser nem roda isso, pra que quer baixar arquivo tão grande? Limite 50MB.",
-    "Manda arquivo leve, imbecil. Você não tem internet pra baixar isso e eu não tenho paciência. Limite 50MB.",
+    "Seu celular parcelado em 24x da Multilaser nem roda isso, pra que quer baixar arquivo tão grande? Limite 2GB.",
+    "Manda arquivo leve, imbecil. Você não tem internet pra baixar isso e eu não tenho paciência. Limite 2GB.",
     # Recusa
-    "Nem fudendo que vou gastar minha banda com isso. Muito grande, recuso. Limite é 50MB.",
-    "Eu não vou baixar e ponto final. Muito pesado essa merda (limite 50MB).",
+    "Nem fudendo que vou gastar minha banda com isso. Muito grande, recuso. Limite é 2GB.",
+    "Eu não vou baixar e ponto final. Muito pesado essa merda (limite 2GB).",
     # Extras (Pesadas)
-    "Você acha que meu servidor é a buceta arrombada da tua mãe pra caber tanta coisa? 50MB no máximo, filho da puta.",
-    "Toma no teu cu, maluco. Arquivo gigante do caralho, vai hospedar essa porra na casa do caralho. Limite 50MB.",
+    "Você acha que meu servidor é a buceta arrombada da tua mãe pra caber tanta coisa? 2GB no máximo, filho da puta.",
+    "Toma no teu cu, maluco. Arquivo gigante do caralho, vai hospedar essa porra na casa do caralho. Limite 2GB.",
     # Novas
-    "Mais pesado que a cruz que Jesus carregou, caralho! 50MB no máximo, sem noção.",
-    "Vai comprar um pendrive se quiser guardar tanto lixo. O limite aqui é 50MB, enfia o resto no rabo.",
-    "Arquivo gigante do caralho. Vai comprar um HD externo, arrombado. Limite 50MB.",
-    "Acha que meu servidor é bagunça? Não vou entupir ele com teus 50MB+ de lixo.",
-    "O tamanho dessa merda é proporcional à tua burrice. Limite de 50MB.",
-    "Mais pesado que o chifre do teu pai. 50MB no máximo, sem noção.",
-    "Manda algo mais leve, tipo a moral da tua mãe. Limite 50MB.",
-    "Nem fudendo que eu vou processar um elefante desses. 50MB max.",
-    "Meu bot, minhas regras. Passou de 50MB você enfia no cu.",
-    "Você acha que eu tenho banda infinita pra baixar tuas porcarias? Limite 50MB."
+    "Mais pesado que a cruz que Jesus carregou, caralho! 2GB no máximo, sem noção.",
+    "Vai comprar um pendrive se quiser guardar tanto lixo. O limite aqui é 2GB, enfia o resto no rabo.",
+    "Arquivo gigante do caralho. Vai comprar um HD externo, arrombado. Limite 2GB.",
+    "Acha que meu servidor é bagunça? Não vou entupir ele com teus 2GB+ de lixo.",
+    "O tamanho dessa merda é proporcional à tua burrice. Limite de 2GB.",
+    "Mais pesado que o chifre do teu pai. 2GB no máximo, sem noção.",
+    "Manda algo mais leve, tipo a moral da tua mãe. Limite 2GB.",
+    "Nem fudendo que eu vou processar um elefante desses. 2GB max.",
+    "Meu bot, minhas regras. Passou de 2GB você enfia no cu.",
+    "Você acha que eu tenho banda infinita pra baixar tuas porcarias? Limite 2GB."
 ]
 
 ERROS_EXTRACAO = [

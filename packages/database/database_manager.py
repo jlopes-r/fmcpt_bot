@@ -15,6 +15,9 @@ def init_db():
     cursor.execute('''CREATE TABLE IF NOT EXISTS links 
                       (url_norm TEXT, chat_id INTEGER, first_user TEXT, first_user_id INTEGER, count INTEGER, timestamp REAL,
                        PRIMARY KEY (url_norm, chat_id))''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS links_diarios
+                      (url_norm TEXT, chat_id INTEGER, dia TEXT, first_user TEXT, first_user_id INTEGER, count INTEGER, timestamp REAL,
+                       PRIMARY KEY (url_norm, chat_id, dia))''')
     
     # Migração: se a tabela antiga existir sem chat_id, converte
     try:
@@ -35,11 +38,18 @@ def init_db():
     conn.close()
 
 
+def _dia_atual():
+    return datetime.now().strftime("%Y-%m-%d")
+
+
 def checar_link(url_norm, chat_id=0):
-    """Apenas verifica se o link já existe no banco para o chat específico."""
+    """Apenas verifica se o link já foi enviado hoje no chat específico."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute("SELECT count, first_user, first_user_id FROM links WHERE url_norm = ? AND chat_id = ?", (url_norm, chat_id))
+    cursor.execute(
+        "SELECT count, first_user, first_user_id FROM links_diarios WHERE url_norm = ? AND chat_id = ? AND dia = ?",
+        (url_norm, chat_id, _dia_atual()),
+    )
     res = cursor.fetchone()
     conn.close()
     
@@ -50,25 +60,51 @@ def checar_link(url_norm, chat_id=0):
 def registrar_link_e_checar(url_norm, chat_id, user_name, user_id):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
+    agora = datetime.now()
+    agora_ts = agora.timestamp()
+    dia = agora.strftime("%Y-%m-%d")
+
     cursor.execute("SELECT count, first_user, first_user_id FROM links WHERE url_norm = ? AND chat_id = ?", (url_norm, chat_id))
-    res = cursor.fetchone()
+    res_global = cursor.fetchone()
+
+    cursor.execute(
+        "SELECT count, first_user, first_user_id FROM links_diarios WHERE url_norm = ? AND chat_id = ? AND dia = ?",
+        (url_norm, chat_id, dia),
+    )
+    res_dia = cursor.fetchone()
     
-    duplicado = False
+    duplicado_hoje = False
     info = {}
 
-    if res:
-        duplicado = True
-        novo_count = res[0] + 1
+    repetido_global_por_outro = bool(res_global and res_global[2] != user_id)
+
+    if res_global:
+        novo_count = res_global[0] + 1
         cursor.execute("UPDATE links SET count = ? WHERE url_norm = ? AND chat_id = ?", (novo_count, url_norm, chat_id))
-        cursor.execute("INSERT INTO vacilos VALUES (?, ?, ?)", (user_id, user_name, datetime.now().timestamp()))
-        info = {"primeiro_user": res[1], "primeiro_id": res[2], "vezes": novo_count}
+        if repetido_global_por_outro:
+            cursor.execute("INSERT INTO vacilos VALUES (?, ?, ?)", (user_id, user_name, agora_ts))
     else:
         cursor.execute("INSERT INTO links (url_norm, chat_id, first_user, first_user_id, count, timestamp) VALUES (?, ?, ?, ?, 1, ?)", 
-                       (url_norm, chat_id, user_name, user_id, datetime.now().timestamp()))
+                       (url_norm, chat_id, user_name, user_id, agora_ts))
+
+    if res_dia:
+        duplicado_hoje = res_dia[2] != user_id
+        novo_count_dia = res_dia[0] + 1
+        cursor.execute(
+            "UPDATE links_diarios SET count = ? WHERE url_norm = ? AND chat_id = ? AND dia = ?",
+            (novo_count_dia, url_norm, chat_id, dia),
+        )
+        if duplicado_hoje:
+            info = {"primeiro_user": res_dia[1], "primeiro_id": res_dia[2], "vezes": novo_count_dia}
+    else:
+        cursor.execute(
+            "INSERT INTO links_diarios (url_norm, chat_id, dia, first_user, first_user_id, count, timestamp) VALUES (?, ?, ?, ?, ?, 1, ?)",
+            (url_norm, chat_id, dia, user_name, user_id, agora_ts),
+        )
     
     conn.commit()
     conn.close()
-    return duplicado, info
+    return duplicado_hoje, info
 
 def registrar_vacilo_manual(user_id, user_name):
     """Registra um vacilo manualmente via /repetido."""

@@ -61,9 +61,30 @@ RAIZ = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 sys.path.insert(0, RAIZ)
 
 from packages.database import database_manager as db
-from apps.telegram_bot.instagram_extractor import download_instagram
+from packages.command_catalog import SUPER_COMMANDS, command_names
+from packages.config import (
+    DOWNLOADS_DIR,
+    LOG_DIR,
+    ensure_runtime_dirs,
+    get_bool_env,
+    get_int_env,
+    instagram_cookie_path,
+    load_environment,
+    mini_app_url,
+    parse_chat_ids,
+)
+from packages.logging_config import configure_rotating_logging
+from packages.telegram_ui import build_bot_commands, build_command_menu_text, build_mini_app_markup
+from packages.url_utils import normalizar_url
+from apps.telegram_bot.downloaders import limite_duracao_filter, processar_com_ytdlp as _processar_com_ytdlp
+from apps.telegram_bot.duplicates import normalizar_link_social
+from apps.telegram_bot.instagram import download_instagram, fetch_instagram_profile, get_profile_username
+from apps.telegram_bot.media_utils import detectar_extensao as _detectar_extensao, progresso_upload as _progresso_upload
+from apps.telegram_bot.text_utils import dividir_texto_longo, limpar_texto, montar_legenda
+from apps.telegram_bot.twitter import build_vxtwitter_url, match_tweet_url
 
-load_dotenv()
+load_environment()
+ensure_runtime_dirs()
 db.init_db()
 
 # -----------------------------------------
@@ -81,17 +102,18 @@ RATE_LIMIT = 10
 RATE_JANELA = 60
 
 AUDIO_BOCA_LEITE_DIR = os.path.join(RAIZ, "assets", "audios")
-PASTA_DOWNLOADS = Path(RAIZ) / "downloads"
-COOKIE_PATH = os.path.join(RAIZ, "data", "instagram_cookies.txt")
+PASTA_DOWNLOADS = DOWNLOADS_DIR
+COOKIE_PATH = str(instagram_cookie_path())
+MINI_APP_URL = mini_app_url()
 
-API_ID = int(os.getenv("API_ID"))
+API_ID = get_int_env("API_ID")
 API_HASH = os.getenv("API_HASH")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-MODO_ZUEIRA = os.getenv("MODO_ZUEIRA", "1") == "1"
-ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+MODO_ZUEIRA = get_bool_env("MODO_ZUEIRA", True)
+ADMIN_ID = get_int_env("ADMIN_ID", 0)
 
 _grupos_raw = os.getenv("GRUPOS_AUTORIZADOS", "")
-GRUPOS_AUTORIZADOS = [int(g.strip()) for g in _grupos_raw.split(",") if g.strip()]
+GRUPOS_AUTORIZADOS = parse_chat_ids(_grupos_raw)
 
 DOMINIOS_PERMITIDOS = [
     "x.com", "twitter.com", "youtube.com", "youtu.be",
@@ -141,23 +163,7 @@ _bloqueios_por_link = defaultdict(set)  # user_id -> set de url_norms que já ca
 # -----------------------------------------
 # LOGGING
 # -----------------------------------------
-LOG_DIR = os.path.join(RAIZ, "data", "logs")
-os.makedirs(LOG_DIR, exist_ok=True)
-
-log_handler = RotatingFileHandler(
-    os.path.join(LOG_DIR, "bot.log"),
-    maxBytes=5*1024*1024,
-    backupCount=3,
-    encoding="utf-8"
-)
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[log_handler, logging.StreamHandler()]
-)
-
-logging.getLogger("pyrogram").setLevel(logging.WARNING)
-logging.getLogger("yt_dlp").setLevel(logging.ERROR)
+configure_rotating_logging(LOG_DIR, "bot.log")
 
 log = logging.getLogger("SuperBot")
 
@@ -211,98 +217,6 @@ async def metralhadora_stickers(client, chat_id):
 # -----------------------------------------
 # UTILITÁRIOS
 # -----------------------------------------
-def _detectar_extensao(url: str, content_type: str = '') -> str:
-    """Detecta extensão de arquivo a partir do Content-Type e/ou URL da CDN do Instagram.
-    
-    Instagram CDN URLs têm dots no path (ex: t51.2885-15) que confundem split('.'),
-    então priorizamos o Content-Type header e validamos contra extensões conhecidas.
-    """
-    # 1. Content-Type header (mais confiável)
-    if content_type:
-        ct = content_type.lower().split(';')[0].strip()
-        ct_map = {
-            'image/jpeg': 'jpg', 'image/jpg': 'jpg', 'image/png': 'png',
-            'image/webp': 'webp', 'image/gif': 'gif', 'image/heic': 'heic',
-            'image/heif': 'heif', 'video/mp4': 'mp4', 'video/quicktime': 'mov',
-            'video/webm': 'webm',
-        }
-        if ct in ct_map:
-            return ct_map[ct]
-
-    # 2. Extensão do último segmento da URL (apenas o filename, não o path todo)
-    extensoes_validas = {'jpg', 'jpeg', 'png', 'gif', 'webp', 'mp4', 'mov', 'm4v', 'webm', 'heic'}
-    try:
-        path_sem_query = url.split('?')[0]
-        ultimo_segmento = path_sem_query.rsplit('/', 1)[-1]  # pega só o filename
-        if '.' in ultimo_segmento:
-            ext = ultimo_segmento.rsplit('.', 1)[-1].lower()
-            if ext in extensoes_validas:
-                return ext
-    except Exception:
-        pass
-
-    # 3. Fallback: jpg para imagens (caso mais comum no Instagram)
-    return 'jpg'
-
-
-def limpar_texto(texto: str) -> str:
-    if not texto:
-        return ""
-    texto = re.sub(r'#\w+', '', texto)
-    texto = re.sub(r'\n\s*\n', '\n\n', texto)
-    return texto.strip()
-
-def montar_legenda(texto_base: str, autor: str, usuario: str, emoji: str = "✨", limite: int = 1024) -> str:
-    """Monta legenda respeitando o limite de caracteres do Telegram (1024 para captions)."""
-    sufixo = f"\n\nAutor: {autor}\n👤 Enviado por: {usuario}"
-    espaco_disponivel = limite - len(sufixo) - len(emoji) - 5  # 5 = espaço + "..." + margem
-    if espaco_disponivel < 50:
-        espaco_disponivel = 50
-    if len(texto_base) > espaco_disponivel:
-        texto_base = texto_base[:espaco_disponivel] + "..."
-    return f"{emoji} {texto_base}{sufixo}"
-
-def dividir_texto_longo(texto: str, limite: int = 4096) -> list[str]:
-    """Divide texto longo em múltiplas mensagens respeitando o limite do Telegram."""
-    if len(texto) <= limite:
-        return [texto]
-    partes = []
-    while texto:
-        if len(texto) <= limite:
-            partes.append(texto)
-            break
-        corte = texto.rfind('\n', 0, limite)
-        if corte == -1 or corte < limite // 2:
-            corte = texto.rfind(' ', 0, limite)
-        if corte == -1 or corte < limite // 2:
-            corte = limite
-        partes.append(texto[:corte])
-        texto = texto[corte:].lstrip()
-    return partes
-
-def _progresso_upload(msg_espera):
-    """Cria um callback de progresso para upload de vídeo."""
-    estado = {"ultimo_pct": 0, "ultimo_tempo": 0}
-    
-    async def _callback(current, total):
-        if total == 0:
-            return
-        pct = int(current * 100 / total)
-        agora = time.time()
-        
-        # Atualiza a cada 15% E no mínimo a cada 2s para evitar FloodWait
-        if (pct - estado["ultimo_pct"] >= 15 and agora - estado["ultimo_tempo"] > 2.0) or pct == 100:
-            if pct == 100 and estado["ultimo_pct"] == 100:
-                return
-            estado["ultimo_pct"] = pct
-            estado["ultimo_tempo"] = agora
-            barra = "█" * (pct // 10) + "░" * (10 - pct // 10)
-            try:
-                await msg_espera.edit_text(f"📤 Enviando... {barra} {pct}%")
-            except Exception:
-                pass
-    return _callback
-
 def url_permitida(url: str) -> bool:
     try:
         parsed = urlparse(url)
@@ -328,17 +242,6 @@ def chat_autorizado(chat_id: int) -> bool:
         return True
     return chat_id in GRUPOS_AUTORIZADOS
 
-def normalizar_url(url: str) -> str:
-    try:
-        parsed = urlparse(url)
-        tweet_match = re.search(r'status/(\d+)', url)
-        if tweet_match:
-            return f"tweet:{tweet_match.group(1)}"
-        limpo = urlunparse((parsed.scheme, parsed.netloc, parsed.path, '', '', ''))
-        return limpo.rstrip('/').lower()
-    except Exception:
-        return url.lower().strip()
-
 async def encurtar_url(url: str) -> str:
     try:
         async with aiohttp.ClientSession() as session:
@@ -352,14 +255,7 @@ async def encurtar_url(url: str) -> str:
 # -----------------------------------------
 # MOTOR DE DOWNLOAD
 # -----------------------------------------
-def _filtro_duracao(info_dict, *, incomplete):
-    duracao = info_dict.get('duration')
-    if duracao and duracao > LIMITE_DURACAO:
-        return f"Video tem {duracao}s, acima do limite de {LIMITE_DURACAO}s"
-
-def _processar_com_ytdlp(url, ydl_opts):
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        return ydl.extract_info(url, download=True)
+_filtro_duracao = limite_duracao_filter(LIMITE_DURACAO)
 
 async def extrair_e_enviar_midia(client, message, url, usuario, msg_espera):
     """Motor de download genérico. Retorna True se obteve sucesso."""
@@ -427,7 +323,7 @@ async def extrair_e_enviar_midia(client, message, url, usuario, msg_espera):
                             # Verifica se foi filtrado por tamanho antes de dar erro
                             filesize = item.get('filesize') or item.get('filesize_approx')
                             if filesize and filesize > LIMITE_TAMANHO:
-                                raise Exception(f"Arquivo muito grande ({filesize / 1024 / 1024:.1f}MB). O limite é de 50MB.")
+                                raise Exception(f"Arquivo muito grande ({filesize / 1024 / 1024:.1f}MB). O limite é de 2GB.")
                             continue
 
                     arquivos_para_deletar.append(path)
@@ -641,6 +537,60 @@ async def processar_instagram(client, message, url, usuario, msg_espera, link_du
             arquivos_para_deletar.clear()
     return False
 
+
+def _formatar_numero_perfil(valor):
+    if valor is None:
+        return "N/A"
+    try:
+        valor = int(valor)
+    except (TypeError, ValueError):
+        return str(valor)
+    if valor >= 1_000_000:
+        return f"{valor / 1_000_000:.1f}M".replace(".0M", "M")
+    if valor >= 1_000:
+        return f"{valor / 1_000:.1f}k".replace(".0k", "k")
+    return str(valor)
+
+
+def montar_resposta_perfil_instagram(profile):
+    nome = profile.get("full_name") or profile.get("username") or "Perfil"
+    username = profile.get("username") or ""
+    verificado = " • verificado" if profile.get("is_verified") else ""
+    privacidade = "Privado" if profile.get("is_private") else "Publico"
+    bio = profile.get("biography") or "Sem bio."
+
+    linhas = [
+        f"**Instagram: {nome}**",
+        f"@{username}{verificado}",
+        "",
+        bio,
+        "",
+        f"Posts: {_formatar_numero_perfil(profile.get('posts'))}",
+        f"Seguidores: {_formatar_numero_perfil(profile.get('followers'))}",
+        f"Seguindo: {_formatar_numero_perfil(profile.get('following'))}",
+        f"Perfil: {privacidade}",
+    ]
+    if profile.get("external_url"):
+        linhas.append(f"Link: {profile['external_url']}")
+    return "\n".join(linhas)[:1024]
+
+
+async def responder_perfil_instagram(client, message, url):
+    profile = await fetch_instagram_profile(url, COOKIE_PATH)
+    if not profile:
+        await message.reply_text("❌ Não consegui carregar os dados desse perfil do Instagram.")
+        return
+
+    caption = montar_resposta_perfil_instagram(profile)
+    foto = profile.get("profile_pic_url")
+    if foto:
+        try:
+            await client.send_photo(message.chat.id, foto, caption=caption, reply_to_message_id=message.id)
+            return
+        except Exception as e:
+            log.warning("Falha ao enviar foto do perfil Instagram: %s", str(e)[:150])
+    await message.reply_text(caption)
+
 # -----------------------------------------
 # COMANDOS DE RANKING (SQLite)
 # -----------------------------------------
@@ -684,26 +634,12 @@ async def cmd_anual(client, message):
         txt += f"{i}º {nome}: {vits} meses ganhos\n"
     await message.reply_text(txt)
 
-@app.on_message(filters.command("help"))
+@app.on_message(filters.command(["help", "menu"]))
 async def cmd_help(client, message):
     if not chat_autorizado(message.chat.id):
         return
-    txt = (
-        "**🤖 Guia do Super Bot**\n\n"
-        "**📊 Rankings**\n"
-        "- `/ranking` - Ver o ranking dos últimos 7 dias.\n"
-        "- `/bocadeleite` - Ver o pódio do mês atual.\n"
-        "- `/anual` - Ver o Hall da Fama do ano.\n\n"
-        "**🎯 Castigo**\n"
-        "- `/repetido` - (Em resposta a alguém) Aplica o castigo manual.\n\n"
-        "**😈 Diversão**\n"
-        "- `/comi` - Escolhe uma vítima aleatória do grupo.\n\n"
-        "**🔧 Utilidades**\n"
-        "- `/id` - Mostra o ID deste chat.\n"
-        "- `/stats` - Status técnico do bot.\n"
-        "- `/help` - Mostra esta mensagem."
-    )
-    await message.reply_text(txt)
+    txt = build_command_menu_text("🤖 Guia do Super Bot", SUPER_COMMANDS, bool(MINI_APP_URL))
+    await message.reply_text(txt, reply_markup=build_mini_app_markup(MINI_APP_URL))
 
 @app.on_message(filters.command("repetido"))
 async def cmd_repetido_manual(client, message):
@@ -870,21 +806,7 @@ async def cmd_ping(client, message):
 async def atualizar_menu_comandos_super(client):
     """Atualiza o menu de comandos (botão /) no Telegram para o Super Bot."""
     try:
-        from pyrogram.types import BotCommand
-        lista_comandos = [
-            BotCommand("help", "📖 Guia do Super Bot"),
-            BotCommand("ranking", "📊 Ranking semanal de vacilos"),
-            BotCommand("bocadeleite", "🏆 Pódio do mês atual"),
-            BotCommand("anual", "👑 Hall da Fama do ano"),
-            BotCommand("repetido", "🎯 Castigo manual (responda a alguém)"),
-            BotCommand("comi", "😈 Escolhe uma vítima aleatória"),
-            BotCommand("bloq", "🚫 Bloqueia alguém de mandar link"),
-            BotCommand("id", "🆔 Mostra o ID deste chat"),
-            BotCommand("stats", "📊 Status técnico do bot"),
-            BotCommand("ping", "🏓 Verifica se o bot está online"),
-            BotCommand("retry", "🔄 Tenta baixar novamente (responda ao erro)"),
-            BotCommand("sync", "🔄 Sincroniza o menu de comandos"),
-        ]
+        lista_comandos = build_bot_commands(SUPER_COMMANDS)
         await client.set_bot_commands(lista_comandos)
         log.info(f"Menu de comandos do Super Bot atualizado no Telegram! ({len(lista_comandos)} comandos)")
         return True
@@ -901,6 +823,32 @@ async def cmd_sync(client, message):
         await message.reply_text("✅ Menu do Telegram (botão /) atualizado com todos os comandos!")
     else:
         await message.reply_text("❌ Erro ao atualizar o menu. Veja os logs.")
+
+
+async def filtro_web_app_data(_, __, message):
+    return bool(getattr(message, "web_app_data", None))
+
+
+@app.on_message(filters.create(filtro_web_app_data))
+async def handle_mini_app_data(client, message):
+    if not chat_autorizado(message.chat.id):
+        return
+    try:
+        payload = json.loads(message.web_app_data.data or "{}")
+    except Exception:
+        await message.reply_text("❌ Payload inválido do painel.")
+        return
+
+    kind = payload.get("kind")
+    data = payload.get("data") or {}
+    if kind == "execute_command":
+        command = str(data.get("command", "")).strip().lstrip("/")
+        if command not in command_names(SUPER_COMMANDS):
+            await message.reply_text("❌ Comando desconhecido.")
+            return
+        await message.reply_text(f"Execute pelo chat: `/{command}`")
+    else:
+        await message.reply_text("✅ Painel recebido.")
 
 @app.on_message(filters.command("retry"))
 async def cmd_retry(client, message):
@@ -1119,7 +1067,7 @@ async def enviar_aviso_duplicado(client, message, info_original: dict, repetido_
 
     quem_ago = quem_enviou_ago or info_original.get("agora", "alguém")
 
-    texto = f"🚨 BOCA DE LEITE {quem_ago}! Esse link já foi enviado {vezes} vezes no grupo (primeiro por {quem_mandou_primeiro}). Presta atenção no grupo!"
+    texto = f"🚨 BOCA DE LEITE {quem_ago}! Esse link já foi enviado {vezes} vezes hoje no grupo (primeiro por {quem_mandou_primeiro}). Presta atenção no grupo!"
 
     lista_audios = ["boca-de-leite.ogg", "aids.ogg", "de-novo-cac.ogg"]
     for i, nome_audio in enumerate(lista_audios):
@@ -1135,7 +1083,7 @@ async def enviar_aviso_duplicado(client, message, info_original: dict, repetido_
 # -----------------------------------------
 # ESCUTA DE MENSAGENS
 # -----------------------------------------
-COMANDOS = {"ranking", "bocadeleite", "anual", "stats", "help", "repetido", "id", "comi", "ping", "retry", "bloq", "sync"}
+COMANDOS = set(command_names(SUPER_COMMANDS))
 
 @app.on_message(filters.text & ~filters.command(list(COMANDOS)))
 async def processar_links(client, message):
@@ -1192,12 +1140,7 @@ async def processar_links(client, message):
             return
 
         # Apenas CHECA se é duplicado (sem registrar). Registro acontece só após sucesso.
-        url_norm = urlunparse(urlparse(url_raw)._replace(query="")).lower().rstrip("/")
-        
-        # Normalização específica para Twitter/X (ignora nome de usuário para evitar falsos negativos)
-        tw_match = re.search(r'(?:x|twitter)\.com/[^/]+/status/(\d+)', url_norm)
-        if tw_match:
-            url_norm = f"https://x.com/i/status/{tw_match.group(1)}"
+        url_norm = normalizar_link_social(url_raw)
 
         repetido_db, info_db = db.checar_link(url_norm, message.chat.id)
 
@@ -1222,9 +1165,9 @@ async def processar_links(client, message):
         msg_espera = await message.reply_text("🐦 Puxando dados do X...")
         arquivos_x = []
         try:
-            match = re.search(r'(?:x|twitter)\.com/([^/]+)/status/(\d+)', url_raw)
+            match = match_tweet_url(url_raw)
             if match:
-                api_url = f"https://api.vxtwitter.com/{match.group(1)}/status/{match.group(2)}"
+                api_url = build_vxtwitter_url(match.group(1), match.group(2))
                 headers = {"Accept-Encoding": "gzip, deflate"}
                 async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10), headers=headers) as session:
                     async with session.get(api_url) as resp:
@@ -1239,7 +1182,7 @@ async def processar_links(client, message):
                     if 'media_extended' not in qrt_info and 'id' in qrt_info:
                         try:
                             qrt_user = qrt_info.get('user_screen_name', 'i')
-                            url_qrt = f"https://api.vxtwitter.com/{qrt_user}/status/{qrt_info['id']}"
+                            url_qrt = build_vxtwitter_url(qrt_user, qrt_info["id"])
                             async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as s:
                                 async with s.get(url_qrt) as r:
                                     qrt_data = await r.json()
@@ -1401,8 +1344,13 @@ async def processar_links(client, message):
         # Detecta link de perfil do Instagram (não post/reel/stories)
         ig_path = urlparse(url_raw).path.strip('/')
         ig_first = ig_path.split('/')[0] if ig_path else ''
+        if ig_first and get_profile_username(url_raw):
+            await responder_perfil_instagram(client, message, url_raw)
+            async with _processing_lock:
+                _processing_urls.discard(url_norm)
+            return
         if ig_first and ig_first not in ('p', 'reel', 'reels', 'tv', 'ad', 'stories'):
-            await message.reply_text("❌ Não é possível baixar perfis do Instagram.\nEnvie o link de um post, Reels ou Stories específico.")
+            await message.reply_text("❌ Link do Instagram não reconhecido.\nEnvie um perfil, post, Reels ou Stories específico.")
             async with _processing_lock:
                 _processing_urls.discard(url_norm)
             return
