@@ -42,7 +42,6 @@ test("build contains the complete static Mini App", async () => {
     "styles.css",
     "app.js",
     "catalog.json",
-    "catalog-data.js",
     "og.png",
   ];
 
@@ -56,4 +55,5 @@ test("build contains the complete static Mini App", async () => {
   );
   assert.match(html, /id="commandList"/);
   assert.match(html, /id="adminView"/);
+  assert.doesNotMatch(html, /catalog-data\.js/);
 });
