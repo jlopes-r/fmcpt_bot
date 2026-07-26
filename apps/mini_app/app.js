@@ -97,7 +97,8 @@ const state = {
   query: "",
   view: "commands",
   adminMode: "create",
-  selectedCommand: null
+  selectedCommand: null,
+  authorized: false
 };
 
 const elements = {
@@ -867,32 +868,72 @@ tg?.onEvent?.("themeChanged", applyTheme);
 window.matchMedia?.("(prefers-color-scheme: dark)").addEventListener?.("change", applyTheme);
 
 async function loadCatalog() {
-  if (window.FMCPT_CATALOG?.bots?.length) {
-    return window.FMCPT_CATALOG;
+  if (!isTelegramContext || !tg?.initData) {
+    throw new Error("telegram_context_required");
   }
 
-  if (window.location.protocol !== "file:") {
-    try {
-      const response = await fetch("./catalog.json", { cache: "no-store" });
-      if (response.ok) return await response.json();
-    } catch {
-      // The embedded catalog keeps the interface usable when the request fails.
+  const response = await fetch("./catalog.json", {
+    cache: "no-store",
+    headers: {
+      "X-Telegram-Init-Data": tg.initData
     }
+  });
+  if (response.status === 403) {
+    throw new Error("unauthorized");
   }
+  if (!response.ok) {
+    throw new Error("catalog_load_failed");
+  }
+  return response.json();
+}
 
-  return demoCatalog;
+function renderAccessDenied(message) {
+  elements.connectionStatus.textContent = "Acesso restrito";
+  elements.connectionStatus.classList.remove("is-connected");
+  elements.botTitle.textContent = "Acesso restrito";
+  elements.botDescription.textContent = "Abra este painel pelo Telegram usando o bot em um grupo autorizado.";
+  elements.commandCount.textContent = "0";
+  elements.botSwitcher.innerHTML = "";
+  elements.categoryTabs.innerHTML = "";
+  elements.resultsCount.textContent = "0 resultados";
+  elements.commandList.innerHTML = `
+    <div class="empty-state">
+      <div>
+        <span class="empty-state__icon"><i data-lucide="lock"></i></span>
+        <strong>Acesso negado</strong>
+        <p>${escapeHtml(message)}</p>
+      </div>
+    </div>
+  `;
+  elements.adminNavButton.hidden = true;
+  elements.adminView.hidden = true;
+  elements.commandsView.hidden = false;
+  refreshIcons();
 }
 
 async function initialize() {
   applyTheme();
   elements.connectionStatus.textContent = isTelegramContext
-    ? "Conectado ao Telegram"
-    : "Modo demonstração";
+    ? "Validando acesso..."
+    : "Acesso restrito";
   elements.connectionStatus.classList.toggle("is-connected", isTelegramContext);
   elements.closeApp.hidden = !isTelegramContext;
 
-  const catalog = normalizeCatalog(await loadCatalog());
-  state.bots = catalog.bots || [];
+  try {
+    const catalog = normalizeCatalog(await loadCatalog());
+    state.authorized = true;
+    elements.connectionStatus.textContent = "Conectado ao Telegram";
+    elements.connectionStatus.classList.add("is-connected");
+    state.bots = catalog.bots || [];
+  } catch (error) {
+    const messages = {
+      telegram_context_required: "Este menu só funciona aberto pelo Telegram.",
+      unauthorized: "Seu usuário não está em um grupo autorizado para este bot.",
+      catalog_load_failed: "Não foi possível carregar o menu agora."
+    };
+    renderAccessDenied(messages[error.message] || messages.catalog_load_failed);
+    return;
+  }
 
   if (!state.bots.some((bot) => bot.id === state.botId)) {
     state.botId = state.bots[0]?.id || "super";

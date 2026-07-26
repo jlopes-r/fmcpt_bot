@@ -25,11 +25,13 @@ class MiniAppCatalogTest(unittest.TestCase):
         mini_app_dir = Path(__file__).resolve().parents[1] / "apps" / "mini_app"
         catalog = json.loads((mini_app_dir / "catalog.json").read_text(encoding="utf-8"))
         embedded = (mini_app_dir / "catalog-data.js").read_text(encoding="utf-8").strip()
+        html = (mini_app_dir / "index.html").read_text(encoding="utf-8")
         prefix = "window.FMCPT_CATALOG = "
 
         self.assertTrue(embedded.startswith(prefix))
         self.assertTrue(embedded.endswith(";"))
         self.assertEqual(json.loads(embedded[len(prefix) : -1]), catalog)
+        self.assertNotIn("catalog-data.js", html)
 
 
 if __name__ == "__main__":

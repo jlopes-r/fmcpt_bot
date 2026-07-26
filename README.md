@@ -66,9 +66,19 @@ python apps/comandos/comandos_bot.py
 
 ### Mini App Telegram
 
-O painel web fica em `apps/mini_app`. Publique essa pasta em uma URL HTTPS e configure
-`MINI_APP_URL` no `.env`. O comando `/menu` abre o painel quando essa variável está
-preenchida; sem ela, o bot mantém o menu textual como fallback.
+O painel web fica em `apps/mini_app`, mas nao deve ser publicado como pasta
+estatica aberta. Rode `apps/mini_app_server/server.py` atras de um proxy HTTPS e
+configure `MINI_APP_URL` no `.env`. O servidor valida `Telegram.WebApp.initData`
+e so libera `catalog.json` para usuarios que pertencem a algum chat em
+`GRUPOS_AUTORIZADOS`.
+
+Exemplo local do servidor:
+
+```bash
+python -m apps.mini_app_server.server --host 127.0.0.1 --port 8080
+```
+
+Sem `MINI_APP_URL`, o comando `/menu` mantém o menu textual como fallback.
 
 ## 📁 Estrutura do Projeto
 
