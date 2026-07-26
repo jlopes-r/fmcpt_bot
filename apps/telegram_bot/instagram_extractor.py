@@ -62,6 +62,16 @@ def _is_story(url: str) -> bool:
     return bool(STORIES_REGEX.search(url))
 
 
+def _is_reel(url: str) -> bool:
+    """Verifica se a URL é de um Reel do Instagram."""
+    return bool(re.search(r'/(?:reel|reels)/[A-Za-z0-9_-]+', url))
+
+
+def _get_embed_path(url: str) -> str:
+    """Retorna o tipo de caminho correto para a página de embed."""
+    return 'reel' if _is_reel(url) else 'p'
+
+
 def _get_story_info(url: str) -> tuple[str, str] | None:
     """Extrai username e media_id de uma URL de story.
     O ID numérico no URL do story JÁ é o media_id."""
@@ -69,6 +79,25 @@ def _get_story_info(url: str) -> tuple[str, str] | None:
     if match:
         return match.group(1), match.group(2)
     return None
+
+
+def get_profile_username(url: str) -> str | None:
+    """Extrai username quando a URL aponta para um perfil do Instagram."""
+    try:
+        parsed = urllib.parse.urlparse(url)
+        path_parts = [part for part in parsed.path.strip('/').split('/') if part]
+    except Exception:
+        return None
+
+    if len(path_parts) != 1:
+        return None
+
+    username = path_parts[0]
+    if username in {'p', 'reel', 'reels', 'tv', 'ad', 'stories', 'explore', 'accounts'}:
+        return None
+    if not re.fullmatch(r'[A-Za-z0-9._]{1,30}', username):
+        return None
+    return username
 
 
 def _sanitize_caption(text: str) -> str:
@@ -112,6 +141,81 @@ def _load_cookies_from_file(cookie_path: str) -> dict:
 def _build_cookie_header(cookies: dict) -> str:
     """Monta a string Cookie: para o header HTTP."""
     return '; '.join(f'{k}={v}' for k, v in cookies.items())
+
+
+def _parse_profile_user(user: dict) -> dict | None:
+    if not user:
+        return None
+    return {
+        'username': user.get('username') or '',
+        'full_name': _sanitize_caption(user.get('full_name') or ''),
+        'biography': _sanitize_caption(user.get('biography') or ''),
+        'followers': user.get('edge_followed_by', {}).get('count'),
+        'following': user.get('edge_follow', {}).get('count'),
+        'posts': user.get('edge_owner_to_timeline_media', {}).get('count'),
+        'is_private': bool(user.get('is_private')),
+        'is_verified': bool(user.get('is_verified')),
+        'profile_pic_url': user.get('profile_pic_url_hd') or user.get('profile_pic_url') or '',
+        'external_url': user.get('external_url') or '',
+    }
+
+
+def _parse_profile_from_html(html: str) -> dict | None:
+    patterns = [
+        r'"user"\s*:\s*({.+?})\s*,\s*"logging_page_id"',
+        r'"ProfilePage"\s*,\s*\[\s*({.+?})\s*\]',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, html, re.DOTALL)
+        if not match:
+            continue
+        try:
+            data = json.loads(match.group(1))
+        except Exception:
+            continue
+        user = data.get('graphql', {}).get('user') if isinstance(data, dict) else None
+        result = _parse_profile_user(user or data)
+        if result and result.get('username'):
+            return result
+    return None
+
+
+async def fetch_instagram_profile(url: str, cookie_path: str = '') -> dict | None:
+    """Busca dados públicos de um perfil do Instagram."""
+    username = get_profile_username(url)
+    if not username:
+        return None
+
+    cookies = _load_cookies_from_file(cookie_path)
+    headers = {
+        **BROWSER_HEADERS,
+        **IG_APP_HEADERS,
+        'X-Requested-With': 'XMLHttpRequest',
+    }
+    if cookies:
+        headers['Cookie'] = _build_cookie_header(cookies)
+
+    api_url = f'https://www.instagram.com/api/v1/users/web_profile_info/?username={urllib.parse.quote(username)}'
+    page_url = f'https://www.instagram.com/{urllib.parse.quote(username)}/'
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+            resp = await client.get(api_url, headers=headers)
+            log.info("👤 Instagram perfil API @%s status=%d", username, resp.status_code)
+            if resp.status_code == 200:
+                user = resp.json().get('data', {}).get('user')
+                result = _parse_profile_user(user)
+                if result and result.get('username'):
+                    return result
+
+            resp = await client.get(page_url, headers=headers)
+            log.info("👤 Instagram perfil HTML @%s status=%d", username, resp.status_code)
+            if resp.status_code == 200:
+                return _parse_profile_from_html(resp.text)
+    except Exception as e:
+        log.info("❌ Falha ao buscar perfil Instagram @%s: %s", username, str(e)[:150])
+
+    return None
 
 
 def _auto_login_and_save_cookies(cookie_path: str) -> dict:
@@ -376,13 +480,13 @@ async def _extract_via_graphql(shortcode: str, cookies: dict = None) -> dict | N
 #  Camada 3 — Embed Page Scraping
 # ═══════════════════════════════════════════════════════════════════════════════
 
-async def _extract_via_embed(shortcode: str, cookies: dict = None) -> dict | None:
+async def _extract_via_embed(shortcode: str, cookies: dict = None, embed_path: str = 'p') -> dict | None:
     """
     Faz scraping da página de embed do Instagram.
     Procura por __additionalDataLoaded, _sharedData, ou tags meta OG.
     """
     log.info("🔌 Camada 3 (Embed Scraping): shortcode=%s", shortcode)
-    embed_url = f'https://www.instagram.com/p/{shortcode}/embed/'
+    embed_url = f'https://www.instagram.com/{embed_path}/{shortcode}/embed/'
 
     cookies = cookies or {}
     try:
@@ -692,26 +796,36 @@ async def download_instagram(
     return None
 
 
+def _is_acceptable_result_for_url(result: dict | None, url: str) -> bool:
+    """Evita tratar thumbnail de Reel como extração final."""
+    if not result:
+        return False
+    if _is_reel(url) and result.get('type') == 'photo':
+        log.info("⏭️ Resultado de Reel veio como foto; ignorando thumbnail e tentando fallback de vídeo")
+        return False
+    return True
+
+
 async def _try_all_layers(shortcode: str, cookies: dict, url: str) -> dict | None:
     """Tenta as 3 camadas de extração (API, GraphQL, Embed) com os cookies fornecidos."""
 
     # ── Camada 1: API Interna ──
     result = await _extract_via_api(shortcode, cookies)
-    if result:
+    if _is_acceptable_result_for_url(result, url):
         log.info("✅ Instagram download via API Interna: %s (%d itens)", url, len(result['urls']))
         return result
     log.info("⏭️ API Interna falhou, tentando Camada 2...")
 
     # ── Camada 2: GraphQL ──
     result = await _extract_via_graphql(shortcode, cookies)
-    if result:
+    if _is_acceptable_result_for_url(result, url):
         log.info("✅ Instagram download via GraphQL: %s (%d itens)", url, len(result['urls']))
         return result
     log.info("⏭️ GraphQL falhou, tentando Camada 3...")
 
     # ── Camada 3: Embed Scraping ──
-    result = await _extract_via_embed(shortcode, cookies)
-    if result:
+    result = await _extract_via_embed(shortcode, cookies, _get_embed_path(url))
+    if _is_acceptable_result_for_url(result, url):
         log.info("✅ Instagram download via Embed: %s (%d itens)", url, len(result['urls']))
         return result
     log.info("⏭️ Embed falhou...")

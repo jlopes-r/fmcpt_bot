@@ -78,7 +78,7 @@ from packages.telegram_ui import build_bot_commands, build_command_menu_text, bu
 from packages.url_utils import normalizar_url
 from apps.telegram_bot.downloaders import limite_duracao_filter, processar_com_ytdlp as _processar_com_ytdlp
 from apps.telegram_bot.duplicates import normalizar_link_social
-from apps.telegram_bot.instagram import download_instagram
+from apps.telegram_bot.instagram import download_instagram, fetch_instagram_profile, get_profile_username
 from apps.telegram_bot.media_utils import detectar_extensao as _detectar_extensao, progresso_upload as _progresso_upload
 from apps.telegram_bot.text_utils import dividir_texto_longo, limpar_texto, montar_legenda
 from apps.telegram_bot.twitter import build_vxtwitter_url, match_tweet_url
@@ -536,6 +536,60 @@ async def processar_instagram(client, message, url, usuario, msg_espera, link_du
                         log.error(f"Erro ao deletar arquivo temporário {p}: {e}")
             arquivos_para_deletar.clear()
     return False
+
+
+def _formatar_numero_perfil(valor):
+    if valor is None:
+        return "N/A"
+    try:
+        valor = int(valor)
+    except (TypeError, ValueError):
+        return str(valor)
+    if valor >= 1_000_000:
+        return f"{valor / 1_000_000:.1f}M".replace(".0M", "M")
+    if valor >= 1_000:
+        return f"{valor / 1_000:.1f}k".replace(".0k", "k")
+    return str(valor)
+
+
+def montar_resposta_perfil_instagram(profile):
+    nome = profile.get("full_name") or profile.get("username") or "Perfil"
+    username = profile.get("username") or ""
+    verificado = " • verificado" if profile.get("is_verified") else ""
+    privacidade = "Privado" if profile.get("is_private") else "Publico"
+    bio = profile.get("biography") or "Sem bio."
+
+    linhas = [
+        f"**Instagram: {nome}**",
+        f"@{username}{verificado}",
+        "",
+        bio,
+        "",
+        f"Posts: {_formatar_numero_perfil(profile.get('posts'))}",
+        f"Seguidores: {_formatar_numero_perfil(profile.get('followers'))}",
+        f"Seguindo: {_formatar_numero_perfil(profile.get('following'))}",
+        f"Perfil: {privacidade}",
+    ]
+    if profile.get("external_url"):
+        linhas.append(f"Link: {profile['external_url']}")
+    return "\n".join(linhas)[:1024]
+
+
+async def responder_perfil_instagram(client, message, url):
+    profile = await fetch_instagram_profile(url, COOKIE_PATH)
+    if not profile:
+        await message.reply_text("❌ Não consegui carregar os dados desse perfil do Instagram.")
+        return
+
+    caption = montar_resposta_perfil_instagram(profile)
+    foto = profile.get("profile_pic_url")
+    if foto:
+        try:
+            await client.send_photo(message.chat.id, foto, caption=caption, reply_to_message_id=message.id)
+            return
+        except Exception as e:
+            log.warning("Falha ao enviar foto do perfil Instagram: %s", str(e)[:150])
+    await message.reply_text(caption)
 
 # -----------------------------------------
 # COMANDOS DE RANKING (SQLite)
@@ -1013,7 +1067,7 @@ async def enviar_aviso_duplicado(client, message, info_original: dict, repetido_
 
     quem_ago = quem_enviou_ago or info_original.get("agora", "alguém")
 
-    texto = f"🚨 BOCA DE LEITE {quem_ago}! Esse link já foi enviado {vezes} vezes no grupo (primeiro por {quem_mandou_primeiro}). Presta atenção no grupo!"
+    texto = f"🚨 BOCA DE LEITE {quem_ago}! Esse link já foi enviado {vezes} vezes hoje no grupo (primeiro por {quem_mandou_primeiro}). Presta atenção no grupo!"
 
     lista_audios = ["boca-de-leite.ogg", "aids.ogg", "de-novo-cac.ogg"]
     for i, nome_audio in enumerate(lista_audios):
@@ -1290,8 +1344,13 @@ async def processar_links(client, message):
         # Detecta link de perfil do Instagram (não post/reel/stories)
         ig_path = urlparse(url_raw).path.strip('/')
         ig_first = ig_path.split('/')[0] if ig_path else ''
+        if ig_first and get_profile_username(url_raw):
+            await responder_perfil_instagram(client, message, url_raw)
+            async with _processing_lock:
+                _processing_urls.discard(url_norm)
+            return
         if ig_first and ig_first not in ('p', 'reel', 'reels', 'tv', 'ad', 'stories'):
-            await message.reply_text("❌ Não é possível baixar perfis do Instagram.\nEnvie o link de um post, Reels ou Stories específico.")
+            await message.reply_text("❌ Link do Instagram não reconhecido.\nEnvie um perfil, post, Reels ou Stories específico.")
             async with _processing_lock:
                 _processing_urls.discard(url_norm)
             return
