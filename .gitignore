@@ -38,3 +38,9 @@ assets/audios/*.ogg
 # IDEs
 .vscode/
 .idea/
+
+# Catálogos e metadados versionados do Mini App
+!apps/mini_app/catalog.json
+!apps/mini_app_site/package.json
+!apps/mini_app_site/package-lock.json
+!apps/mini_app_site/.openai/hosting.json

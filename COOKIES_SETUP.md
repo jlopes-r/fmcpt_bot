@@ -22,7 +22,8 @@ O Instagram mudou a API e bloqueia downloads sem autenticação. O yt-dlp usa co
 
 4. Salve o arquivo como `instagram_cookies.txt`
 
-5. Coloque o arquivo em: `D:\Juan\bot\data\instagram_cookies.txt`
+5. Coloque o arquivo em: `data/instagram_cookies.txt` na raiz do projeto.
+   Se preferir outro caminho, configure `IG_COOKIE_PATH` no `.env`.
 
 ### Método 2: Via yt-dlp (se tiver acesso ao navegador)
 

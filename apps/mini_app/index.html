@@ -1,0 +1,297 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="color-scheme" content="light dark">
+    <meta name="theme-color" content="#f3f6f7">
+    <meta name="description" content="Central de comandos dos bots FMCPT no Telegram.">
+    <meta property="og:title" content="FMCPT | Central de comandos">
+    <meta property="og:description" content="Consulte e execute os comandos dos bots FMCPT.">
+    <meta property="og:image" content="./og.png">
+    <meta property="og:type" content="website">
+    <title>FMCPT Bot</title>
+    <link rel="stylesheet" href="./styles.css">
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js"></script>
+    <script src="./catalog-data.js"></script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="app-header">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true">
+            <i data-lucide="bot"></i>
+          </span>
+          <div>
+            <strong class="brand-name">FMCPT</strong>
+            <span id="connectionStatus" class="connection-status">Modo demonstração</span>
+          </div>
+        </div>
+        <button id="closeApp" class="icon-button" type="button" title="Fechar Mini App" aria-label="Fechar Mini App" hidden>
+          <i data-lucide="x"></i>
+        </button>
+      </header>
+
+      <section class="bot-picker" aria-labelledby="botPickerLabel">
+        <span id="botPickerLabel" class="section-label">Bot ativo</span>
+        <div id="botSwitcher" class="segmented-control" role="group" aria-label="Selecionar bot"></div>
+      </section>
+
+      <main class="app-content">
+        <section id="commandsView" class="view" aria-labelledby="botTitle">
+          <section class="bot-overview">
+            <div class="bot-overview__identity">
+              <span id="botIcon" class="bot-overview__icon" aria-hidden="true">
+                <i data-lucide="download"></i>
+              </span>
+              <div>
+                <p class="overline">Central de comandos</p>
+                <h1 id="botTitle">Super Bot</h1>
+                <p id="botDescription" class="bot-description"></p>
+              </div>
+            </div>
+            <div class="command-metric" aria-label="Quantidade de comandos">
+              <strong id="commandCount">0</strong>
+              <span>comandos</span>
+            </div>
+          </section>
+
+          <section class="command-tools" aria-label="Filtros de comandos">
+            <label class="search-field" for="searchInput">
+              <i data-lucide="search" aria-hidden="true"></i>
+              <input
+                id="searchInput"
+                type="search"
+                placeholder="Buscar comando"
+                autocomplete="off"
+                enterkeyhint="search"
+              >
+              <button id="clearSearch" class="search-clear" type="button" title="Limpar busca" aria-label="Limpar busca" hidden>
+                <i data-lucide="x"></i>
+              </button>
+            </label>
+            <nav id="categoryTabs" class="category-tabs" aria-label="Categorias"></nav>
+          </section>
+
+          <div class="section-heading">
+            <div>
+              <p class="overline">Catálogo</p>
+              <h2>Comandos disponíveis</h2>
+            </div>
+            <span id="resultsCount" class="results-count" aria-live="polite">0 resultados</span>
+          </div>
+
+          <section id="commandList" class="command-list" aria-live="polite"></section>
+        </section>
+
+        <section id="adminView" class="view" aria-labelledby="adminTitle" hidden>
+          <header class="view-heading">
+            <span class="view-heading__icon" aria-hidden="true">
+              <i data-lucide="settings-2"></i>
+            </span>
+            <div>
+              <p class="overline">Comandos Bot</p>
+              <h1 id="adminTitle">Administração</h1>
+              <p>Gerencie comandos personalizados, GIFs e sugestões.</p>
+            </div>
+          </header>
+
+          <section aria-labelledby="quickActionsTitle">
+            <div class="section-heading section-heading--compact">
+              <h2 id="quickActionsTitle">Ações rápidas</h2>
+            </div>
+            <div class="admin-shortcuts">
+              <button class="shortcut-button" data-admin="/create" type="button">
+                <span class="shortcut-button__icon"><i data-lucide="message-square-plus"></i></span>
+                <span><strong>Criar guiado</strong><small>Fluxo pelo chat</small></span>
+                <i class="shortcut-button__arrow" data-lucide="arrow-up-right"></i>
+              </button>
+              <button class="shortcut-button" data-admin="/list" type="button">
+                <span class="shortcut-button__icon"><i data-lucide="list"></i></span>
+                <span><strong>Personalizados</strong><small>Ver comandos salvos</small></span>
+                <i class="shortcut-button__arrow" data-lucide="arrow-up-right"></i>
+              </button>
+              <button class="shortcut-button" data-admin="/gifstats" type="button">
+                <span class="shortcut-button__icon"><i data-lucide="image"></i></span>
+                <span><strong>Biblioteca de GIFs</strong><small>Consultar estatísticas</small></span>
+                <i class="shortcut-button__arrow" data-lucide="arrow-up-right"></i>
+              </button>
+              <button class="shortcut-button" data-admin="/backlog" type="button">
+                <span class="shortcut-button__icon"><i data-lucide="clipboard-list"></i></span>
+                <span><strong>Backlog</strong><small>Abrir lista completa</small></span>
+                <i class="shortcut-button__arrow" data-lucide="arrow-up-right"></i>
+              </button>
+            </div>
+          </section>
+
+          <section class="admin-manager" aria-labelledby="managementTitle">
+            <div class="section-heading section-heading--compact">
+              <div>
+                <p class="overline">Edição rápida</p>
+                <h2 id="managementTitle">Gerenciar conteúdo</h2>
+              </div>
+            </div>
+
+            <div id="adminModeTabs" class="admin-mode-tabs" role="tablist" aria-label="Tipo de edição">
+              <button class="active" data-admin-mode="create" type="button" role="tab" aria-selected="true">
+                <i data-lucide="plus"></i>
+                Criar
+              </button>
+              <button data-admin-mode="delete" type="button" role="tab" aria-selected="false">
+                <i data-lucide="trash-2"></i>
+                Apagar
+              </button>
+              <button data-admin-mode="backlog" type="button" role="tab" aria-selected="false">
+                <i data-lucide="list-plus"></i>
+                Backlog
+              </button>
+            </div>
+
+            <div class="admin-editor">
+              <form id="createCommandForm" class="admin-form" data-admin-form="create">
+                <div class="form-heading">
+                  <h3>Novo comando de texto</h3>
+                  <p>O comando ficará disponível imediatamente no chat.</p>
+                </div>
+                <label class="field">
+                  <span>Nome do comando</span>
+                  <span class="input-prefix">
+                    <span aria-hidden="true">/</span>
+                    <input
+                      name="name"
+                      placeholder="saudacao"
+                      pattern="[A-Za-z0-9_]{1,32}"
+                      maxlength="32"
+                      autocomplete="off"
+                      required
+                    >
+                  </span>
+                  <small>Use letras, números e sublinhado.</small>
+                </label>
+                <label class="field">
+                  <span>Descrição</span>
+                  <input name="description" placeholder="Mensagem de boas-vindas" maxlength="100" required>
+                </label>
+                <label class="field">
+                  <span>Resposta do bot</span>
+                  <textarea name="content" placeholder="Escreva o conteúdo enviado pelo comando" maxlength="4000" required></textarea>
+                </label>
+                <button class="primary-button" type="submit">
+                  <i data-lucide="save"></i>
+                  Salvar comando
+                </button>
+              </form>
+
+              <form id="deleteCommandForm" class="admin-form" data-admin-form="delete" hidden>
+                <div class="form-heading">
+                  <h3>Apagar comando</h3>
+                  <p>Remova um comando personalizado existente.</p>
+                </div>
+                <label class="field">
+                  <span>Nome do comando</span>
+                  <span class="input-prefix">
+                    <span aria-hidden="true">/</span>
+                    <input
+                      name="name"
+                      placeholder="saudacao"
+                      pattern="[A-Za-z0-9_]{1,32}"
+                      maxlength="32"
+                      autocomplete="off"
+                      required
+                    >
+                  </span>
+                </label>
+                <div class="danger-notice">
+                  <i data-lucide="triangle-alert" aria-hidden="true"></i>
+                  <span>Esta ação remove o comando para todos os usuários.</span>
+                </div>
+                <button class="danger-button" type="submit">
+                  <i data-lucide="trash-2"></i>
+                  Apagar comando
+                </button>
+              </form>
+
+              <form id="backlogForm" class="admin-form" data-admin-form="backlog" hidden>
+                <div class="form-heading">
+                  <h3>Nova sugestão</h3>
+                  <p>Adicione uma ideia à fila de melhorias do grupo.</p>
+                </div>
+                <label class="field">
+                  <span>Sugestão</span>
+                  <textarea name="text" placeholder="Descreva a ideia de forma objetiva" maxlength="1000" required></textarea>
+                </label>
+                <button class="primary-button primary-button--green" type="submit">
+                  <i data-lucide="list-plus"></i>
+                  Adicionar ao backlog
+                </button>
+              </form>
+            </div>
+          </section>
+        </section>
+      </main>
+
+      <nav class="bottom-nav" aria-label="Navegação principal">
+        <button class="active" data-view="commands" type="button" aria-current="page">
+          <i data-lucide="layout-grid"></i>
+          <span>Comandos</span>
+        </button>
+        <button id="adminNavButton" data-view="admin" type="button" hidden>
+          <i data-lucide="settings-2"></i>
+          <span>Admin</span>
+        </button>
+      </nav>
+    </div>
+
+    <div id="sheetBackdrop" class="sheet-backdrop" hidden></div>
+    <aside
+      id="commandSheet"
+      class="bottom-sheet"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="sheetCommandName"
+      hidden
+    >
+      <div class="sheet-handle" aria-hidden="true"></div>
+      <header class="sheet-header">
+        <span id="sheetIcon" class="command-icon" data-tone="blue" aria-hidden="true">
+          <i data-lucide="terminal"></i>
+        </span>
+        <div>
+          <span id="sheetCategory" class="command-category">Categoria</span>
+          <h2 id="sheetCommandName">/comando</h2>
+        </div>
+        <button id="closeSheet" class="icon-button" type="button" title="Fechar detalhes" aria-label="Fechar detalhes">
+          <i data-lucide="x"></i>
+        </button>
+      </header>
+      <p id="sheetDescription" class="sheet-description"></p>
+      <dl class="command-details">
+        <div id="sheetUsageRow">
+          <dt>Como usar</dt>
+          <dd id="sheetUsage"></dd>
+        </div>
+        <div id="sheetAliasesRow">
+          <dt>Também atende por</dt>
+          <dd id="sheetAliases"></dd>
+        </div>
+        <div id="sheetAccessRow">
+          <dt>Acesso</dt>
+          <dd id="sheetAccess"></dd>
+        </div>
+      </dl>
+      <button id="sheetExecute" class="primary-button sheet-execute" type="button">
+        <i data-lucide="send"></i>
+        Executar comando
+      </button>
+    </aside>
+
+    <div id="toast" class="toast" role="status" aria-live="polite" hidden>
+      <i data-lucide="check-circle-2" aria-hidden="true"></i>
+      <span id="toastMessage"></span>
+    </div>
+
+    <noscript>Ative o JavaScript para usar o painel de comandos.</noscript>
+    <script src="./app.js"></script>
+  </body>
+</html>

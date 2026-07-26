@@ -47,10 +47,12 @@ cp apps/telegram_bot/.env.example apps/telegram_bot/.env
 API_ID=seu_api_id
 API_HASH=seu_api_hash
 BOT_TOKEN=seu_bot_token
+BOT_TOKEN_COMANDOS=seu_bot_token_de_comandos
 GRUPOS_AUTORIZADOS=123456789,-987654321
 MODO_ZUEIRA=1
 IG_USERNAME=seu_usuario_instagram
 IG_PASSWORD=sua_senha_instagram
+MINI_APP_URL=https://sua-url-do-mini-app
 ```
 
 3. (Opcional) Configure cookies do Instagram seguindo `COOKIES_SETUP.md`
@@ -59,7 +61,14 @@ IG_PASSWORD=sua_senha_instagram
 
 ```bash
 python apps/telegram_bot/super_bot.py
+python apps/comandos/comandos_bot.py
 ```
+
+### Mini App Telegram
+
+O painel web fica em `apps/mini_app`. Publique essa pasta em uma URL HTTPS e configure
+`MINI_APP_URL` no `.env`. O comando `/menu` abre o painel quando essa variável está
+preenchida; sem ela, o bot mantém o menu textual como fallback.
 
 ## 📁 Estrutura do Projeto
 
@@ -89,6 +98,7 @@ fmcpt_bot/
 
 ## 📊 Comandos do Bot
 
+- `/menu` - Abre o painel de comandos ou mostra o fallback textual
 - `/id` - Mostra o ID do chat
 - `/stats` - Estatísticas de uso (RAM, CPU, downloads)
 - `/comi` - Modo zoeira (escolhe membro aleatório)

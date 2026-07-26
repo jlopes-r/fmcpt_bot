@@ -1,0 +1,73 @@
+:root {
+  color-scheme: light dark;
+  font-family: Inter, "Segoe UI", system-ui, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  min-height: 100%;
+  margin: 0;
+}
+
+body {
+  display: grid;
+  place-items: center;
+  background: #f3f6f7;
+  color: #172126;
+}
+
+.redirect-page {
+  display: grid;
+  max-width: 420px;
+  justify-items: center;
+  padding: 32px;
+  text-align: center;
+}
+
+.redirect-mark {
+  display: grid;
+  width: 48px;
+  height: 48px;
+  margin-bottom: 16px;
+  place-items: center;
+  border-radius: 8px;
+  background: #e7f4fb;
+  color: #086ca5;
+  font-size: 22px;
+  font-weight: 800;
+}
+
+.redirect-page h1 {
+  margin: 0;
+  font-size: 24px;
+}
+
+.redirect-page p {
+  margin: 7px 0 18px;
+  color: #62717a;
+}
+
+.redirect-page a {
+  min-height: 44px;
+  padding: 11px 16px;
+  border-radius: 8px;
+  background: #1387c9;
+  color: #ffffff;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+@media (prefers-color-scheme: dark) {
+  body {
+    background: #10171b;
+    color: #f1f6f7;
+  }
+
+  .redirect-page p {
+    color: #9eabb1;
+  }
+}

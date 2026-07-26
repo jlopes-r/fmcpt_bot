@@ -11,6 +11,20 @@ from pyrogram import Client, filters
 from pyrogram.types import InputMediaPhoto, InputMediaVideo, InputMediaAudio
 from dotenv import load_dotenv
 
+# Fix imports when this file is executed directly.
+RAIZ = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(RAIZ))
+
+from packages.command_catalog import COMANDOS_BOT_COMMANDS, command_names
+from packages.config import (
+    DATA_DIR,
+    get_int_env,
+    load_environment,
+    mini_app_url,
+    parse_chat_ids,
+)
+from packages.telegram_ui import build_bot_commands, build_command_menu_text, build_mini_app_markup
+
 # Configuração
 def flex_command(commands, prefixes="/", case_sensitive=False):
     if isinstance(commands, str):
@@ -42,38 +56,33 @@ def flex_command(commands, prefixes="/", case_sensitive=False):
 
 filters.command = flex_command
 
-# O caminho para o arquivo .env é definido de forma absoluta para garantir
-# que o bot funcione corretamente quando executado como um serviço na VM.
-CAMINHO_ENV = "/home/juanl/fmcpt_bot/apps/telegram_bot/.env"
-load_dotenv(CAMINHO_ENV)
-load_dotenv(CAMINHO_ENV)
+load_environment()
 
-API_ID = int(os.getenv("API_ID"))
+API_ID = get_int_env("API_ID")
 API_HASH = os.getenv("API_HASH")
 BOT_TOKEN = os.getenv("BOT_TOKEN_COMANDOS")
 GRUPOS_AUTORIZADOS_STR = os.getenv("GRUPOS_AUTORIZADOS", "")
-GRUPOS_AUTORIZADOS = [int(chat_id.strip()) for chat_id in GRUPOS_AUTORIZADOS_STR.split(',') if chat_id.strip()]
+GRUPOS_AUTORIZADOS = parse_chat_ids(GRUPOS_AUTORIZADOS_STR)
+MINI_APP_URL = mini_app_url()
 
 # Logging
 log = logging.getLogger("ComandosBot")
 logging.basicConfig(level=logging.INFO)
 
-# Caminho para arquivo de comandos personalizados, usando caminho absoluto
-# para garantir que seja encontrado quando executado como serviço.
-CAMINHO_RAIZ_PROJETO = "/home/juanl/fmcpt_bot"
-COMANDOS_FILE = Path(CAMINHO_RAIZ_PROJETO) / "data" / "comandos_personalizados.json"
-BACKLOG_FILE = Path(CAMINHO_RAIZ_PROJETO) / "data" / "backlog.json"
-MERDA_FILE = Path(CAMINHO_RAIZ_PROJETO) / "data" / "sugestoes_de_merda.json"
+CAMINHO_RAIZ_PROJETO = str(RAIZ)
+COMANDOS_FILE = DATA_DIR / "comandos_personalizados.json"
+BACKLOG_FILE = DATA_DIR / "backlog.json"
+MERDA_FILE = DATA_DIR / "sugestoes_de_merda.json"
 
 # Caminhos para as bases de dados de GIFs
-GIFS_CATOLICOS_FILE = Path(CAMINHO_RAIZ_PROJETO) / "data" / "gifs_catolicos.json"
-GIFS_DUVIDA_FILE = Path(CAMINHO_RAIZ_PROJETO) / "data" / "gifs_interrogacao.json"
+GIFS_CATOLICOS_FILE = DATA_DIR / "gifs_catolicos.json"
+GIFS_DUVIDA_FILE = DATA_DIR / "gifs_interrogacao.json"
 
 # Estado da conversa para criar comandos
 user_states = {}
 
 # Lista de comandos internos que o bot reconhece nativamente
-COMANDOS_INTERNOS = ["start", "help", "menu", "id", "create", "list", "delete", "instance", "duvida", "add", "removegif", "gifstats", "sync", "cancelar", "backlog"]
+COMANDOS_INTERNOS = command_names(COMANDOS_BOT_COMMANDS)
 
 # Decorator para verificar se o usuário está autorizado
 def admin_only(func):
@@ -187,42 +196,7 @@ log.info(f"GIFs carregados: {len(gifs_catolicos)} católicos, {len(gifs_duvida)}
 
 async def atualizar_menu_comandos(client):
     try:
-        from pyrogram.types import BotCommand
-        lista_comandos = [
-            BotCommand("start", "Inicia o bot"),
-            BotCommand("menu", "Abre o menu principal"),
-            BotCommand("list", "Lista comandos personalizados"),
-            BotCommand("create", "Cria um comando"),
-            BotCommand("delete", "Deleta um comando"),
-            BotCommand("instance", "Envia um GIF de bom dia abençoado"),
-            BotCommand("duvida", "Envia um GIF de dúvida/interrogação"),
-            BotCommand("add", "➕ Adiciona um GIF (responda a um GIF)"),
-            BotCommand("removegif", "🗑️ Remove um GIF da base"),
-            BotCommand("gifstats", "📊 Estatísticas dos GIFs"),
-            BotCommand("backlog", "💡 Sugestões /done /merda /lixeira /limpar"),
-            BotCommand("sync", "🔄 Sincroniza o menu de comandos")
-        ]
-        
-        tipo_emoji = {'texto': '📝', 'foto': '🖼️', 'video': '🎬', 'audio': '🎵', 'voice': '🎤', 'gif': '🎞️'}
-        for cmd, info in comandos_personalizados.items():
-            # Limite do Telegram: 100 comandos no total
-            if len(lista_comandos) >= 100:
-                log.warning("Limite de 100 comandos do Telegram atingido. Alguns comandos personalizados não serão exibidos.")
-                break
-            
-            cmd_formatado = cmd.lower()
-            # Telegram apenas aceita [a-z0-9_] e até 32 caracteres. Pula se for inválido.
-            if not re.match(r'^[a-z0-9_]{1,32}$', cmd_formatado):
-                continue
-                
-            tipo = info.get('tipo', 'texto')
-            emoji = tipo_emoji.get(tipo, '❓')
-            desc = f"{emoji} {info.get('descricao', 'Sem descrição')}"
-            
-            if len(desc) > 60:
-                desc = desc[:57] + "..."
-            lista_comandos.append(BotCommand(cmd_formatado, desc))
-            
+        lista_comandos = build_bot_commands(COMANDOS_BOT_COMMANDS)
         await client.set_bot_commands(lista_comandos)
         log.info(f"Menu de comandos atualizado no Telegram! ({len(lista_comandos)} comandos)")
         return True
@@ -293,37 +267,13 @@ async def cmd_start(client, message):
 
 @app.on_message(filters.command(["help", "menu"]))
 async def cmd_menu(client, message):
-    txt = (
-        "**🤖 MENU DE COMANDOS 🤖**\n\n"
-        "Aqui está tudo que eu posso fazer:\n\n"
-        "**🛠️ Comandos de Administração:**\n"
-        "▫️ `/start` - Inicia a nossa conversa\n"
-        "▫️ `/menu` ou `/help` - Exibe este menu\n"
-        "▫️ `/id` - Mostra o ID desta conversa\n"
-        "▫️ `/create` - 🆕 Cria um novo comando personalizado\n"
-        "▫️ `/list` - 📋 Lista todos os seus comandos\n"
-        "▫️ `/delete NOME` - 🗑️ Deleta um comando\n"
-        "▫️ `/sync` - 🔄 Sincroniza o menu do Telegram\n\n"
-        "**🎞️ GIFs:**\n"
-        "▫️ `/instance` - 🙏 Envia um GIF de bom dia abençoado\n"
-        "▫️ `/duvida` - ❓ Envia um GIF de dúvida/interrogação\n"
-        "▫️ `/add instance` ou `/add duvida` - ➕ Adiciona um GIF (responda a um GIF)\n"
-        "▫️ `/removegif` - 🗑️ Remove um GIF (responda a um GIF do bot)\n"
-        "▫️ `/gifstats` - 📊 Mostra quantos GIFs tem em cada base\n\n"
-        "**💡 Backlog:**\n"
-        "▫️ `/backlog` - 📋 Lista sugestões pendentes\n"
-        "▫️ `/backlog <texto>` - ➕ Adiciona nova sugestão\n"
-        "▫️ `/backlog done <id>` - ✅ Marca como concluída\n"
-        "▫️ `/backlog merda <id>` - 💩 Move pro lixo\n"
-        "▫️ `/backlog lixeira` - 💩 Ver a lixeira\n"
-        "▫️ `/backlog limpar confirmar` - 🧹 Limpa tudo\n\n"
-    )
+    txt = build_command_menu_text("🤖 Menu de comandos", COMANDOS_BOT_COMMANDS, bool(MINI_APP_URL))
     
     if comandos_personalizados:
-        txt += "**✨ Comandos Personalizados:**\n"
-        txt += "👉 Use `/list` para ver a lista com todos os seus comandos criados!"
+        txt += "\n\n**Comandos personalizados**\n"
+        txt += "Use `/list` ou o painel para ver todos."
     
-    await message.reply_text(txt)
+    await message.reply_text(txt, reply_markup=build_mini_app_markup(MINI_APP_URL))
 
 import random
 
@@ -590,6 +540,91 @@ async def cmd_sync(client, message):
         await message.reply_text("✅ Menu do Telegram (botão /) atualizado com todos os comandos!")
     else:
         await message.reply_text("❌ Erro ao atualizar o menu. Veja os logs.")
+
+
+async def filtro_web_app_data(_, __, message):
+    return bool(getattr(message, "web_app_data", None))
+
+
+@app.on_message(filters.create(filtro_web_app_data))
+async def handle_mini_app_data(client, message):
+    global backlog_sugestoes
+    chat_id = message.chat.id
+    if GRUPOS_AUTORIZADOS and chat_id not in GRUPOS_AUTORIZADOS:
+        return
+    try:
+        payload = json.loads(message.web_app_data.data or "{}")
+    except Exception:
+        await message.reply_text("❌ Payload inválido do painel.")
+        return
+
+    kind = payload.get("kind")
+    data = payload.get("data") or {}
+    if kind == "execute_command":
+        command = str(data.get("command", "")).strip().lstrip("/")
+        chave_real = next((c for c in comandos_personalizados if c.lower() == command.lower()), None)
+        if chave_real:
+            await executar_comando_personalizado(client, message, chave_real, comandos_personalizados[chave_real])
+            return
+        if command in COMANDOS_INTERNOS:
+            await message.reply_text(f"Execute pelo chat: `/{command}`")
+            return
+        await message.reply_text("❌ Comando desconhecido.")
+    elif kind == "admin_action":
+        action = str(data.get("action", ""))
+        if action == "create_text_command":
+            nome = str(data.get("name", "")).strip().lstrip("/").lower()
+            descricao = str(data.get("description", "")).strip()
+            conteudo = str(data.get("content", "")).strip()
+            if not re.match(r"^[a-z0-9_]{1,32}$", nome):
+                await message.reply_text("❌ Nome inválido. Use letras, números e underline, até 32 caracteres.")
+                return
+            if not descricao or not conteudo:
+                await message.reply_text("❌ Descrição e conteúdo são obrigatórios.")
+                return
+            comandos_personalizados[nome] = {
+                "tipo": "texto",
+                "conteudo": conteudo,
+                "media_id": None,
+                "descricao": descricao,
+                "criado_por": message.from_user.id if message.from_user else 0,
+                "data_criacao": str(datetime.now()),
+                "origem": "mini_app",
+            }
+            salvar_comandos(comandos_personalizados)
+            await message.reply_text(f"✅ Comando `/{nome}` salvo pelo painel.")
+            return
+        if action == "delete_command":
+            nome = str(data.get("name", "")).strip().lstrip("/").lower()
+            chave_real = next((c for c in comandos_personalizados if c.lower() == nome), None)
+            if not chave_real:
+                await message.reply_text(f"❌ Comando `/{nome}` não encontrado.")
+                return
+            del comandos_personalizados[chave_real]
+            salvar_comandos(comandos_personalizados)
+            await message.reply_text(f"✅ Comando `/{nome}` apagado pelo painel.")
+            return
+        if action == "backlog_add":
+            sugestao_texto = str(data.get("text", "")).strip()
+            if not sugestao_texto:
+                await message.reply_text("❌ Sugestão vazia.")
+                return
+            proximo_id = max((s.get("id", 0) for s in backlog_sugestoes), default=0) + 1
+            nova_sugestao = {
+                "id": proximo_id,
+                "sugestao": sugestao_texto,
+                "autor": message.from_user.first_name if message.from_user else "Mini App",
+                "autor_id": message.from_user.id if message.from_user else 0,
+                "data": str(datetime.now().strftime("%d/%m/%Y %H:%M")),
+                "origem": "mini_app",
+            }
+            backlog_sugestoes.append(nova_sugestao)
+            salvar_backlog(backlog_sugestoes)
+            await message.reply_text(f"✅ Sugestão #{proximo_id} adicionada ao backlog pelo painel.")
+            return
+        await message.reply_text(f"Use o comando correspondente para confirmar: `{action}`")
+    else:
+        await message.reply_text("✅ Painel recebido.")
 
 # -----------------------------------------
 # BACKLOG DE SUGESTÕES
