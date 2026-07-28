@@ -1,0 +1,15 @@
+[Unit]
+Description=FMCPT Bot API Ephemeral Commands
+After=network.target
+
+[Service]
+Type=simple
+User=juanl
+WorkingDirectory=/home/juanl/fmcpt_bot
+Environment=ENV_FILE=/home/juanl/fmcpt_bot/apps/telegram_bot/.env
+ExecStart=/home/juanl/fmcpt_bot/venv/bin/python -m apps.ephemeral_commands.service
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

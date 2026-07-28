@@ -128,7 +128,7 @@ class TelegramUiTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("reply_markup", seen_payloads[0])
         self.assertTrue(message.deleted)
 
-    async def test_build_bot_commands_payload_omits_ephemeral_flag_for_pyrogram_delivery(self):
+    async def test_build_bot_commands_payload_marks_ephemeral_commands(self):
         commands = (
             CommandSpec("menu", "Mostra o menu", "Sistema", ephemeral=True),
             CommandSpec("comi", "Escolhe alguem", "Diversao"),
@@ -137,7 +137,7 @@ class TelegramUiTests(unittest.IsolatedAsyncioTestCase):
         payload = build_bot_commands_payload(commands)
 
         self.assertEqual(payload[0]["command"], "menu")
-        self.assertNotIn("is_ephemeral", payload[0])
+        self.assertTrue(payload[0]["is_ephemeral"])
         self.assertEqual(payload[1]["command"], "comi")
         self.assertNotIn("is_ephemeral", payload[1])
 

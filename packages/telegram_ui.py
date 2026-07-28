@@ -33,13 +33,16 @@ def build_bot_commands(commands: tuple[CommandSpec, ...]):
 
 
 def build_bot_commands_payload(commands: tuple[CommandSpec, ...]) -> list[dict]:
-    return [
-        {
+    payload = []
+    for command in autocomplete_commands(commands):
+        item = {
             "command": command.name,
             "description": command.description[:60],
         }
-        for command in autocomplete_commands(commands)
-    ]
+        if command.ephemeral:
+            item["is_ephemeral"] = True
+        payload.append(item)
+    return payload
 
 
 def build_mini_app_markup(url: str, label: str = "Abrir painel"):
