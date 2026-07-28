@@ -130,10 +130,12 @@ const elements = {
   sheetAliasesRow: document.querySelector("#sheetAliasesRow"),
   sheetBackdrop: document.querySelector("#sheetBackdrop"),
   sheetCategory: document.querySelector("#sheetCategory"),
+  sheetCategoryDetail: document.querySelector("#sheetCategoryDetail"),
   sheetCommandName: document.querySelector("#sheetCommandName"),
   sheetDescription: document.querySelector("#sheetDescription"),
   sheetIcon: document.querySelector("#sheetIcon"),
   sheetPreview: document.querySelector("#sheetPreview"),
+  sheetType: document.querySelector("#sheetType"),
   sheetUsage: document.querySelector("#sheetUsage"),
   sheetUsageRow: document.querySelector("#sheetUsageRow"),
   toast: document.querySelector("#toast"),
@@ -155,6 +157,7 @@ const categoryActions = new Set(["create_category", "update_category", "delete_c
 
 let toastTimer;
 let lastFocusedElement;
+let sheetPreviewObjectUrl;
 
 function readPreference(key) {
   try {
@@ -191,6 +194,10 @@ function normalizeType(command) {
 
 function mediaUrl(command) {
   return command.mediaUrl || command.previewUrl || command.thumbnailUrl || command.preview_url || "";
+}
+
+function privateMediaKey(command) {
+  return command.mediaKey || command.media_key || "";
 }
 
 function stillUrl(command) {
@@ -267,6 +274,63 @@ function renderSheetPreview(command) {
   return "";
 }
 
+function renderSheetPreviewFromSource(command, src) {
+  const type = normalizeType(command);
+  if (["foto", "imagem", "image", "gif"].includes(type)) {
+    return `<img src="${escapeHtml(src)}" alt="${escapeHtml(commandPreviewAlt(command))}">`;
+  }
+  if (type === "video") {
+    return `<video src="${escapeHtml(src)}" controls autoplay muted playsinline loop></video>`;
+  }
+  if (["audio", "voice"].includes(type)) {
+    return `<audio src="${escapeHtml(src)}" controls autoplay></audio>`;
+  }
+  return "";
+}
+
+function clearSheetPreviewObjectUrl() {
+  if (sheetPreviewObjectUrl) {
+    URL.revokeObjectURL(sheetPreviewObjectUrl);
+    sheetPreviewObjectUrl = null;
+  }
+}
+
+async function loadPrivateSheetPreview(command) {
+  const key = privateMediaKey(command);
+  if (!key) return;
+  elements.sheetPreview.hidden = false;
+  elements.sheetPreview.innerHTML = `
+    <div class="sheet-preview__loading">
+      <i data-lucide="loader-circle"></i>
+      <span>Carregando preview</span>
+    </div>
+  `;
+  refreshIcons();
+  try {
+    const response = await fetch(`./api/media/${encodeURIComponent(key)}`, {
+      cache: "no-store",
+      headers: authHeaders()
+    });
+    if (!response.ok) throw new Error("preview_load_failed");
+    const blob = await response.blob();
+    if (state.selectedCommand !== command) return;
+    clearSheetPreviewObjectUrl();
+    sheetPreviewObjectUrl = URL.createObjectURL(blob);
+    elements.sheetPreview.innerHTML = renderSheetPreviewFromSource(command, sheetPreviewObjectUrl);
+    elements.sheetPreview.hidden = !elements.sheetPreview.innerHTML;
+  } catch {
+    if (state.selectedCommand === command) {
+      elements.sheetPreview.innerHTML = `
+        <div class="sheet-preview__loading">
+          <i data-lucide="file-warning"></i>
+          <span>Preview indisponível</span>
+        </div>
+      `;
+      refreshIcons();
+    }
+  }
+}
+
 function refreshIcons() {
   window.lucide?.createIcons({
     attrs: {
@@ -304,6 +368,8 @@ function customCommandToFrontend(name, info) {
     mediaUrl: info.mediaUrl || info.media_url || "",
     previewUrl: info.previewUrl || info.preview_url || "",
     thumbnailUrl: info.thumbnailUrl || info.thumbnail_url || "",
+    privateMedia: Boolean(info.privateMedia || info.private_media),
+    mediaKey: info.mediaKey || info.media_key || "",
     isCustom: true
   };
 }
@@ -709,8 +775,12 @@ function openCommandSheet(command) {
   if (!command) return;
 
   const meta = commandMeta(command);
+  const type = normalizeType(command);
+  const typeLabel = typeMeta[type]?.label || type;
+  const category = commandCategory(command);
   state.selectedCommand = command;
   lastFocusedElement = document.activeElement;
+  clearSheetPreviewObjectUrl();
 
   elements.sheetIcon.dataset.tone = meta.tone;
   elements.sheetIcon.outerHTML = renderCommandIcon(command, "large").replace("command-icon--media", "command-icon--media").replace("<span", '<span id="sheetIcon"');
@@ -718,10 +788,15 @@ function openCommandSheet(command) {
   const previewHtml = renderSheetPreview(command);
   elements.sheetPreview.innerHTML = previewHtml;
   elements.sheetPreview.hidden = !previewHtml;
-  elements.sheetCategory.textContent = commandCategory(command);
+  if (!previewHtml && privateMediaKey(command)) {
+    loadPrivateSheetPreview(command);
+  }
+  elements.sheetCategory.textContent = category;
+  elements.sheetCategoryDetail.textContent = category;
   elements.sheetCommandName.textContent = `/${command.name}`;
   elements.sheetDescription.textContent = commandDescription(command);
   elements.sheetUsage.textContent = command.usage || `/${command.name}`;
+  elements.sheetType.textContent = typeLabel;
   elements.sheetAliases.textContent = (command.aliases || []).map((alias) => `/${alias}`).join(", ");
   elements.sheetAccess.textContent = command.adminOnly ? "Somente administradores" : "Todos do grupo";
   elements.sheetUsageRow.hidden = false;
@@ -736,6 +811,7 @@ function openCommandSheet(command) {
 
 function closeCommandSheet() {
   if (elements.commandSheet.hidden) return;
+  clearSheetPreviewObjectUrl();
   elements.sheetBackdrop.hidden = true;
   elements.commandSheet.hidden = true;
   document.body.classList.remove("sheet-open");

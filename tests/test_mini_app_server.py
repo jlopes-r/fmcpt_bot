@@ -96,6 +96,25 @@ class MiniAppServerTest(unittest.TestCase):
         self.assertIsNone(record["media_id"])
         self.assertEqual(record["media_path"], "/srv/fmcpt/data/custom_command_uploads/file.jpg")
 
+    def test_command_for_catalog_hides_private_media_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            uploads = Path(tmp)
+            media = uploads / (("a" * 32) + ".jpg")
+            media.write_bytes(b"fake")
+
+            with patch.object(server, "UPLOADS_DIR", uploads):
+                visible = server.command_for_catalog({
+                    "tipo": "foto",
+                    "media_id": "telegram-file-id",
+                    "media_path": str(media),
+                    "descricao": "Foto",
+                })
+
+        self.assertNotIn("media_id", visible)
+        self.assertNotIn("media_path", visible)
+        self.assertTrue(visible["privateMedia"])
+        self.assertEqual(visible["mediaKey"], media.name)
+
 
 if __name__ == "__main__":
     unittest.main()

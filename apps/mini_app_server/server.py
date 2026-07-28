@@ -34,6 +34,7 @@ UPLOAD_EXTENSIONS = {
     "audio": ".mp3",
     "voice": ".ogg",
 }
+MEDIA_KEY_RE = re.compile(r"^[a-f0-9]{32}\.[A-Za-z0-9]{1,12}$")
 
 
 def bot_tokens() -> list[str]:
@@ -101,10 +102,32 @@ def load_catalog_payload() -> dict:
     custom_categories = load_json(CUSTOM_CATEGORIES_FILE, [])
     for bot in catalog.get("bots", []):
         if bot.get("id") == "comandos":
-            bot["customCommands"] = custom_commands
+            bot["customCommands"] = {
+                name: command_for_catalog(info)
+                for name, info in custom_commands.items()
+                if isinstance(info, dict)
+            }
             bot["customCategories"] = custom_categories
             break
     return catalog
+
+
+def command_for_catalog(info: dict) -> dict:
+    visible = {
+        key: value
+        for key, value in info.items()
+        if key not in {"media_id", "media_path"}
+    }
+    media_path = Path(str(info.get("media_path", "")))
+    try:
+        media_path.relative_to(UPLOADS_DIR)
+        is_private_media = media_path.is_file()
+    except ValueError:
+        is_private_media = False
+    if is_private_media:
+        visible["privateMedia"] = True
+        visible["mediaKey"] = media_path.name
+    return visible
 
 
 def validate_command_payload(data: dict, *, creating: bool) -> tuple[bool, str]:
@@ -411,6 +434,19 @@ async def upload_command(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "command": name, "catalog": load_catalog_payload()})
 
 
+async def private_media(request: web.Request) -> web.StreamResponse:
+    user = await authorize_request(request)
+    if not user:
+        return web.json_response({"error": "unauthorized"}, status=403)
+    key = request.match_info.get("key", "")
+    if not MEDIA_KEY_RE.match(key):
+        return web.json_response({"error": "not_found"}, status=404)
+    media_path = UPLOADS_DIR / key
+    if not media_path.is_file():
+        return web.json_response({"error": "not_found"}, status=404)
+    return web.FileResponse(media_path)
+
+
 def create_app() -> web.Application:
     app = web.Application(client_max_size=MAX_UPLOAD_BYTES + 1024 * 1024)
 
@@ -427,6 +463,7 @@ def create_app() -> web.Application:
     app.router.add_get("/catalog.json", catalog)
     app.router.add_post("/api/admin/action", admin_action)
     app.router.add_post("/api/admin/upload-command", upload_command)
+    app.router.add_get("/api/media/{key}", private_media)
     app.router.add_static("/", MINI_APP_DIR, show_index=False)
     return app
 
