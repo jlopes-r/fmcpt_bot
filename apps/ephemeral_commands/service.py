@@ -67,6 +67,21 @@ def split_text(text: str, limit: int = 3900) -> list[str]:
     return parts
 
 
+def utf16_len(text: str) -> int:
+    return len(text.encode("utf-16-le")) // 2
+
+
+def bot_command_entities(text: str) -> list[dict]:
+    entities = []
+    for match in re.finditer(r"(?<!\S)/[A-Za-z0-9_]{1,32}(?:@[A-Za-z0-9_]{5,32})?", text):
+        entities.append({
+            "type": "bot_command",
+            "offset": utf16_len(text[:match.start()]),
+            "length": utf16_len(match.group(0)),
+        })
+    return entities
+
+
 def _load_json(path: Path, default):
     try:
         if path.exists():
@@ -270,16 +285,37 @@ class EphemeralCommandService:
         user_id: int,
         text: str,
         parse_mode: str | None = None,
+        entities: list[dict] | None = None,
     ) -> None:
-        for part in split_text(text):
+        parts = split_text(text)
+        for part in parts:
             payload = {
                 "chat_id": chat_id,
                 "receiver_user_id": user_id,
                 "text": part,
             }
-            if parse_mode:
+            if entities and len(parts) == 1:
+                payload["entities"] = entities
+            elif parse_mode:
                 payload["parse_mode"] = parse_mode
             await api.post(session, "sendMessage", payload)
+
+    async def send_ephemeral_with_commands(
+        self,
+        session: aiohttp.ClientSession,
+        api: BotApi,
+        chat_id: int,
+        user_id: int,
+        text: str,
+    ) -> None:
+        await self.send_ephemeral(
+            session,
+            api,
+            chat_id,
+            user_id,
+            text,
+            entities=bot_command_entities(text),
+        )
 
     def state_key(self, runtime: BotRuntime, chat_id: int, user_id: int) -> tuple[str, int, int]:
         return runtime.name, chat_id, user_id
@@ -297,18 +333,17 @@ class EphemeralCommandService:
             "data": {},
             "started_at": time.time(),
         }
-        await self.send_ephemeral(
+        await self.send_ephemeral_with_commands(
             session,
             api,
             chat_id,
             user_id,
             (
-                "<b>📝 Criação de comando personalizado</b>\n\n"
+                "📝 Criação de comando personalizado\n\n"
                 "Digite o nome do comando sem a barra.\n"
-                "Exemplo: <code>frias</code>\n\n"
-                "Use <code>/cancelar</code> para desistir."
+                "Exemplo: frias\n\n"
+                "Use /cancelar para desistir."
             ),
-            parse_mode="HTML",
         )
 
     async def cancel_create_flow(
@@ -333,13 +368,12 @@ class EphemeralCommandService:
         args: list[str],
     ) -> None:
         if not args:
-            await self.send_ephemeral(
+            await self.send_ephemeral_with_commands(
                 session,
                 api,
                 chat_id,
                 user_id,
-                "Uso: <code>/delete nome_do_comando</code>",
-                parse_mode="HTML",
+                "Uso: /delete nome_do_comando",
             )
             return
 
@@ -351,26 +385,24 @@ class EphemeralCommandService:
         commands = load_custom_commands()
         key = find_custom_command_key(commands, command_name or args[0])
         if not key:
-            await self.send_ephemeral(
+            await self.send_ephemeral_with_commands(
                 session,
                 api,
                 chat_id,
                 user_id,
-                f"❌ Comando <code>/{escape(command_name or args[0])}</code> não encontrado.",
-                parse_mode="HTML",
+                f"❌ Comando /{command_name or args[0]} não encontrado.",
             )
             return
         del commands[key]
         save_custom_commands(commands)
         await set_bot_commands_via_bot_api(api.token, COMANDOS_BOT_COMMANDS)
         await set_bot_commands_menu_button_via_bot_api(api.token)
-        await self.send_ephemeral(
+        await self.send_ephemeral_with_commands(
             session,
             api,
             chat_id,
             user_id,
-            f"✅ Comando <code>/{escape(key)}</code> apagado.",
-            parse_mode="HTML",
+            f"✅ Comando /{key} apagado.",
         )
 
     async def handle_create_state(
@@ -408,18 +440,17 @@ class EphemeralCommandService:
             warning = ""
             if find_custom_command_key(commands, name):
                 warning = "\n\n⚠️ Este comando já existe e será substituído se você continuar."
-            await self.send_ephemeral(
+            await self.send_ephemeral_with_commands(
                 session,
                 api,
                 chat_id,
                 user_id,
                 (
-                    f"✅ Comando <code>/{escape(name)}</code> definido.{warning}\n\n"
+                    f"✅ Comando /{name} definido.{warning}\n\n"
                     "Agora escolha o tipo:\n"
-                    "• envie <code>texto</code> para criar uma resposta textual;\n"
+                    "• envie texto para criar uma resposta textual;\n"
                     "• ou envie foto, GIF, vídeo, áudio ou voz com legenda opcional."
                 ),
-                parse_mode="HTML",
             )
             return True
 
@@ -451,13 +482,12 @@ class EphemeralCommandService:
                 )
                 return True
 
-            await self.send_ephemeral(
+            await self.send_ephemeral_with_commands(
                 session,
                 api,
                 chat_id,
                 user_id,
-                "Envie <code>texto</code> ou uma mídia válida: foto, GIF, vídeo, áudio ou voz.",
-                parse_mode="HTML",
+                "Envie texto ou uma mídia válida: foto, GIF, vídeo, áudio ou voz. Use /cancelar para desistir.",
             )
             return True
 
@@ -498,16 +528,15 @@ class EphemeralCommandService:
             await set_bot_commands_via_bot_api(api.token, COMANDOS_BOT_COMMANDS)
             await set_bot_commands_menu_button_via_bot_api(api.token)
             self.create_states.pop(key, None)
-            await self.send_ephemeral(
+            await self.send_ephemeral_with_commands(
                 session,
                 api,
                 chat_id,
                 user_id,
                 (
-                    "<b>✅ Comando criado com sucesso.</b>\n\n"
-                    f"Use <code>/{escape(command_name)}</code> no grupo para testar."
+                    "✅ Comando criado com sucesso.\n\n"
+                    f"Use /{command_name} no grupo para testar."
                 ),
-                parse_mode="HTML",
             )
             self.log.info("created custom command /%s via ephemeral flow user=%s chat=%s", command_name, user_id, chat_id)
             return True

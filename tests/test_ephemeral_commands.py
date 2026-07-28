@@ -4,7 +4,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from apps.ephemeral_commands import service as eph
-from apps.ephemeral_commands.service import BotRuntime, EphemeralCommandService, parse_command
+from apps.ephemeral_commands.service import BotRuntime, EphemeralCommandService, bot_command_entities, parse_command
 from packages.command_catalog import CommandSpec
 
 
@@ -35,6 +35,14 @@ class EphemeralCommandServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("/sorry", text)
         self.assertIn("/teste", text)
         self.assertNotIn("<code>/sorry</code>", text)
+
+    def test_bot_command_entities_marks_slash_commands(self):
+        text = "Use /cancelar para desistir e /teste no grupo."
+        entities = bot_command_entities(text)
+
+        self.assertEqual([item["type"] for item in entities], ["bot_command", "bot_command"])
+        self.assertEqual(text[entities[0]["offset"]:entities[0]["offset"] + entities[0]["length"]], "/cancelar")
+        self.assertEqual(text[entities[1]["offset"]:entities[1]["offset"] + entities[1]["length"]], "/teste")
 
     async def test_handle_menu_sends_ephemeral_message_to_sender(self):
         service = EphemeralCommandService()
@@ -74,8 +82,8 @@ class EphemeralCommandServiceTests(unittest.IsolatedAsyncioTestCase):
             service.allowed_chats = {-100123}
             seen = []
 
-            async def fake_send(session, api, chat_id, user_id, text, parse_mode=None):
-                seen.append(text)
+            async def fake_send(session, api, chat_id, user_id, text, parse_mode=None, entities=None):
+                seen.append((text, entities))
 
             service.send_ephemeral = fake_send
             runtime = BotRuntime("comandos", "123:abc", (), "Menu")
@@ -98,7 +106,13 @@ class EphemeralCommandServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(saved["saudacao"]["tipo"], "texto")
         self.assertEqual(saved["saudacao"]["conteudo"], "Bom dia")
         self.assertEqual(saved["saudacao"]["origem"], "ephemeral_group")
-        self.assertTrue(any("Comando criado" in item for item in seen))
+        self.assertTrue(any("Comando criado" in item[0] for item in seen))
+        self.assertTrue(any(
+            entity["type"] == "bot_command"
+            for text, entities in seen
+            for entity in (entities or [])
+            if "/cancelar" in text or "/saudacao" in text
+        ))
 
     async def test_ephemeral_create_media_command_stores_file_id(self):
         with tempfile.TemporaryDirectory() as tmp:
