@@ -13,12 +13,16 @@ class FakeMessage:
     def __init__(self, fail_first=False):
         self.fail_first = fail_first
         self.calls = []
+        self.deleted = False
 
     async def reply_text(self, text, reply_markup=None):
         self.calls.append({"text": text, "reply_markup": reply_markup})
         if self.fail_first and len(self.calls) == 1:
             raise ButtonTypeInvalid("Telegram says BUTTON_TYPE_INVALID")
         return "sent"
+
+    async def delete(self):
+        self.deleted = True
 
 
 class FakeChatType:
@@ -91,6 +95,7 @@ class TelegramUiTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNone(result)
         self.assertEqual(message.calls, [])
+        self.assertTrue(message.deleted)
 
     async def test_reply_command_menu_omits_web_app_button_for_group_ephemeral(self):
         message = FakeGroupMessage()
@@ -121,8 +126,9 @@ class TelegramUiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(seen_payloads), 1)
         self.assertEqual(seen_payloads[0]["receiver_user_id"], 456)
         self.assertNotIn("reply_markup", seen_payloads[0])
+        self.assertTrue(message.deleted)
 
-    async def test_build_bot_commands_payload_marks_ephemeral_commands(self):
+    async def test_build_bot_commands_payload_omits_ephemeral_flag_for_pyrogram_delivery(self):
         commands = (
             CommandSpec("menu", "Mostra o menu", "Sistema", ephemeral=True),
             CommandSpec("comi", "Escolhe alguem", "Diversao"),
@@ -131,7 +137,7 @@ class TelegramUiTests(unittest.IsolatedAsyncioTestCase):
         payload = build_bot_commands_payload(commands)
 
         self.assertEqual(payload[0]["command"], "menu")
-        self.assertTrue(payload[0]["is_ephemeral"])
+        self.assertNotIn("is_ephemeral", payload[0])
         self.assertEqual(payload[1]["command"], "comi")
         self.assertNotIn("is_ephemeral", payload[1])
 

@@ -33,16 +33,13 @@ def build_bot_commands(commands: tuple[CommandSpec, ...]):
 
 
 def build_bot_commands_payload(commands: tuple[CommandSpec, ...]) -> list[dict]:
-    payload = []
-    for command in autocomplete_commands(commands):
-        item = {
+    return [
+        {
             "command": command.name,
             "description": command.description[:60],
         }
-        if command.ephemeral:
-            item["is_ephemeral"] = True
-        payload.append(item)
-    return payload
+        for command in autocomplete_commands(commands)
+    ]
 
 
 def build_mini_app_markup(url: str, label: str = "Abrir painel"):
@@ -142,6 +139,18 @@ async def send_ephemeral_text(
         return False
 
 
+async def delete_command_message(message, log=None) -> bool:
+    if not _is_group_chat(message):
+        return False
+    try:
+        await message.delete()
+        return True
+    except Exception as exc:
+        if log:
+            log.warning("Could not delete command message in group: %s", exc)
+        return False
+
+
 async def reply_command_menu(
     message,
     title: str,
@@ -155,6 +164,7 @@ async def reply_command_menu(
 ):
     text = build_command_menu_text(title, commands, bool(mini_app_url)) + extra_text
     if ephemeral:
+        await delete_command_message(message, log=log)
         ephemeral_markup = None if _is_group_chat(message) else build_mini_app_markup_payload(mini_app_url)
         sent = await send_ephemeral_text(
             bot_token,
