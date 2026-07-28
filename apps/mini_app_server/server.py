@@ -276,7 +276,9 @@ async def authorize_request(request: web.Request) -> dict | None:
 
 
 async def index(_request: web.Request) -> web.FileResponse:
-    return web.FileResponse(MINI_APP_DIR / "index.html")
+    response = web.FileResponse(MINI_APP_DIR / "index.html")
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    return response
 
 
 async def catalog(request: web.Request) -> web.Response:
@@ -411,6 +413,15 @@ async def upload_command(request: web.Request) -> web.Response:
 
 def create_app() -> web.Application:
     app = web.Application(client_max_size=MAX_UPLOAD_BYTES + 1024 * 1024)
+
+    @web.middleware
+    async def no_cache_middleware(request, handler):
+        response = await handler(request)
+        if request.path in {"/", "/index.html", "/app.js", "/styles.css", "/catalog.json"}:
+            response.headers["Cache-Control"] = "no-store, max-age=0"
+        return response
+
+    app.middlewares.append(no_cache_middleware)
     app.router.add_get("/", index)
     app.router.add_get("/index.html", index)
     app.router.add_get("/catalog.json", catalog)
