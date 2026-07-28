@@ -103,7 +103,7 @@ class MiniAppServerTest(unittest.TestCase):
             media.write_bytes(b"fake")
 
             with patch.object(server, "UPLOADS_DIR", uploads):
-                visible = server.command_for_catalog({
+                visible = server.command_for_catalog("foto", {
                     "tipo": "foto",
                     "media_id": "telegram-file-id",
                     "media_path": str(media),
@@ -114,6 +114,17 @@ class MiniAppServerTest(unittest.TestCase):
         self.assertNotIn("media_path", visible)
         self.assertTrue(visible["privateMedia"])
         self.assertEqual(visible["mediaKey"], media.name)
+
+    def test_command_for_catalog_marks_telegram_media_id_as_private_preview(self):
+        visible = server.command_for_catalog("gifzao", {
+            "tipo": "gif",
+            "media_id": "telegram-file-id",
+            "descricao": "GIF",
+        })
+
+        self.assertNotIn("media_id", visible)
+        self.assertTrue(visible["privateMedia"])
+        self.assertEqual(visible["previewCommand"], "gifzao")
 
 
 if __name__ == "__main__":

@@ -200,6 +200,10 @@ function privateMediaKey(command) {
   return command.mediaKey || command.media_key || "";
 }
 
+function privatePreviewCommand(command) {
+  return command.previewCommand || command.preview_command || (command.privateMedia ? command.name : "");
+}
+
 function stillUrl(command) {
   return command.thumbnailUrl || command.previewUrl || command.posterUrl || command.mediaUrl || "";
 }
@@ -297,7 +301,8 @@ function clearSheetPreviewObjectUrl() {
 
 async function loadPrivateSheetPreview(command) {
   const key = privateMediaKey(command);
-  if (!key) return;
+  const previewCommand = privatePreviewCommand(command);
+  if (!key && !previewCommand) return;
   elements.sheetPreview.hidden = false;
   elements.sheetPreview.innerHTML = `
     <div class="sheet-preview__loading">
@@ -307,7 +312,10 @@ async function loadPrivateSheetPreview(command) {
   `;
   refreshIcons();
   try {
-    const response = await fetch(`./api/media/${encodeURIComponent(key)}`, {
+    const endpoint = key
+      ? `./api/media/${encodeURIComponent(key)}`
+      : `./api/preview/${encodeURIComponent(previewCommand)}`;
+    const response = await fetch(endpoint, {
       cache: "no-store",
       headers: authHeaders()
     });
@@ -370,6 +378,7 @@ function customCommandToFrontend(name, info) {
     thumbnailUrl: info.thumbnailUrl || info.thumbnail_url || "",
     privateMedia: Boolean(info.privateMedia || info.private_media),
     mediaKey: info.mediaKey || info.media_key || "",
+    previewCommand: info.previewCommand || info.preview_command || "",
     isCustom: true
   };
 }
@@ -788,7 +797,7 @@ function openCommandSheet(command) {
   const previewHtml = renderSheetPreview(command);
   elements.sheetPreview.innerHTML = previewHtml;
   elements.sheetPreview.hidden = !previewHtml;
-  if (!previewHtml && privateMediaKey(command)) {
+  if (!previewHtml && (privateMediaKey(command) || privatePreviewCommand(command))) {
     loadPrivateSheetPreview(command);
   }
   elements.sheetCategory.textContent = category;

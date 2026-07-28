@@ -3,6 +3,7 @@ from datetime import datetime
 import hashlib
 import hmac
 import json
+import mimetypes
 import re
 import os
 import time
@@ -23,6 +24,7 @@ COMANDOS_FILE = DATA_DIR / "comandos_personalizados.json"
 CUSTOM_CATEGORIES_FILE = DATA_DIR / "categorias_comandos_personalizados.json"
 BACKLOG_FILE = DATA_DIR / "backlog.json"
 UPLOADS_DIR = DATA_DIR / "custom_command_uploads"
+PREVIEW_CACHE_DIR = DATA_DIR / "custom_command_previews"
 DEFAULT_AUTH_MAX_AGE = 24 * 60 * 60
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 COMMAND_NAME_RE = re.compile(r"^[a-z0-9_]{1,32}$")
@@ -35,6 +37,13 @@ UPLOAD_EXTENSIONS = {
     "voice": ".ogg",
 }
 MEDIA_KEY_RE = re.compile(r"^[a-f0-9]{32}\.[A-Za-z0-9]{1,12}$")
+COMMAND_MEDIA_TYPES = {
+    "foto": "image/jpeg",
+    "gif": "image/gif",
+    "video": "video/mp4",
+    "audio": "audio/mpeg",
+    "voice": "audio/ogg",
+}
 
 
 def bot_tokens() -> list[str]:
@@ -103,7 +112,7 @@ def load_catalog_payload() -> dict:
     for bot in catalog.get("bots", []):
         if bot.get("id") == "comandos":
             bot["customCommands"] = {
-                name: command_for_catalog(info)
+                name: command_for_catalog(name, info)
                 for name, info in custom_commands.items()
                 if isinstance(info, dict)
             }
@@ -112,22 +121,85 @@ def load_catalog_payload() -> dict:
     return catalog
 
 
-def command_for_catalog(info: dict) -> dict:
+def command_for_catalog(name: str, info: dict) -> dict:
     visible = {
         key: value
         for key, value in info.items()
         if key not in {"media_id", "media_path"}
     }
-    media_path = Path(str(info.get("media_path", "")))
-    try:
-        media_path.relative_to(UPLOADS_DIR)
-        is_private_media = media_path.is_file()
-    except ValueError:
-        is_private_media = False
+    media_path = private_media_path(info)
+    is_private_media = bool(media_path)
+    has_media_id = bool(info.get("media_id"))
     if is_private_media:
         visible["privateMedia"] = True
         visible["mediaKey"] = media_path.name
+    elif has_media_id:
+        visible["privateMedia"] = True
+        visible["previewCommand"] = normalize_command_name(name)
     return visible
+
+
+def private_media_path(info: dict) -> Path | None:
+    media_path = Path(str(info.get("media_path", "")))
+    if not media_path:
+        return None
+    try:
+        media_path.resolve().relative_to(UPLOADS_DIR.resolve())
+    except (OSError, ValueError):
+        return None
+    return media_path if media_path.is_file() else None
+
+
+def cached_preview_path(command_name: str, media_id: str, file_path: str = "") -> Path:
+    suffix = Path(file_path).suffix
+    if not suffix:
+        suffix = mimetypes.guess_extension(mimetypes.guess_type(file_path)[0] or "") or ".bin"
+    digest = hashlib.sha256(f"{command_name}:{media_id}".encode()).hexdigest()
+    return PREVIEW_CACHE_DIR / f"{digest}{suffix}"
+
+
+def media_file_response(path: Path, command_type: str | None = None) -> web.FileResponse:
+    content_type = COMMAND_MEDIA_TYPES.get(normalize_command_type(command_type))
+    headers = {"Content-Type": content_type} if content_type else None
+    return web.FileResponse(path, headers=headers)
+
+
+async def download_telegram_preview(command_name: str, media_id: str, tokens: list[str]) -> Path | None:
+    PREVIEW_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    async with ClientSession() as session:
+        for token in tokens:
+            try:
+                async with session.post(
+                    f"https://api.telegram.org/bot{token}/getFile",
+                    json={"file_id": media_id},
+                    timeout=10,
+                ) as response:
+                    data = await response.json()
+            except Exception:
+                continue
+            if not data.get("ok"):
+                continue
+            file_path = data.get("result", {}).get("file_path", "")
+            if not file_path:
+                continue
+            destination = cached_preview_path(command_name, media_id, file_path)
+            if destination.is_file():
+                return destination
+            try:
+                async with session.get(
+                    f"https://api.telegram.org/file/bot{token}/{file_path}",
+                    timeout=30,
+                ) as response:
+                    if response.status != 200:
+                        continue
+                    with open(destination, "wb") as output:
+                        async for chunk in response.content.iter_chunked(1024 * 1024):
+                            output.write(chunk)
+            except Exception:
+                destination.unlink(missing_ok=True)
+                continue
+            return destination if destination.is_file() else None
+    return None
 
 
 def validate_command_payload(data: dict, *, creating: bool) -> tuple[bool, str]:
@@ -444,7 +516,34 @@ async def private_media(request: web.Request) -> web.StreamResponse:
     media_path = UPLOADS_DIR / key
     if not media_path.is_file():
         return web.json_response({"error": "not_found"}, status=404)
-    return web.FileResponse(media_path)
+    return media_file_response(media_path)
+
+
+async def command_preview(request: web.Request) -> web.StreamResponse:
+    user = await authorize_request(request)
+    if not user:
+        return web.json_response({"error": "unauthorized"}, status=403)
+    name = normalize_command_name(request.match_info.get("name", ""))
+    if not COMMAND_NAME_RE.match(name):
+        return web.json_response({"error": "not_found"}, status=404)
+
+    commands = load_json(COMANDOS_FILE, {})
+    key = next((item for item in commands if item.lower() == name), None)
+    if not key:
+        return web.json_response({"error": "not_found"}, status=404)
+    info = commands.get(key) or {}
+
+    media_path = private_media_path(info)
+    if media_path:
+        return media_file_response(media_path, info.get("tipo"))
+
+    media_id = str(info.get("media_id") or "").strip()
+    if not media_id:
+        return web.json_response({"error": "not_found"}, status=404)
+    downloaded = await download_telegram_preview(name, media_id, bot_tokens())
+    if not downloaded:
+        return web.json_response({"error": "preview_unavailable"}, status=404)
+    return media_file_response(downloaded, info.get("tipo"))
 
 
 def create_app() -> web.Application:
@@ -464,6 +563,7 @@ def create_app() -> web.Application:
     app.router.add_post("/api/admin/action", admin_action)
     app.router.add_post("/api/admin/upload-command", upload_command)
     app.router.add_get("/api/media/{key}", private_media)
+    app.router.add_get("/api/preview/{name}", command_preview)
     app.router.add_static("/", MINI_APP_DIR, show_index=False)
     return app
 
