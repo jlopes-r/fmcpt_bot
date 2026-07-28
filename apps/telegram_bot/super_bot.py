@@ -74,7 +74,7 @@ from packages.config import (
     parse_chat_ids,
 )
 from packages.logging_config import configure_rotating_logging
-from packages.telegram_ui import build_bot_commands, build_command_menu_text, build_mini_app_markup
+from packages.telegram_ui import build_bot_commands, reply_command_menu
 from packages.url_utils import normalizar_url
 from apps.telegram_bot.downloaders import limite_duracao_filter, processar_com_ytdlp as _processar_com_ytdlp
 from apps.telegram_bot.duplicates import normalizar_link_social
@@ -638,8 +638,7 @@ async def cmd_anual(client, message):
 async def cmd_help(client, message):
     if not chat_autorizado(message.chat.id):
         return
-    txt = build_command_menu_text("🤖 Guia do Super Bot", SUPER_COMMANDS, bool(MINI_APP_URL))
-    await message.reply_text(txt, reply_markup=build_mini_app_markup(MINI_APP_URL))
+    await reply_command_menu(message, "🤖 Guia do Super Bot", SUPER_COMMANDS, MINI_APP_URL, log)
 
 @app.on_message(filters.command("repetido"))
 async def cmd_repetido_manual(client, message):
