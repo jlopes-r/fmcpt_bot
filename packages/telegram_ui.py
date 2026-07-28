@@ -64,6 +64,10 @@ def build_bot_commands_payload(commands: tuple[CommandSpec, ...]) -> list[dict]:
     return payload
 
 
+def build_chat_command_scope_payload(chat_id: int) -> dict:
+    return {"type": "chat", "chat_id": chat_id}
+
+
 def build_mini_app_markup(url: str, label: str = "Abrir painel"):
     if not url:
         return None
@@ -128,10 +132,43 @@ async def _bot_api_post(bot_token: str, method: str, payload: dict) -> dict:
             return data
 
 
-async def set_bot_commands_via_bot_api(bot_token: str, commands: tuple[CommandSpec, ...]) -> bool:
+async def set_bot_commands_via_bot_api(
+    bot_token: str,
+    commands: tuple[CommandSpec, ...],
+    scope: dict | None = None,
+) -> bool:
     if not bot_token:
         return False
-    await _bot_api_post(bot_token, "setMyCommands", {"commands": build_bot_commands_payload(commands)})
+    payload = {"commands": build_bot_commands_payload(commands)}
+    if scope:
+        payload["scope"] = scope
+    await _bot_api_post(bot_token, "setMyCommands", payload)
+    return True
+
+
+async def set_bot_commands_for_chat_via_bot_api(
+    bot_token: str,
+    commands: tuple[CommandSpec, ...],
+    chat_id: int,
+) -> bool:
+    return await set_bot_commands_via_bot_api(
+        bot_token,
+        commands,
+        scope=build_chat_command_scope_payload(chat_id),
+    )
+
+
+async def clear_bot_commands_for_chat_via_bot_api(bot_token: str, chat_id: int) -> bool:
+    if not bot_token:
+        return False
+    await _bot_api_post(
+        bot_token,
+        "setMyCommands",
+        {
+            "commands": [],
+            "scope": build_chat_command_scope_payload(chat_id),
+        },
+    )
     return True
 
 

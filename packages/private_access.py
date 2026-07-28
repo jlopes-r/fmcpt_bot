@@ -3,7 +3,9 @@ import logging
 from collections.abc import Iterable
 
 from packages.telegram_ui import (
+    clear_bot_commands_for_chat_via_bot_api,
     set_bot_commands_menu_button_via_bot_api,
+    set_bot_commands_for_chat_via_bot_api,
     set_bot_menu_button_via_bot_api,
 )
 
@@ -86,6 +88,7 @@ async def guard_private_chat_access(
     bot_label: str = "bot",
     bot_token: str = "",
     mini_app_url: str = "",
+    bot_commands: tuple = (),
 ) -> bool:
     if not is_private_chat(message):
         return True
@@ -98,6 +101,7 @@ async def guard_private_chat_access(
             int(user_id),
             mini_app_url,
             authorized=True,
+            commands=bot_commands,
         )
         return True
 
@@ -129,14 +133,16 @@ async def configure_private_menu_button(
     *,
     authorized: bool,
     label: str = "Painel",
+    commands: tuple = (),
 ) -> None:
     if not bot_token or not user_id:
         return
     if not authorized:
         try:
+            await clear_bot_commands_for_chat_via_bot_api(bot_token, chat_id=user_id)
             await set_bot_commands_menu_button_via_bot_api(bot_token, chat_id=user_id)
         except Exception:
-            log.exception("failed to reset private menu button user_id=%s", user_id)
+            log.exception("failed to clear private menu user_id=%s", user_id)
         return
     if not mini_app_url:
         return
@@ -146,6 +152,8 @@ async def configure_private_menu_button(
     if _private_menu_cache.get(key, 0) > now:
         return
     try:
+        if commands:
+            await set_bot_commands_for_chat_via_bot_api(bot_token, commands, chat_id=user_id)
         await set_bot_menu_button_via_bot_api(bot_token, mini_app_url, label=label, chat_id=user_id)
         _private_menu_cache[key] = now + PRIVATE_ACCESS_CACHE_TTL
     except Exception:

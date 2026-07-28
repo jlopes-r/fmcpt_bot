@@ -264,6 +264,7 @@ async def bloquear_privado_nao_autorizado(client, message):
         bot_label="Comandos Bot",
         bot_token=BOT_TOKEN,
         mini_app_url=MINI_APP_URL,
+        bot_commands=COMANDOS_BOT_COMMANDS,
     )
 
 

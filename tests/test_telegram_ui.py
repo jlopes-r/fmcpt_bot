@@ -8,11 +8,14 @@ from packages.command_catalog import CommandSpec
 from packages import telegram_ui
 from packages.telegram_ui import (
     build_bot_commands_payload,
+    build_chat_command_scope_payload,
     build_command_menu_html,
     build_commands_menu_button_payload,
     build_mini_app_markup_payload,
     build_web_app_menu_button_payload,
+    clear_bot_commands_for_chat_via_bot_api,
     reply_command_menu,
+    set_bot_commands_for_chat_via_bot_api,
     set_bot_commands_menu_button_via_bot_api,
     set_bot_menu_button_via_bot_api,
 )
@@ -198,6 +201,31 @@ class TelegramUiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(seen[0][2]["chat_id"], 456)
         self.assertEqual(seen[0][2]["menu_button"]["type"], "web_app")
         self.assertEqual(seen[1][2], {"menu_button": {"type": "commands"}, "chat_id": 456})
+
+    async def test_set_commands_can_target_private_chat_scope(self):
+        seen = []
+        original = telegram_ui._bot_api_post
+
+        async def capture_bot_api(token, method, payload):
+            seen.append((token, method, payload))
+            return {"ok": True, "result": {}}
+
+        telegram_ui._bot_api_post = capture_bot_api
+        try:
+            await set_bot_commands_for_chat_via_bot_api(
+                "123:abc",
+                (CommandSpec("menu", "Mostra o menu", "Sistema"),),
+                chat_id=456,
+            )
+            await clear_bot_commands_for_chat_via_bot_api("123:abc", chat_id=456)
+        finally:
+            telegram_ui._bot_api_post = original
+
+        self.assertEqual(build_chat_command_scope_payload(456), {"type": "chat", "chat_id": 456})
+        self.assertEqual(seen[0][1], "setMyCommands")
+        self.assertEqual(seen[0][2]["scope"], {"type": "chat", "chat_id": 456})
+        self.assertEqual(seen[0][2]["commands"][0]["command"], "menu")
+        self.assertEqual(seen[1][2], {"commands": [], "scope": {"type": "chat", "chat_id": 456}})
 
     async def test_build_command_menu_html_escapes_content(self):
         commands = (
