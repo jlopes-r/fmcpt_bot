@@ -7,15 +7,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from packages.private_access import (
     clear_private_access_cache,
+    guard_authorized_group_chat,
     guard_private_chat_access,
     user_is_authorized_group_member,
 )
 
 
 class FakeClient:
-    def __init__(self, members):
+    def __init__(self, members, *, leave_error=None):
         self.members = members
         self.calls = []
+        self.left_chats = []
+        self.leave_error = leave_error
 
     async def get_chat_member(self, chat_id, user_id):
         self.calls.append((chat_id, user_id))
@@ -24,10 +27,15 @@ class FakeClient:
             raise result
         return result
 
+    async def leave_chat(self, chat_id):
+        if self.leave_error:
+            raise self.leave_error
+        self.left_chats.append(chat_id)
+
 
 class FakeMessage:
-    def __init__(self, *, chat_type="private", user_id=42):
-        self.chat = SimpleNamespace(type=chat_type)
+    def __init__(self, *, chat_type="private", chat_id=10, chat_title="Teste", user_id=42):
+        self.chat = SimpleNamespace(type=chat_type, id=chat_id, title=chat_title)
         self.from_user = SimpleNamespace(id=user_id) if user_id else None
         self.replies = []
         self.stopped = False
@@ -94,6 +102,39 @@ class PrivateAccessTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await user_is_authorized_group_member(client, 42, [-100]))
 
         self.assertEqual(client.calls, [(-100, 42)])
+
+    async def test_authorized_group_chat_is_allowed(self):
+        client = FakeClient({})
+        message = FakeMessage(chat_type="supergroup", chat_id=-100)
+
+        allowed = await guard_authorized_group_chat(client, message, [-100], bot_label="Teste Bot")
+
+        self.assertTrue(allowed)
+        self.assertFalse(message.stopped)
+        self.assertEqual(client.left_chats, [])
+
+    async def test_unauthorized_group_chat_is_logged_and_left(self):
+        client = FakeClient({})
+        message = FakeMessage(chat_type="supergroup", chat_id=-200, chat_title="Grupo errado")
+
+        with self.assertLogs("PrivateAccess", level="WARNING") as logs:
+            allowed = await guard_authorized_group_chat(client, message, [-100], bot_label="Teste Bot")
+
+        self.assertFalse(allowed)
+        self.assertTrue(message.stopped)
+        self.assertEqual(client.left_chats, [-200])
+        self.assertIn("unauthorized group chat blocked", logs.output[0])
+        self.assertIn("Grupo errado", logs.output[0])
+
+    async def test_unauthorized_group_stops_even_if_leave_fails(self):
+        client = FakeClient({}, leave_error=RuntimeError("leave failed"))
+        message = FakeMessage(chat_type="group", chat_id=-200)
+
+        with self.assertLogs("PrivateAccess", level="WARNING"):
+            allowed = await guard_authorized_group_chat(client, message, [-100])
+
+        self.assertFalse(allowed)
+        self.assertTrue(message.stopped)
 
 
 if __name__ == "__main__":

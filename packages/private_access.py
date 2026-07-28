@@ -60,6 +60,17 @@ def is_private_chat(message) -> bool:
     return _status_name(chat_type) == "private"
 
 
+def is_group_chat(message) -> bool:
+    chat_type = getattr(getattr(message, "chat", None), "type", "")
+    return _status_name(chat_type) in {"group", "supergroup"}
+
+
+def _stop_message(message) -> None:
+    stop = getattr(message, "stop_propagation", None)
+    if callable(stop):
+        stop()
+
+
 async def guard_private_chat_access(client, message, chat_ids: Iterable[int], *, bot_label: str = "bot") -> bool:
     if not is_private_chat(message):
         return True
@@ -79,7 +90,32 @@ async def guard_private_chat_access(client, message, chat_ids: Iterable[int], *,
         first_name,
         _chat_ids_key(chat_ids),
     )
-    stop = getattr(message, "stop_propagation", None)
-    if callable(stop):
-        stop()
+    _stop_message(message)
+    return False
+
+
+async def guard_authorized_group_chat(client, message, chat_ids: Iterable[int], *, bot_label: str = "bot") -> bool:
+    if not is_group_chat(message):
+        return True
+
+    chat = getattr(message, "chat", None)
+    chat_id = getattr(chat, "id", None)
+    allowed_chat_ids = set(_chat_ids_key(chat_ids))
+    if chat_id in allowed_chat_ids:
+        return True
+
+    log.warning(
+        "unauthorized group chat blocked bot=%s chat_id=%s chat_title=%s chat_type=%s authorized_groups=%s",
+        bot_label,
+        chat_id,
+        getattr(chat, "title", None),
+        getattr(chat, "type", None),
+        tuple(sorted(allowed_chat_ids)),
+    )
+    if chat_id is not None:
+        try:
+            await client.leave_chat(chat_id)
+        except Exception:
+            log.exception("failed to leave unauthorized group bot=%s chat_id=%s", bot_label, chat_id)
+    _stop_message(message)
     return False

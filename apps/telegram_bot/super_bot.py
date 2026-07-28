@@ -74,7 +74,7 @@ from packages.config import (
     parse_chat_ids,
 )
 from packages.logging_config import configure_rotating_logging
-from packages.private_access import guard_private_chat_access
+from packages.private_access import guard_authorized_group_chat, guard_private_chat_access
 from packages.telegram_ui import (
     build_bot_commands,
     reply_command_menu,
@@ -182,6 +182,11 @@ app = Client("meu_super_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TO
 @app.on_message(filters.private, group=-1)
 async def bloquear_privado_nao_autorizado(client, message):
     await guard_private_chat_access(client, message, GRUPOS_AUTORIZADOS, bot_label="Super Bot")
+
+
+@app.on_message(filters.group, group=-1)
+async def sair_de_grupo_nao_autorizado(client, message):
+    await guard_authorized_group_chat(client, message, GRUPOS_AUTORIZADOS, bot_label="Super Bot")
 
 # -----------------------------------------
 # STICKERS

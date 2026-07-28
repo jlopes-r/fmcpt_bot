@@ -23,7 +23,7 @@ from packages.config import (
     mini_app_url,
     parse_chat_ids,
 )
-from packages.private_access import guard_private_chat_access
+from packages.private_access import guard_authorized_group_chat, guard_private_chat_access
 from packages.telegram_ui import (
     build_bot_commands,
     reply_command_menu,
@@ -258,6 +258,11 @@ app = Client(
 @app.on_message(filters.private, group=-1)
 async def bloquear_privado_nao_autorizado(client, message):
     await guard_private_chat_access(client, message, GRUPOS_AUTORIZADOS, bot_label="Comandos Bot")
+
+
+@app.on_message(filters.group, group=-1)
+async def sair_de_grupo_nao_autorizado(client, message):
+    await guard_authorized_group_chat(client, message, GRUPOS_AUTORIZADOS, bot_label="Comandos Bot")
 
 # Comandos personalizados carregados
 comandos_personalizados = carregar_comandos()
