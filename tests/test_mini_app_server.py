@@ -193,6 +193,12 @@ class MiniAppServerTest(unittest.TestCase):
             self.assertFalse(server.is_rate_limited(FakeRequest(), 42))
             self.assertTrue(server.is_rate_limited(FakeRequest(), 42))
 
+    def test_security_headers_do_not_allow_external_icon_cdn(self):
+        csp = server.SECURITY_HEADERS["Content-Security-Policy"]
+
+        self.assertIn("script-src 'self' https://telegram.org", csp)
+        self.assertNotIn("unpkg.com", csp)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -55,7 +55,7 @@ PRIVATE_MEDIA_FIELDS = {
 SECURITY_HEADERS = {
     "Content-Security-Policy": (
         "default-src 'self'; "
-        "script-src 'self' https://telegram.org https://unpkg.com; "
+        "script-src 'self' https://telegram.org; "
         "style-src 'self' 'unsafe-inline'; "
         "img-src 'self' blob: data:; "
         "media-src 'self' blob:; "
