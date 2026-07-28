@@ -2,15 +2,17 @@ import asyncio
 import json
 import logging
 import os
+import re
 import signal
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from html import escape
 from pathlib import Path
 
 import aiohttp
 
-from packages.command_catalog import COMANDOS_BOT_COMMANDS, SUPER_COMMANDS, CommandSpec
+from packages.command_catalog import COMANDOS_BOT_COMMANDS, SUPER_COMMANDS, CommandSpec, command_names
 from packages.config import DATA_DIR, LOG_DIR, load_environment, mini_app_url, parse_chat_ids
 from packages.logging_config import configure_rotating_logging
 from packages.telegram_ui import (
@@ -19,6 +21,13 @@ from packages.telegram_ui import (
     set_bot_commands_menu_button_via_bot_api,
     set_bot_commands_via_bot_api,
 )
+
+
+CUSTOM_COMMANDS_FILE = DATA_DIR / "comandos_personalizados.json"
+CUSTOM_CATEGORIES_FILE = DATA_DIR / "categorias_comandos_personalizados.json"
+COMMAND_NAME_RE = re.compile(r"^[a-z0-9_]{1,32}$")
+INTERNAL_COMANDOS_COMMANDS = set(command_names(COMANDOS_BOT_COMMANDS))
+DEFAULT_CUSTOM_CATEGORY = "Comandos personalizados"
 
 
 @dataclass(frozen=True)
@@ -67,8 +76,100 @@ def _load_json(path: Path, default):
     return default
 
 
+def _save_json(path: Path, data) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def load_custom_commands() -> dict:
+    data = _load_json(CUSTOM_COMMANDS_FILE, {})
+    return data if isinstance(data, dict) else {}
+
+
+def save_custom_commands(commands: dict) -> None:
+    _save_json(CUSTOM_COMMANDS_FILE, commands)
+
+
+def load_custom_categories() -> list[str]:
+    data = _load_json(CUSTOM_CATEGORIES_FILE, [])
+    if not isinstance(data, list):
+        return []
+    categories: list[str] = []
+    for item in data:
+        category = str(item).strip()
+        if category and category.lower() not in {c.lower() for c in categories}:
+            categories.append(category)
+    return categories
+
+
+def save_custom_categories(categories: list[str]) -> None:
+    unique: list[str] = []
+    for item in categories:
+        category = str(item).strip()
+        if category and category.lower() not in {c.lower() for c in unique}:
+            unique.append(category)
+    _save_json(CUSTOM_CATEGORIES_FILE, unique)
+
+
+def ensure_custom_category(category: str = DEFAULT_CUSTOM_CATEGORY) -> None:
+    categories = load_custom_categories()
+    if category.lower() not in {c.lower() for c in categories}:
+        categories.append(category)
+        save_custom_categories(categories)
+
+
+def find_custom_command_key(commands: dict, name: str) -> str | None:
+    normalized = name.strip().lstrip("/").lower()
+    return next((key for key in commands if key.lower() == normalized), None)
+
+
+def validate_custom_command_name(name: str) -> tuple[str | None, str | None]:
+    normalized = name.strip().lstrip("/").lower()
+    if not COMMAND_NAME_RE.match(normalized):
+        return None, "Nome inválido. Use letras minúsculas, números ou underline, até 32 caracteres."
+    if normalized in INTERNAL_COMANDOS_COMMANDS:
+        return None, f"/{escape(normalized)} já é um comando interno do bot."
+    return normalized, None
+
+
+def message_text(message: dict) -> str:
+    return str(message.get("text") or message.get("caption") or "").strip()
+
+
+def extract_media_command_data(message: dict) -> tuple[str, str, str] | None:
+    caption = str(message.get("caption") or "").strip()
+    if photos := message.get("photo"):
+        photo = photos[-1] if isinstance(photos, list) and photos else {}
+        if file_id := photo.get("file_id"):
+            return "foto", file_id, caption
+    for field, command_type in (
+        ("animation", "gif"),
+        ("video", "video"),
+        ("audio", "audio"),
+        ("voice", "voice"),
+    ):
+        media = message.get(field) or {}
+        if file_id := media.get("file_id"):
+            return command_type, file_id, caption
+
+    document = message.get("document") or {}
+    file_id = document.get("file_id")
+    mime_type = str(document.get("mime_type") or "").lower()
+    if not file_id:
+        return None
+    if mime_type == "image/gif":
+        return "gif", file_id, caption
+    if mime_type.startswith("image/"):
+        return "foto", file_id, caption
+    if mime_type.startswith("video/"):
+        return "video", file_id, caption
+    if mime_type.startswith("audio/"):
+        return "audio", file_id, caption
+    return None
+
+
 def build_custom_command_list() -> str:
-    comandos = _load_json(DATA_DIR / "comandos_personalizados.json", {})
+    comandos = load_custom_commands()
     if not comandos:
         return "📭 Nenhum comando personalizado criado."
 
@@ -156,6 +257,7 @@ class EphemeralCommandService:
             BotRuntime("super", os.getenv("BOT_TOKEN", ""), SUPER_COMMANDS, "🤖 Guia do Super Bot"),
             BotRuntime("comandos", os.getenv("BOT_TOKEN_COMANDOS", ""), COMANDOS_BOT_COMMANDS, "🤖 Menu de comandos"),
         ]
+        self.create_states: dict[tuple[str, int, int], dict] = {}
 
     def is_allowed_chat(self, chat_id: int) -> bool:
         return not self.allowed_chats or chat_id in self.allowed_chats
@@ -179,6 +281,240 @@ class EphemeralCommandService:
                 payload["parse_mode"] = parse_mode
             await api.post(session, "sendMessage", payload)
 
+    def state_key(self, runtime: BotRuntime, chat_id: int, user_id: int) -> tuple[str, int, int]:
+        return runtime.name, chat_id, user_id
+
+    async def start_create_flow(
+        self,
+        session: aiohttp.ClientSession,
+        runtime: BotRuntime,
+        api: BotApi,
+        chat_id: int,
+        user_id: int,
+    ) -> None:
+        self.create_states[self.state_key(runtime, chat_id, user_id)] = {
+            "step": "name",
+            "data": {},
+            "started_at": time.time(),
+        }
+        await self.send_ephemeral(
+            session,
+            api,
+            chat_id,
+            user_id,
+            (
+                "<b>📝 Criação de comando personalizado</b>\n\n"
+                "Digite o nome do comando sem a barra.\n"
+                "Exemplo: <code>frias</code>\n\n"
+                "Use <code>/cancelar</code> para desistir."
+            ),
+            parse_mode="HTML",
+        )
+
+    async def cancel_create_flow(
+        self,
+        session: aiohttp.ClientSession,
+        runtime: BotRuntime,
+        api: BotApi,
+        chat_id: int,
+        user_id: int,
+    ) -> None:
+        key = self.state_key(runtime, chat_id, user_id)
+        existed = self.create_states.pop(key, None) is not None
+        text = "❌ Criação de comando cancelada." if existed else "Não há criação em andamento."
+        await self.send_ephemeral(session, api, chat_id, user_id, text, parse_mode="HTML")
+
+    async def delete_custom_command(
+        self,
+        session: aiohttp.ClientSession,
+        api: BotApi,
+        chat_id: int,
+        user_id: int,
+        args: list[str],
+    ) -> None:
+        if not args:
+            await self.send_ephemeral(
+                session,
+                api,
+                chat_id,
+                user_id,
+                "Uso: <code>/delete nome_do_comando</code>",
+                parse_mode="HTML",
+            )
+            return
+
+        command_name, error = validate_custom_command_name(args[0])
+        if error and command_name is None:
+            await self.send_ephemeral(session, api, chat_id, user_id, f"❌ {error}", parse_mode="HTML")
+            return
+
+        commands = load_custom_commands()
+        key = find_custom_command_key(commands, command_name or args[0])
+        if not key:
+            await self.send_ephemeral(
+                session,
+                api,
+                chat_id,
+                user_id,
+                f"❌ Comando <code>/{escape(command_name or args[0])}</code> não encontrado.",
+                parse_mode="HTML",
+            )
+            return
+        del commands[key]
+        save_custom_commands(commands)
+        await set_bot_commands_via_bot_api(api.token, COMANDOS_BOT_COMMANDS)
+        await set_bot_commands_menu_button_via_bot_api(api.token)
+        await self.send_ephemeral(
+            session,
+            api,
+            chat_id,
+            user_id,
+            f"✅ Comando <code>/{escape(key)}</code> apagado.",
+            parse_mode="HTML",
+        )
+
+    async def handle_create_state(
+        self,
+        session: aiohttp.ClientSession,
+        runtime: BotRuntime,
+        api: BotApi,
+        message: dict,
+    ) -> bool:
+        chat_id = int((message.get("chat") or {}).get("id"))
+        user_id = int((message.get("from") or {}).get("id"))
+        key = self.state_key(runtime, chat_id, user_id)
+        state = self.create_states.get(key)
+        if not state:
+            return False
+
+        text = message_text(message)
+        command, _ = parse_command(text)
+        if command == "cancelar":
+            await self.cancel_create_flow(session, runtime, api, chat_id, user_id)
+            return True
+
+        step = state["step"]
+        data = state["data"]
+
+        if step == "name":
+            name, error = validate_custom_command_name(text)
+            if error:
+                await self.send_ephemeral(session, api, chat_id, user_id, f"❌ {error}", parse_mode="HTML")
+                return True
+
+            commands = load_custom_commands()
+            data["name"] = name
+            state["step"] = "type"
+            warning = ""
+            if find_custom_command_key(commands, name):
+                warning = "\n\n⚠️ Este comando já existe e será substituído se você continuar."
+            await self.send_ephemeral(
+                session,
+                api,
+                chat_id,
+                user_id,
+                (
+                    f"✅ Comando <code>/{escape(name)}</code> definido.{warning}\n\n"
+                    "Agora escolha o tipo:\n"
+                    "• envie <code>texto</code> para criar uma resposta textual;\n"
+                    "• ou envie foto, GIF, vídeo, áudio ou voz com legenda opcional."
+                ),
+                parse_mode="HTML",
+            )
+            return True
+
+        if step == "type":
+            if text.lower() == "texto":
+                data["type"] = "texto"
+                state["step"] = "text_content"
+                await self.send_ephemeral(
+                    session,
+                    api,
+                    chat_id,
+                    user_id,
+                    "✅ Tipo texto definido. Agora envie o conteúdo do comando.",
+                    parse_mode="HTML",
+                )
+                return True
+
+            media = extract_media_command_data(message)
+            if media:
+                data["type"], data["media_id"], data["content"] = media
+                state["step"] = "description"
+                await self.send_ephemeral(
+                    session,
+                    api,
+                    chat_id,
+                    user_id,
+                    "✅ Mídia recebida. Agora envie uma descrição curta para aparecer no catálogo.",
+                    parse_mode="HTML",
+                )
+                return True
+
+            await self.send_ephemeral(
+                session,
+                api,
+                chat_id,
+                user_id,
+                "Envie <code>texto</code> ou uma mídia válida: foto, GIF, vídeo, áudio ou voz.",
+                parse_mode="HTML",
+            )
+            return True
+
+        if step == "text_content":
+            if not text:
+                await self.send_ephemeral(session, api, chat_id, user_id, "O conteúdo não pode ser vazio.")
+                return True
+            data["content"] = text
+            state["step"] = "description"
+            await self.send_ephemeral(
+                session,
+                api,
+                chat_id,
+                user_id,
+                "✅ Conteúdo definido. Agora envie uma descrição curta para aparecer no catálogo.",
+                parse_mode="HTML",
+            )
+            return True
+
+        if step == "description":
+            if not text:
+                await self.send_ephemeral(session, api, chat_id, user_id, "A descrição não pode ser vazia.")
+                return True
+            commands = load_custom_commands()
+            command_name = data["name"]
+            commands[command_name] = {
+                "tipo": data.get("type", "texto"),
+                "conteudo": data.get("content", ""),
+                "media_id": data.get("media_id"),
+                "descricao": text[:100],
+                "categoria": DEFAULT_CUSTOM_CATEGORY,
+                "criado_por": user_id,
+                "data_criacao": str(datetime.now()),
+                "origem": "ephemeral_group",
+            }
+            save_custom_commands(commands)
+            ensure_custom_category(DEFAULT_CUSTOM_CATEGORY)
+            await set_bot_commands_via_bot_api(api.token, COMANDOS_BOT_COMMANDS)
+            await set_bot_commands_menu_button_via_bot_api(api.token)
+            self.create_states.pop(key, None)
+            await self.send_ephemeral(
+                session,
+                api,
+                chat_id,
+                user_id,
+                (
+                    "<b>✅ Comando criado com sucesso.</b>\n\n"
+                    f"Use <code>/{escape(command_name)}</code> no grupo para testar."
+                ),
+                parse_mode="HTML",
+            )
+            self.log.info("created custom command /%s via ephemeral flow user=%s chat=%s", command_name, user_id, chat_id)
+            return True
+
+        self.create_states.pop(key, None)
+        return False
+
     async def handle_command(
         self,
         session: aiohttp.ClientSession,
@@ -193,14 +529,23 @@ class EphemeralCommandService:
         chat_type = chat.get("type")
         command, args = parse_command(message.get("text"))
 
-        if chat_type not in {"group", "supergroup"} or not chat_id or not user_id or not command:
+        if chat_type not in {"group", "supergroup"} or not chat_id or not user_id:
             return
         if not self.is_allowed_chat(int(chat_id)):
+            return
+        chat_id = int(chat_id)
+        user_id = int(user_id)
+
+        if runtime.name == "comandos" and self.state_key(runtime, chat_id, user_id) in self.create_states:
+            if await self.handle_create_state(session, runtime, api, message):
+                return
+
+        if not command:
             return
 
         if command in {"menu", "help"}:
             extra = ""
-            if runtime.name == "comandos" and _load_json(DATA_DIR / "comandos_personalizados.json", {}):
+            if runtime.name == "comandos" and load_custom_commands():
                 extra = "\n\n<b>Comandos personalizados</b>\nUse <code>/list</code> ou o painel no privado para ver todos."
             text = build_command_menu_html(runtime.title, runtime.commands, bool(self.mini_app_url)) + extra
         elif runtime.name == "comandos" and command == "list":
@@ -218,12 +563,24 @@ class EphemeralCommandService:
             await set_bot_commands_via_bot_api(runtime.token, runtime.commands)
             await set_bot_commands_menu_button_via_bot_api(runtime.token)
             text = "✅ Menu de comandos efêmeros atualizado."
-        elif command in {"create", "delete", "add", "removegif", "cancelar"}:
+        elif runtime.name == "comandos" and command == "create":
+            await self.start_create_flow(session, runtime, api, chat_id, user_id)
+            self.log.info("%s started ephemeral /create for user=%s chat=%s", runtime.name, user_id, chat_id)
+            return
+        elif runtime.name == "comandos" and command == "delete":
+            await self.delete_custom_command(session, api, chat_id, user_id, args)
+            self.log.info("%s handled ephemeral /delete for user=%s chat=%s", runtime.name, user_id, chat_id)
+            return
+        elif runtime.name == "comandos" and command == "cancelar":
+            await self.cancel_create_flow(session, runtime, api, chat_id, user_id)
+            self.log.info("%s handled ephemeral /cancelar for user=%s chat=%s", runtime.name, user_id, chat_id)
+            return
+        elif command in {"add", "removegif"}:
             text = "Abra o bot no privado e use o painel para esta ação de configuração."
         else:
             return
 
-        await self.send_ephemeral(session, api, int(chat_id), int(user_id), text, parse_mode="HTML")
+        await self.send_ephemeral(session, api, chat_id, user_id, text, parse_mode="HTML")
         self.log.info("%s handled ephemeral /%s for user=%s chat=%s", runtime.name, command, user_id, chat_id)
 
     async def poll_bot(self, runtime: BotRuntime) -> None:

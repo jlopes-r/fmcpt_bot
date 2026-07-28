@@ -151,6 +151,10 @@ def normalizar_tipo_comando(tipo):
 def categoria_existe(categorias, nome):
     return next((c for c in categorias if c.lower() == nome.lower()), None)
 
+def eh_chat_de_grupo(message) -> bool:
+    chat_type = str(getattr(getattr(message, "chat", None), "type", "")).lower()
+    return "group" in chat_type or "supergroup" in chat_type
+
 # Carrega e salva backlog de sugestões
 def carregar_backlog():
     if BACKLOG_FILE.exists():
@@ -554,6 +558,8 @@ async def filtro_estado_usuario(_, __, message):
 @app.on_message(filters.command("create"))
 @admin_only
 async def cmd_create(client, message):
+    if eh_chat_de_grupo(message):
+        return
     user_id = message.from_user.id
     user_states[user_id] = {
         'etapa': 'nome',
@@ -569,6 +575,8 @@ async def cmd_create(client, message):
 @app.on_message(filters.command("cancelar") & filters.create(filtro_estado_usuario))
 @admin_only
 async def cmd_cancelar(client, message):
+    if eh_chat_de_grupo(message):
+        return
     user_id = message.from_user.id
     if user_id in user_states:
         del user_states[user_id]
@@ -608,6 +616,8 @@ async def cmd_list(client, message):
 @app.on_message(filters.command("delete"))
 @admin_only
 async def cmd_delete(client, message):
+    if eh_chat_de_grupo(message):
+        return
     if len(message.command) < 2:
         await message.reply_text("❌ **Uso:** `/delete NOME_DO_COMANDO`")
         return
