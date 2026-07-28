@@ -74,7 +74,7 @@ from packages.config import (
     parse_chat_ids,
 )
 from packages.logging_config import configure_rotating_logging
-from packages.telegram_ui import build_bot_commands, reply_command_menu
+from packages.telegram_ui import build_bot_commands, reply_command_menu, set_bot_commands_via_bot_api
 from packages.url_utils import normalizar_url
 from apps.telegram_bot.downloaders import limite_duracao_filter, processar_com_ytdlp as _processar_com_ytdlp
 from apps.telegram_bot.duplicates import normalizar_link_social
@@ -638,7 +638,15 @@ async def cmd_anual(client, message):
 async def cmd_help(client, message):
     if not chat_autorizado(message.chat.id):
         return
-    await reply_command_menu(message, "🤖 Guia do Super Bot", SUPER_COMMANDS, MINI_APP_URL, log)
+    await reply_command_menu(
+        message,
+        "🤖 Guia do Super Bot",
+        SUPER_COMMANDS,
+        MINI_APP_URL,
+        log,
+        bot_token=BOT_TOKEN,
+        ephemeral=True,
+    )
 
 @app.on_message(filters.command("repetido"))
 async def cmd_repetido_manual(client, message):
@@ -806,7 +814,10 @@ async def atualizar_menu_comandos_super(client):
     """Atualiza o menu de comandos (botão /) no Telegram para o Super Bot."""
     try:
         lista_comandos = build_bot_commands(SUPER_COMMANDS)
-        await client.set_bot_commands(lista_comandos)
+        if BOT_TOKEN:
+            await set_bot_commands_via_bot_api(BOT_TOKEN, SUPER_COMMANDS)
+        else:
+            await client.set_bot_commands(lista_comandos)
         log.info(f"Menu de comandos do Super Bot atualizado no Telegram! ({len(lista_comandos)} comandos)")
         return True
     except Exception as e:

@@ -1,7 +1,7 @@
 import unittest
 
 from packages.command_catalog import CommandSpec
-from packages.telegram_ui import reply_command_menu
+from packages.telegram_ui import build_bot_commands_payload, build_mini_app_markup_payload, reply_command_menu
 
 
 class ButtonTypeInvalid(Exception):
@@ -45,6 +45,31 @@ class TelegramUiTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(message.calls), 1)
         self.assertIsNone(message.calls[0]["reply_markup"])
+
+    async def test_build_bot_commands_payload_marks_ephemeral_commands(self):
+        commands = (
+            CommandSpec("menu", "Mostra o menu", "Sistema", ephemeral=True),
+            CommandSpec("comi", "Escolhe alguem", "Diversao"),
+        )
+
+        payload = build_bot_commands_payload(commands)
+
+        self.assertEqual(payload[0]["command"], "menu")
+        self.assertTrue(payload[0]["is_ephemeral"])
+        self.assertEqual(payload[1]["command"], "comi")
+        self.assertNotIn("is_ephemeral", payload[1])
+
+    async def test_build_mini_app_markup_payload_uses_web_app_button(self):
+        payload = build_mini_app_markup_payload("https://example.com")
+
+        self.assertEqual(
+            payload,
+            {
+                "inline_keyboard": [
+                    [{"text": "Abrir painel", "web_app": {"url": "https://example.com"}}],
+                ]
+            },
+        )
 
 
 if __name__ == "__main__":

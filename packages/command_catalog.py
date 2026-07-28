@@ -11,6 +11,7 @@ class CommandSpec:
     admin_only: bool = False
     autocomplete: bool = True
     mini_app: bool = True
+    ephemeral: bool = False
     usage: str = ""
     payload: str = ""
 
@@ -21,38 +22,38 @@ class CommandSpec:
 
 
 SUPER_COMMANDS: tuple[CommandSpec, ...] = (
-    CommandSpec("menu", "Abre o painel de comandos", "Interface", aliases=("help",), payload="open_menu"),
-    CommandSpec("help", "Mostra o guia organizado por categoria", "Interface", autocomplete=False),
+    CommandSpec("menu", "Abre o painel de comandos", "Interface", aliases=("help",), payload="open_menu", ephemeral=True),
+    CommandSpec("help", "Mostra o guia organizado por categoria", "Interface", autocomplete=False, ephemeral=True),
     CommandSpec("ranking", "Ranking semanal de links repetidos", "Rankings"),
     CommandSpec("bocadeleite", "Podio do mes atual", "Rankings"),
     CommandSpec("anual", "Hall da fama do ano", "Rankings"),
     CommandSpec("repetido", "Castigo manual respondendo a mensagem de alguem", "Castigo", usage="/repetido"),
     CommandSpec("bloq", "Bloqueia temporariamente quem enviou link ruim", "Castigo", usage="/bloq @usuario"),
     CommandSpec("comi", "Escolhe uma vitima aleatoria do grupo", "Diversao"),
-    CommandSpec("id", "Mostra o ID deste chat", "Utilidades"),
-    CommandSpec("stats", "Mostra status tecnico do bot", "Utilidades"),
+    CommandSpec("id", "Mostra o ID deste chat", "Utilidades", ephemeral=True),
+    CommandSpec("stats", "Mostra status tecnico do bot", "Utilidades", ephemeral=True),
     CommandSpec("ping", "Verifica se o bot esta online", "Utilidades"),
     CommandSpec("retry", "Tenta novamente um download que falhou", "Utilidades", usage="/retry em resposta ao erro"),
-    CommandSpec("sync", "Sincroniza o autocomplete do Telegram", "Administracao", admin_only=True),
+    CommandSpec("sync", "Sincroniza o autocomplete do Telegram", "Administracao", admin_only=True, ephemeral=True),
 )
 
 
 COMANDOS_BOT_COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec("start", "Inicia o bot de comandos", "Interface"),
-    CommandSpec("menu", "Abre o painel de comandos", "Interface", aliases=("help",), payload="open_menu"),
-    CommandSpec("help", "Mostra o guia organizado por categoria", "Interface", autocomplete=False),
-    CommandSpec("list", "Lista comandos personalizados", "Comandos personalizados"),
-    CommandSpec("create", "Cria um comando personalizado", "Comandos personalizados", admin_only=True),
-    CommandSpec("delete", "Apaga um comando personalizado", "Comandos personalizados", admin_only=True, usage="/delete nome"),
+    CommandSpec("menu", "Abre o painel de comandos", "Interface", aliases=("help",), payload="open_menu", ephemeral=True),
+    CommandSpec("help", "Mostra o guia organizado por categoria", "Interface", autocomplete=False, ephemeral=True),
+    CommandSpec("list", "Lista comandos personalizados", "Comandos personalizados", ephemeral=True),
+    CommandSpec("create", "Cria um comando personalizado", "Comandos personalizados", admin_only=True, ephemeral=True),
+    CommandSpec("delete", "Apaga um comando personalizado", "Comandos personalizados", admin_only=True, usage="/delete nome", ephemeral=True),
     CommandSpec("instance", "Envia um GIF de bom dia abencoado", "GIFs"),
     CommandSpec("duvida", "Envia um GIF de duvida", "GIFs"),
-    CommandSpec("add", "Adiciona GIF respondendo a uma animacao", "GIFs", admin_only=True, usage="/add instance|duvida"),
-    CommandSpec("removegif", "Remove GIF respondendo a uma animacao", "GIFs", admin_only=True),
-    CommandSpec("gifstats", "Mostra estatisticas das bases de GIFs", "GIFs"),
-    CommandSpec("backlog", "Lista, cria e gerencia sugestoes", "Backlog", usage="/backlog texto|done|merda|lixeira|limpar"),
-    CommandSpec("sync", "Sincroniza o autocomplete do Telegram", "Administracao", admin_only=True),
-    CommandSpec("cancelar", "Cancela criacao/edicao em andamento", "Administracao", admin_only=True, autocomplete=False),
-    CommandSpec("id", "Mostra o ID deste chat", "Utilidades"),
+    CommandSpec("add", "Adiciona GIF respondendo a uma animacao", "GIFs", admin_only=True, usage="/add instance|duvida", ephemeral=True),
+    CommandSpec("removegif", "Remove GIF respondendo a uma animacao", "GIFs", admin_only=True, ephemeral=True),
+    CommandSpec("gifstats", "Mostra estatisticas das bases de GIFs", "GIFs", ephemeral=True),
+    CommandSpec("backlog", "Lista, cria e gerencia sugestoes", "Backlog", usage="/backlog texto|done|merda|lixeira|limpar", ephemeral=True),
+    CommandSpec("sync", "Sincroniza o autocomplete do Telegram", "Administracao", admin_only=True, ephemeral=True),
+    CommandSpec("cancelar", "Cancela criacao/edicao em andamento", "Administracao", admin_only=True, autocomplete=False, ephemeral=True),
+    CommandSpec("id", "Mostra o ID deste chat", "Utilidades", ephemeral=True),
 )
 
 
