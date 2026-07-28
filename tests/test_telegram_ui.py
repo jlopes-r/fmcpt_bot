@@ -1,6 +1,7 @@
 import unittest
 
 from packages.command_catalog import CommandSpec
+from packages import telegram_ui
 from packages.telegram_ui import build_bot_commands_payload, build_mini_app_markup_payload, reply_command_menu
 
 
@@ -18,6 +19,24 @@ class FakeMessage:
         if self.fail_first and len(self.calls) == 1:
             raise ButtonTypeInvalid("Telegram says BUTTON_TYPE_INVALID")
         return "sent"
+
+
+class FakeChatType:
+    name = "SUPERGROUP"
+
+
+class FakeGroupChat:
+    id = -100123
+    type = FakeChatType()
+
+
+class FakeUser:
+    id = 456
+
+
+class FakeGroupMessage(FakeMessage):
+    chat = FakeGroupChat()
+    from_user = FakeUser()
 
 
 class TelegramUiTests(unittest.IsolatedAsyncioTestCase):
@@ -45,6 +64,33 @@ class TelegramUiTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(message.calls), 1)
         self.assertIsNone(message.calls[0]["reply_markup"])
+
+    async def test_reply_command_menu_does_not_publicly_fallback_for_group_ephemeral(self):
+        message = FakeGroupMessage()
+        commands = (
+            CommandSpec("menu", "Mostra o menu", "Sistema", ephemeral=True),
+        )
+        original = telegram_ui._bot_api_post
+
+        async def fail_bot_api(*args, **kwargs):
+            raise RuntimeError("Bot API sendMessage failed: test")
+
+        telegram_ui._bot_api_post = fail_bot_api
+        try:
+            result = await reply_command_menu(
+                message,
+                "Menu",
+                commands,
+                "",
+                bot_token="123:abc",
+                ephemeral=True,
+                public_fallback=False,
+            )
+        finally:
+            telegram_ui._bot_api_post = original
+
+        self.assertIsNone(result)
+        self.assertEqual(message.calls, [])
 
     async def test_build_bot_commands_payload_marks_ephemeral_commands(self):
         commands = (

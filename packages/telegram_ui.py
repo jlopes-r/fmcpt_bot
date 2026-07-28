@@ -71,7 +71,16 @@ def _is_button_type_invalid(exc: Exception) -> bool:
 
 def _is_group_chat(message) -> bool:
     chat_type = getattr(getattr(message, "chat", None), "type", "")
-    return str(chat_type).lower() in {"chat.type.GROUP", "chat.type.SUPERGROUP", "group", "supergroup"}
+    chat_type_name = getattr(chat_type, "name", "")
+    normalized = str(chat_type_name or chat_type).lower()
+    return normalized in {
+        "chat.type.group",
+        "chat.type.supergroup",
+        "chattype.group",
+        "chattype.supergroup",
+        "group",
+        "supergroup",
+    }
 
 
 async def _bot_api_post(bot_token: str, method: str, payload: dict) -> dict:
@@ -109,7 +118,6 @@ async def send_ephemeral_text(
         "chat_id": chat.id,
         "receiver_user_id": user.id,
         "text": text,
-        "parse_mode": "Markdown",
     }
     if reply_markup:
         payload["reply_markup"] = reply_markup
@@ -143,6 +151,7 @@ async def reply_command_menu(
     extra_text: str = "",
     bot_token: str = "",
     ephemeral: bool = False,
+    public_fallback: bool = True,
 ):
     text = build_command_menu_text(title, commands, bool(mini_app_url)) + extra_text
     if ephemeral:
@@ -154,6 +163,10 @@ async def reply_command_menu(
             log=log,
         )
         if sent:
+            return None
+        if not public_fallback and _is_group_chat(message):
+            if log:
+                log.warning("Skipping public fallback for ephemeral command menu in group chat")
             return None
 
     markup = build_mini_app_markup(mini_app_url)

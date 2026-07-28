@@ -646,6 +646,7 @@ async def cmd_help(client, message):
         log,
         bot_token=BOT_TOKEN,
         ephemeral=True,
+        public_fallback=False,
     )
 
 @app.on_message(filters.command("repetido"))

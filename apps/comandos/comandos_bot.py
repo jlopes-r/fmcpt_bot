@@ -316,6 +316,7 @@ async def cmd_menu(client, message):
         extra_text=extra_text,
         bot_token=BOT_TOKEN,
         ephemeral=True,
+        public_fallback=False,
     )
 
 import random
