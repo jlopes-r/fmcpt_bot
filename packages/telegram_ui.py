@@ -94,6 +94,10 @@ def build_web_app_menu_button_payload(url: str, label: str = "Painel") -> dict |
     }
 
 
+def build_commands_menu_button_payload() -> dict:
+    return {"type": "commands"}
+
+
 def _is_button_type_invalid(exc: Exception) -> bool:
     return exc.__class__.__name__ == "ButtonTypeInvalid" or "BUTTON_TYPE_INVALID" in str(exc)
 
@@ -131,14 +135,32 @@ async def set_bot_commands_via_bot_api(bot_token: str, commands: tuple[CommandSp
     return True
 
 
-async def set_bot_menu_button_via_bot_api(bot_token: str, mini_app_url: str, label: str = "Painel") -> bool:
+async def set_bot_menu_button_via_bot_api(
+    bot_token: str,
+    mini_app_url: str,
+    label: str = "Painel",
+    chat_id: int | None = None,
+) -> bool:
     if not bot_token or not mini_app_url:
         return False
+    payload = {"menu_button": build_web_app_menu_button_payload(mini_app_url, label)}
+    if chat_id is not None:
+        payload["chat_id"] = chat_id
     await _bot_api_post(
         bot_token,
         "setChatMenuButton",
-        {"menu_button": build_web_app_menu_button_payload(mini_app_url, label)},
+        payload,
     )
+    return True
+
+
+async def set_bot_commands_menu_button_via_bot_api(bot_token: str, chat_id: int | None = None) -> bool:
+    if not bot_token:
+        return False
+    payload = {"menu_button": build_commands_menu_button_payload()}
+    if chat_id is not None:
+        payload["chat_id"] = chat_id
+    await _bot_api_post(bot_token, "setChatMenuButton", payload)
     return True
 
 

@@ -28,7 +28,7 @@ from packages.telegram_ui import (
     build_bot_commands,
     reply_command_menu,
     set_bot_commands_via_bot_api,
-    set_bot_menu_button_via_bot_api,
+    set_bot_commands_menu_button_via_bot_api,
 )
 
 # Configuração
@@ -237,7 +237,7 @@ async def atualizar_menu_comandos(client):
         lista_comandos = build_bot_commands(COMANDOS_BOT_COMMANDS)
         if BOT_TOKEN:
             await set_bot_commands_via_bot_api(BOT_TOKEN, COMANDOS_BOT_COMMANDS)
-            await set_bot_menu_button_via_bot_api(BOT_TOKEN, MINI_APP_URL)
+            await set_bot_commands_menu_button_via_bot_api(BOT_TOKEN)
         else:
             await client.set_bot_commands(lista_comandos)
         log.info(f"Menu de comandos atualizado no Telegram! ({len(lista_comandos)} comandos)")
@@ -257,7 +257,14 @@ app = Client(
 
 @app.on_message(filters.private, group=-1)
 async def bloquear_privado_nao_autorizado(client, message):
-    await guard_private_chat_access(client, message, GRUPOS_AUTORIZADOS, bot_label="Comandos Bot")
+    await guard_private_chat_access(
+        client,
+        message,
+        GRUPOS_AUTORIZADOS,
+        bot_label="Comandos Bot",
+        bot_token=BOT_TOKEN,
+        mini_app_url=MINI_APP_URL,
+    )
 
 
 @app.on_message(filters.group, group=-1)

@@ -1,13 +1,20 @@
+import sys
 import unittest
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from packages.command_catalog import CommandSpec
 from packages import telegram_ui
 from packages.telegram_ui import (
     build_bot_commands_payload,
     build_command_menu_html,
+    build_commands_menu_button_payload,
     build_mini_app_markup_payload,
     build_web_app_menu_button_payload,
     reply_command_menu,
+    set_bot_commands_menu_button_via_bot_api,
+    set_bot_menu_button_via_bot_api,
 )
 
 
@@ -168,6 +175,29 @@ class TelegramUiTests(unittest.IsolatedAsyncioTestCase):
                 "web_app": {"url": "https://example.com"},
             },
         )
+
+    async def test_build_commands_menu_button_payload(self):
+        self.assertEqual(build_commands_menu_button_payload(), {"type": "commands"})
+
+    async def test_set_menu_button_can_target_private_chat(self):
+        seen = []
+        original = telegram_ui._bot_api_post
+
+        async def capture_bot_api(token, method, payload):
+            seen.append((token, method, payload))
+            return {"ok": True, "result": {}}
+
+        telegram_ui._bot_api_post = capture_bot_api
+        try:
+            await set_bot_menu_button_via_bot_api("123:abc", "https://example.com", chat_id=456)
+            await set_bot_commands_menu_button_via_bot_api("123:abc", chat_id=456)
+        finally:
+            telegram_ui._bot_api_post = original
+
+        self.assertEqual(seen[0][1], "setChatMenuButton")
+        self.assertEqual(seen[0][2]["chat_id"], 456)
+        self.assertEqual(seen[0][2]["menu_button"]["type"], "web_app")
+        self.assertEqual(seen[1][2], {"menu_button": {"type": "commands"}, "chat_id": 456})
 
     async def test_build_command_menu_html_escapes_content(self):
         commands = (

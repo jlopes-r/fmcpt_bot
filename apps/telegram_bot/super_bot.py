@@ -79,7 +79,7 @@ from packages.telegram_ui import (
     build_bot_commands,
     reply_command_menu,
     set_bot_commands_via_bot_api,
-    set_bot_menu_button_via_bot_api,
+    set_bot_commands_menu_button_via_bot_api,
 )
 from packages.url_utils import normalizar_url
 from apps.telegram_bot.downloaders import limite_duracao_filter, processar_com_ytdlp as _processar_com_ytdlp
@@ -181,7 +181,14 @@ app = Client("meu_super_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TO
 
 @app.on_message(filters.private, group=-1)
 async def bloquear_privado_nao_autorizado(client, message):
-    await guard_private_chat_access(client, message, GRUPOS_AUTORIZADOS, bot_label="Super Bot")
+    await guard_private_chat_access(
+        client,
+        message,
+        GRUPOS_AUTORIZADOS,
+        bot_label="Super Bot",
+        bot_token=BOT_TOKEN,
+        mini_app_url=MINI_APP_URL,
+    )
 
 
 @app.on_message(filters.group, group=-1)
@@ -833,7 +840,7 @@ async def atualizar_menu_comandos_super(client):
         lista_comandos = build_bot_commands(SUPER_COMMANDS)
         if BOT_TOKEN:
             await set_bot_commands_via_bot_api(BOT_TOKEN, SUPER_COMMANDS)
-            await set_bot_menu_button_via_bot_api(BOT_TOKEN, MINI_APP_URL)
+            await set_bot_commands_menu_button_via_bot_api(BOT_TOKEN)
         else:
             await client.set_bot_commands(lista_comandos)
         log.info(f"Menu de comandos do Super Bot atualizado no Telegram! ({len(lista_comandos)} comandos)")

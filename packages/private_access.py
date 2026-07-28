@@ -2,10 +2,16 @@ import time
 import logging
 from collections.abc import Iterable
 
+from packages.telegram_ui import (
+    set_bot_commands_menu_button_via_bot_api,
+    set_bot_menu_button_via_bot_api,
+)
+
 
 PRIVATE_ACCESS_CACHE_TTL = 10 * 60
 ALLOWED_MEMBER_STATUSES = {"creator", "owner", "administrator", "member"}
 _private_access_cache: dict[tuple[int, tuple[int, ...]], tuple[bool, float]] = {}
+_private_menu_cache: dict[tuple[str, int, str], float] = {}
 log = logging.getLogger("PrivateAccess")
 
 
@@ -29,6 +35,7 @@ def _chat_ids_key(chat_ids: Iterable[int]) -> tuple[int, ...]:
 
 def clear_private_access_cache() -> None:
     _private_access_cache.clear()
+    _private_menu_cache.clear()
 
 
 async def user_is_authorized_group_member(client, user_id: int, chat_ids: Iterable[int]) -> bool:
@@ -71,13 +78,27 @@ def _stop_message(message) -> None:
         stop()
 
 
-async def guard_private_chat_access(client, message, chat_ids: Iterable[int], *, bot_label: str = "bot") -> bool:
+async def guard_private_chat_access(
+    client,
+    message,
+    chat_ids: Iterable[int],
+    *,
+    bot_label: str = "bot",
+    bot_token: str = "",
+    mini_app_url: str = "",
+) -> bool:
     if not is_private_chat(message):
         return True
 
     user = getattr(message, "from_user", None)
     user_id = getattr(user, "id", None)
     if user_id and await user_is_authorized_group_member(client, int(user_id), chat_ids):
+        await configure_private_menu_button(
+            bot_token,
+            int(user_id),
+            mini_app_url,
+            authorized=True,
+        )
         return True
 
     username = getattr(user, "username", None) if user else None
@@ -90,8 +111,45 @@ async def guard_private_chat_access(client, message, chat_ids: Iterable[int], *,
         first_name,
         _chat_ids_key(chat_ids),
     )
+    if user_id:
+        await configure_private_menu_button(
+            bot_token,
+            int(user_id),
+            mini_app_url,
+            authorized=False,
+        )
     _stop_message(message)
     return False
+
+
+async def configure_private_menu_button(
+    bot_token: str,
+    user_id: int,
+    mini_app_url: str,
+    *,
+    authorized: bool,
+    label: str = "Painel",
+) -> None:
+    if not bot_token or not user_id:
+        return
+    if not authorized:
+        try:
+            await set_bot_commands_menu_button_via_bot_api(bot_token, chat_id=user_id)
+        except Exception:
+            log.exception("failed to reset private menu button user_id=%s", user_id)
+        return
+    if not mini_app_url:
+        return
+
+    key = (bot_token[-12:], int(user_id), mini_app_url)
+    now = time.monotonic()
+    if _private_menu_cache.get(key, 0) > now:
+        return
+    try:
+        await set_bot_menu_button_via_bot_api(bot_token, mini_app_url, label=label, chat_id=user_id)
+        _private_menu_cache[key] = now + PRIVATE_ACCESS_CACHE_TTL
+    except Exception:
+        log.exception("failed to set private web app menu button user_id=%s", user_id)
 
 
 async def guard_authorized_group_chat(client, message, chat_ids: Iterable[int], *, bot_label: str = "bot") -> bool:

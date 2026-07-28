@@ -11,6 +11,7 @@ from packages.private_access import (
     guard_private_chat_access,
     user_is_authorized_group_member,
 )
+from packages import private_access
 
 
 class FakeClient:
@@ -75,15 +76,60 @@ class PrivateAccessTest(unittest.IsolatedAsyncioTestCase):
     async def test_guard_blocks_private_chat_and_stops_handlers(self):
         client = FakeClient({(-100, 42): SimpleNamespace(status="left")})
         message = FakeMessage()
+        resets = []
 
-        with self.assertLogs("PrivateAccess", level="WARNING") as logs:
-            allowed = await guard_private_chat_access(client, message, [-100], bot_label="Teste Bot")
+        async def reset_button(token, chat_id=None):
+            resets.append((token, chat_id))
+            return True
+
+        original = private_access.set_bot_commands_menu_button_via_bot_api
+        private_access.set_bot_commands_menu_button_via_bot_api = reset_button
+
+        try:
+            with self.assertLogs("PrivateAccess", level="WARNING") as logs:
+                allowed = await guard_private_chat_access(
+                    client,
+                    message,
+                    [-100],
+                    bot_label="Teste Bot",
+                    bot_token="123:abc",
+                    mini_app_url="https://example.com",
+                )
+        finally:
+            private_access.set_bot_commands_menu_button_via_bot_api = original
 
         self.assertFalse(allowed)
         self.assertTrue(message.stopped)
         self.assertEqual(message.replies, [])
+        self.assertEqual(resets, [("123:abc", 42)])
         self.assertIn("unauthorized private chat blocked", logs.output[0])
         self.assertIn("Teste Bot", logs.output[0])
+
+    async def test_guard_sets_private_web_app_button_for_authorized_user(self):
+        client = FakeClient({(-100, 42): SimpleNamespace(status="member")})
+        message = FakeMessage()
+        webapps = []
+
+        async def set_webapp(token, url, label="Painel", chat_id=None):
+            webapps.append((token, url, label, chat_id))
+            return True
+
+        original = private_access.set_bot_menu_button_via_bot_api
+        private_access.set_bot_menu_button_via_bot_api = set_webapp
+        try:
+            allowed = await guard_private_chat_access(
+                client,
+                message,
+                [-100],
+                bot_token="123:abc",
+                mini_app_url="https://example.com",
+            )
+        finally:
+            private_access.set_bot_menu_button_via_bot_api = original
+
+        self.assertTrue(allowed)
+        self.assertFalse(message.stopped)
+        self.assertEqual(webapps, [("123:abc", "https://example.com", "Painel", 42)])
 
     async def test_group_chat_bypasses_private_membership_guard(self):
         client = FakeClient({})
