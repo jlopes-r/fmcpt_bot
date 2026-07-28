@@ -68,11 +68,14 @@ class PrivateAccessTest(unittest.IsolatedAsyncioTestCase):
         client = FakeClient({(-100, 42): SimpleNamespace(status="left")})
         message = FakeMessage()
 
-        allowed = await guard_private_chat_access(client, message, [-100])
+        with self.assertLogs("PrivateAccess", level="WARNING") as logs:
+            allowed = await guard_private_chat_access(client, message, [-100], bot_label="Teste Bot")
 
         self.assertFalse(allowed)
         self.assertTrue(message.stopped)
-        self.assertIn("Acesso restrito", message.replies[0])
+        self.assertEqual(message.replies, [])
+        self.assertIn("unauthorized private chat blocked", logs.output[0])
+        self.assertIn("Teste Bot", logs.output[0])
 
     async def test_group_chat_bypasses_private_membership_guard(self):
         client = FakeClient({})

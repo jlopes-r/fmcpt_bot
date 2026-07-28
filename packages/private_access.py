@@ -1,10 +1,12 @@
 import time
+import logging
 from collections.abc import Iterable
 
 
 PRIVATE_ACCESS_CACHE_TTL = 10 * 60
 ALLOWED_MEMBER_STATUSES = {"creator", "owner", "administrator", "member"}
 _private_access_cache: dict[tuple[int, tuple[int, ...]], tuple[bool, float]] = {}
+log = logging.getLogger("PrivateAccess")
 
 
 def _status_name(status) -> str:
@@ -67,12 +69,17 @@ async def guard_private_chat_access(client, message, chat_ids: Iterable[int], *,
     if user_id and await user_is_authorized_group_member(client, int(user_id), chat_ids):
         return True
 
-    try:
-        await message.reply_text(
-            "Acesso restrito. Este bot só atende em conversa privada usuários que pertencem a um grupo autorizado."
-        )
-    finally:
-        stop = getattr(message, "stop_propagation", None)
-        if callable(stop):
-            stop()
+    username = getattr(user, "username", None) if user else None
+    first_name = getattr(user, "first_name", None) if user else None
+    log.warning(
+        "unauthorized private chat blocked bot=%s user_id=%s username=%s first_name=%s authorized_groups=%s",
+        bot_label,
+        user_id,
+        username,
+        first_name,
+        _chat_ids_key(chat_ids),
+    )
+    stop = getattr(message, "stop_propagation", None)
+    if callable(stop):
+        stop()
     return False
