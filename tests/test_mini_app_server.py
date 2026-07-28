@@ -6,6 +6,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 from urllib.parse import urlencode
 
@@ -153,6 +154,44 @@ class MiniAppServerTest(unittest.TestCase):
         self.assertNotIn("media_id", visible)
         self.assertTrue(visible["privateMedia"])
         self.assertEqual(visible["previewCommand"], "gifzao")
+
+    def test_validate_upload_signature_accepts_matching_magic_bytes(self):
+        upload = SimpleNamespace(content_type="image/png")
+
+        extension = server.validate_upload_signature("foto", upload, b"\x89PNG\r\n\x1a\nresto")
+
+        self.assertEqual(extension, ".png")
+
+    def test_validate_upload_signature_rejects_wrong_declared_mime(self):
+        upload = SimpleNamespace(content_type="text/plain")
+
+        with self.assertRaises(Exception):
+            server.validate_upload_signature("foto", upload, b"\x89PNG\r\n\x1a\nresto")
+
+    def test_validate_upload_signature_rejects_wrong_magic_bytes(self):
+        upload = SimpleNamespace(content_type="image/png")
+
+        with self.assertRaises(Exception):
+            server.validate_upload_signature("foto", upload, b"not really an image")
+
+    def test_rate_limit_blocks_after_configured_threshold(self):
+        class FakeResource:
+            canonical = "/api/test"
+
+        class FakeRoute:
+            resource = FakeResource()
+
+        class FakeRequest:
+            path = "/api/test"
+            match_info = SimpleNamespace(route=FakeRoute())
+            headers = {"X-Forwarded-For": "203.0.113.7"}
+            transport = None
+
+        server._rate_limit_buckets.clear()
+        with patch.object(server, "rate_limit_config", return_value=(2, 60)):
+            self.assertFalse(server.is_rate_limited(FakeRequest(), 42))
+            self.assertFalse(server.is_rate_limited(FakeRequest(), 42))
+            self.assertTrue(server.is_rate_limited(FakeRequest(), 42))
 
 
 if __name__ == "__main__":

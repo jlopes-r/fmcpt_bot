@@ -8,6 +8,7 @@ import re
 import os
 import time
 import uuid
+from collections import defaultdict, deque
 from aiohttp.web_request import FileField
 from pathlib import Path
 from urllib.parse import parse_qsl
@@ -27,6 +28,8 @@ UPLOADS_DIR = DATA_DIR / "custom_command_uploads"
 PREVIEW_CACHE_DIR = DATA_DIR / "custom_command_previews"
 DEFAULT_AUTH_MAX_AGE = 2 * 60 * 60
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+API_RATE_LIMIT_REQUESTS = 60
+API_RATE_LIMIT_WINDOW = 60
 COMMAND_NAME_RE = re.compile(r"^[a-z0-9_]{1,32}$")
 ALLOWED_COMMAND_TYPES = {"texto", "foto", "video", "audio", "voice", "gif"}
 UPLOAD_EXTENSIONS = {
@@ -72,6 +75,32 @@ COMMAND_MEDIA_TYPES = {
     "audio": "audio/mpeg",
     "voice": "audio/ogg",
 }
+UPLOAD_CONTENT_TYPES = {
+    "foto": {"image/jpeg", "image/png", "image/webp"},
+    "gif": {"image/gif"},
+    "video": {"video/mp4", "video/quicktime", "video/webm"},
+    "audio": {"audio/mpeg", "audio/mp3", "audio/mp4", "audio/aac", "audio/ogg", "audio/wav", "audio/x-wav"},
+    "voice": {"audio/ogg", "audio/opus", "application/ogg"},
+}
+UPLOAD_MAGIC_EXTENSIONS = {
+    "jpeg": ".jpg",
+    "png": ".png",
+    "webp": ".webp",
+    "gif": ".gif",
+    "mp4": ".mp4",
+    "webm": ".webm",
+    "mp3": ".mp3",
+    "ogg": ".ogg",
+    "wav": ".wav",
+}
+UPLOAD_MAGIC_TYPES = {
+    "foto": {"jpeg", "png", "webp"},
+    "gif": {"gif"},
+    "video": {"mp4", "webm"},
+    "audio": {"mp3", "mp4", "ogg", "wav"},
+    "voice": {"ogg"},
+}
+_rate_limit_buckets: dict[tuple[str, str, int], deque[float]] = defaultdict(deque)
 
 
 def bot_tokens() -> list[str]:
@@ -92,6 +121,15 @@ def auth_max_age() -> int:
         return int(os.getenv("MINI_APP_AUTH_MAX_AGE", str(DEFAULT_AUTH_MAX_AGE)))
     except ValueError:
         return DEFAULT_AUTH_MAX_AGE
+
+
+def rate_limit_config() -> tuple[int, int]:
+    try:
+        requests = int(os.getenv("MINI_APP_RATE_LIMIT_REQUESTS", str(API_RATE_LIMIT_REQUESTS)))
+        window = int(os.getenv("MINI_APP_RATE_LIMIT_WINDOW", str(API_RATE_LIMIT_WINDOW)))
+    except ValueError:
+        return API_RATE_LIMIT_REQUESTS, API_RATE_LIMIT_WINDOW
+    return max(1, requests), max(1, window)
 
 
 def load_json(path: Path, default):
@@ -255,19 +293,48 @@ def validate_command_payload(data: dict, *, creating: bool) -> tuple[bool, str]:
     return True, ""
 
 
-def infer_upload_extension(command_type: str, upload: FileField) -> str:
-    suffix = Path(upload.filename or "").suffix.lower()
-    if suffix and len(suffix) <= 12:
-        return suffix
-    return UPLOAD_EXTENSIONS.get(command_type, ".bin")
+def detect_magic_type(header: bytes) -> str | None:
+    if header.startswith(b"\xff\xd8\xff"):
+        return "jpeg"
+    if header.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "png"
+    if header[:4] == b"RIFF" and header[8:12] == b"WEBP":
+        return "webp"
+    if header.startswith((b"GIF87a", b"GIF89a")):
+        return "gif"
+    if len(header) >= 12 and header[4:8] == b"ftyp":
+        return "mp4"
+    if header.startswith(b"\x1a\x45\xdf\xa3"):
+        return "webm"
+    if header.startswith(b"ID3") or (len(header) >= 2 and header[0] == 0xFF and (header[1] & 0xE0) == 0xE0):
+        return "mp3"
+    if header.startswith(b"OggS"):
+        return "ogg"
+    if header[:4] == b"RIFF" and header[8:12] == b"WAVE":
+        return "wav"
+    return None
+
+
+def validate_upload_signature(command_type: str, upload: FileField, header: bytes) -> str:
+    declared = str(getattr(upload, "content_type", "") or "").split(";")[0].strip().lower()
+    allowed_declared = UPLOAD_CONTENT_TYPES.get(command_type, set())
+    if allowed_declared and declared and declared not in allowed_declared:
+        raise web.HTTPUnsupportedMediaType(text="Tipo MIME nao permitido para este comando.")
+
+    magic_type = detect_magic_type(header)
+    if magic_type not in UPLOAD_MAGIC_TYPES.get(command_type, set()):
+        raise web.HTTPUnsupportedMediaType(text="Arquivo nao corresponde ao tipo escolhido.")
+    return UPLOAD_MAGIC_EXTENSIONS[magic_type]
 
 
 def save_uploaded_file(command_type: str, upload: FileField) -> str:
     UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
-    extension = infer_upload_extension(command_type, upload)
+    header = upload.file.read(512)
+    extension = validate_upload_signature(command_type, upload, header)
     destination = UPLOADS_DIR / f"{uuid.uuid4().hex}{extension}"
-    total = 0
+    total = len(header)
     with open(destination, "wb") as output:
+        output.write(header)
         while True:
             chunk = upload.file.read(1024 * 1024)
             if not chunk:
@@ -405,6 +472,28 @@ async def authorize_request(request: web.Request) -> dict | None:
     return user
 
 
+def client_ip(request: web.Request) -> str:
+    forwarded_for = request.headers.get("X-Forwarded-For", "")
+    if forwarded_for:
+        return forwarded_for.split(",", 1)[0].strip()
+    peer = request.transport.get_extra_info("peername") if request.transport else None
+    return str(peer[0]) if peer else "unknown"
+
+
+def is_rate_limited(request: web.Request, user_id: int) -> bool:
+    limit, window = rate_limit_config()
+    now = time.monotonic()
+    route = request.match_info.route.resource.canonical if request.match_info.route.resource else request.path
+    key = (client_ip(request), route, int(user_id))
+    bucket = _rate_limit_buckets[key]
+    while bucket and now - bucket[0] > window:
+        bucket.popleft()
+    if len(bucket) >= limit:
+        return True
+    bucket.append(now)
+    return False
+
+
 async def index(_request: web.Request) -> web.FileResponse:
     response = web.FileResponse(MINI_APP_DIR / "index.html")
     response.headers["Cache-Control"] = "no-store, max-age=0"
@@ -412,14 +501,14 @@ async def index(_request: web.Request) -> web.FileResponse:
 
 
 async def catalog(request: web.Request) -> web.Response:
-    user = await authorize_request(request)
+    user = request.get("authorized_user") or await authorize_request(request)
     if not user:
         return web.json_response({"error": "unauthorized"}, status=403)
     return web.json_response(load_catalog_payload())
 
 
 async def admin_action(request: web.Request) -> web.Response:
-    user = await authorize_request(request)
+    user = request.get("authorized_user") or await authorize_request(request)
     if not user:
         return web.json_response({"error": "unauthorized"}, status=403)
     try:
@@ -496,7 +585,7 @@ async def admin_action(request: web.Request) -> web.Response:
 
 
 async def upload_command(request: web.Request) -> web.Response:
-    user = await authorize_request(request)
+    user = request.get("authorized_user") or await authorize_request(request)
     if not user:
         return web.json_response({"error": "unauthorized"}, status=403)
 
@@ -542,7 +631,7 @@ async def upload_command(request: web.Request) -> web.Response:
 
 
 async def private_media(request: web.Request) -> web.StreamResponse:
-    user = await authorize_request(request)
+    user = request.get("authorized_user") or await authorize_request(request)
     if not user:
         return web.json_response({"error": "unauthorized"}, status=403)
     key = request.match_info.get("key", "")
@@ -555,7 +644,7 @@ async def private_media(request: web.Request) -> web.StreamResponse:
 
 
 async def command_preview(request: web.Request) -> web.StreamResponse:
-    user = await authorize_request(request)
+    user = request.get("authorized_user") or await authorize_request(request)
     if not user:
         return web.json_response({"error": "unauthorized"}, status=403)
     name = normalize_command_name(request.match_info.get("name", ""))
@@ -585,6 +674,17 @@ def create_app() -> web.Application:
     app = web.Application(client_max_size=MAX_UPLOAD_BYTES + 1024 * 1024)
 
     @web.middleware
+    async def api_auth_rate_limit_middleware(request, handler):
+        if request.path.startswith("/api/"):
+            user = await authorize_request(request)
+            if not user:
+                return web.json_response({"error": "unauthorized"}, status=403)
+            if is_rate_limited(request, int(user["id"])):
+                return web.json_response({"error": "rate_limited"}, status=429)
+            request["authorized_user"] = user
+        return await handler(request)
+
+    @web.middleware
     async def no_cache_middleware(request, handler):
         response = await handler(request)
         if request.path in {"/", "/index.html", "/app.js", "/styles.css", "/catalog.json"}:
@@ -592,6 +692,7 @@ def create_app() -> web.Application:
         response.headers.update(SECURITY_HEADERS)
         return response
 
+    app.middlewares.append(api_auth_rate_limit_middleware)
     app.middlewares.append(no_cache_middleware)
     app.router.add_get("/", index)
     app.router.add_get("/index.html", index)
