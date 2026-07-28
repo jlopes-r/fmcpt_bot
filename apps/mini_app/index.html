@@ -7,7 +7,7 @@
     <meta name="theme-color" content="#f3f6f7">
     <meta name="description" content="Central de comandos dos bots FMCPT no Telegram.">
     <meta property="og:title" content="FMCPT | Central de comandos">
-    <meta property="og:description" content="Consulte e execute os comandos dos bots FMCPT.">
+    <meta property="og:description" content="Consulte e gerencie os comandos dos bots FMCPT.">
     <meta property="og:image" content="./og.png">
     <meta property="og:type" content="website">
     <title>FMCPT Bot</title>
@@ -92,7 +92,7 @@
             <div>
               <p class="overline">Comandos Bot</p>
               <h1 id="adminTitle">Administração</h1>
-              <p>Gerencie comandos personalizados, GIFs e sugestões.</p>
+              <p>Gerencie comandos personalizados e sugestões compartilhadas pelos grupos.</p>
             </div>
           </header>
 
@@ -101,25 +101,25 @@
               <h2 id="quickActionsTitle">Ações rápidas</h2>
             </div>
             <div class="admin-shortcuts">
-              <button class="shortcut-button" data-admin="/create" type="button">
+              <button class="shortcut-button" data-admin="create" type="button">
                 <span class="shortcut-button__icon"><i data-lucide="message-square-plus"></i></span>
-                <span><strong>Criar guiado</strong><small>Fluxo pelo chat</small></span>
-                <i class="shortcut-button__arrow" data-lucide="arrow-up-right"></i>
+                <span><strong>Criar comando</strong><small>Texto ou upload de mídia</small></span>
+                <i class="shortcut-button__arrow" data-lucide="chevron-right"></i>
               </button>
-              <button class="shortcut-button" data-admin="/list" type="button">
+              <button class="shortcut-button" data-admin="custom" type="button">
                 <span class="shortcut-button__icon"><i data-lucide="list"></i></span>
                 <span><strong>Personalizados</strong><small>Ver comandos salvos</small></span>
-                <i class="shortcut-button__arrow" data-lucide="arrow-up-right"></i>
+                <i class="shortcut-button__arrow" data-lucide="chevron-right"></i>
               </button>
-              <button class="shortcut-button" data-admin="/gifstats" type="button">
-                <span class="shortcut-button__icon"><i data-lucide="image"></i></span>
-                <span><strong>Biblioteca de GIFs</strong><small>Consultar estatísticas</small></span>
-                <i class="shortcut-button__arrow" data-lucide="arrow-up-right"></i>
+              <button class="shortcut-button" data-admin="categories" type="button">
+                <span class="shortcut-button__icon"><i data-lucide="tags"></i></span>
+                <span><strong>Categorias</strong><small>Organizar filtros</small></span>
+                <i class="shortcut-button__arrow" data-lucide="chevron-right"></i>
               </button>
-              <button class="shortcut-button" data-admin="/backlog" type="button">
+              <button class="shortcut-button" data-admin="backlog" type="button">
                 <span class="shortcut-button__icon"><i data-lucide="clipboard-list"></i></span>
-                <span><strong>Backlog</strong><small>Abrir lista completa</small></span>
-                <i class="shortcut-button__arrow" data-lucide="arrow-up-right"></i>
+                <span><strong>Backlog</strong><small>Registrar sugestão</small></span>
+                <i class="shortcut-button__arrow" data-lucide="chevron-right"></i>
               </button>
             </div>
           </section>
@@ -197,8 +197,13 @@
                   </select>
                 </label>
                 <label class="field">
-                  <span>Resposta do bot</span>
-                  <textarea name="content" placeholder="Escreva o conteúdo enviado pelo comando" maxlength="4000" required></textarea>
+                  <span>Texto da resposta</span>
+                  <textarea name="content" placeholder="Escreva a resposta ou legenda da mídia" maxlength="4000" required></textarea>
+                </label>
+                <label class="field">
+                  <span>Arquivo</span>
+                  <input name="media" type="file" accept="image/*,video/*,audio/*,.gif">
+                  <small>Obrigatório para imagem, GIF, vídeo, áudio e voz.</small>
                 </label>
                 <label class="field">
                   <span>URL de preview</span>
@@ -244,8 +249,13 @@
                   </select>
                 </label>
                 <label class="field">
-                  <span>Resposta do bot</span>
-                  <textarea name="content" placeholder="Deixe em branco para manter o conteúdo atual" maxlength="4000"></textarea>
+                  <span>Texto da resposta</span>
+                  <textarea name="content" placeholder="Deixe em branco para manter o texto atual" maxlength="4000"></textarea>
+                </label>
+                <label class="field">
+                  <span>Novo arquivo</span>
+                  <input name="media" type="file" accept="image/*,video/*,audio/*,.gif">
+                  <small>Opcional. Escolha um tipo de mídia para substituir o arquivo.</small>
                 </label>
                 <label class="field">
                   <span>URL de preview</span>
@@ -383,10 +393,6 @@
           <dd id="sheetAccess"></dd>
         </div>
       </dl>
-      <button id="sheetExecute" class="primary-button sheet-execute" type="button">
-        <i data-lucide="send"></i>
-        Executar comando
-      </button>
     </aside>
 
     <div id="toast" class="toast" role="status" aria-live="polite" hidden>

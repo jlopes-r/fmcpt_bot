@@ -132,7 +132,6 @@ const elements = {
   sheetCategory: document.querySelector("#sheetCategory"),
   sheetCommandName: document.querySelector("#sheetCommandName"),
   sheetDescription: document.querySelector("#sheetDescription"),
-  sheetExecute: document.querySelector("#sheetExecute"),
   sheetIcon: document.querySelector("#sheetIcon"),
   sheetPreview: document.querySelector("#sheetPreview"),
   sheetUsage: document.querySelector("#sheetUsage"),
@@ -492,15 +491,6 @@ function renderCommands() {
             </span>
             <p>${escapeHtml(commandDescription(command))}</p>
           </button>
-          <button
-            class="run-command"
-            data-command="${name}"
-            type="button"
-            title="Executar /${name}"
-            aria-label="Executar /${name}"
-          >
-            <i data-lucide="send"></i>
-          </button>
         </article>
       `;
     })
@@ -607,46 +597,108 @@ function showToast(message) {
   }, 3200);
 }
 
-function actionMessage(kind, data) {
-  if (kind === "execute_command") {
-    const bot = state.bots.find((item) => item.id === data.bot);
-    return `/${data.command} enviado ao ${bot?.name || "bot"}.`;
-  }
-
+function actionMessage(data) {
   const labels = {
-    "/create": "Fluxo de criação solicitado.",
-    "/list": "Lista de comandos solicitada.",
-    "/gifstats": "Estatísticas de GIFs solicitadas.",
-    "/backlog": "Backlog solicitado.",
-    create_text_command: `Comando /${data.name} enviado para criação.`,
-    update_command: `Alteração de /${data.name} enviada.`,
-    delete_command: `Comando /${data.name} enviado para exclusão.`,
+    create_command: `Comando /${data.name} salvo.`,
+    update_command: `Alteração de /${data.name} salva.`,
+    delete_command: `Comando /${data.name} apagado.`,
     backlog_add: "Sugestão enviada ao backlog.",
-    create_category: `Categoria ${data.name} enviada para criação.`,
-    update_category: `Categoria ${data.name} enviada para alteração.`,
-    delete_category: `Categoria ${data.name} enviada para exclusão.`
+    create_category: `Categoria ${data.name} salva.`,
+    update_category: `Categoria ${data.name} alterada.`,
+    delete_category: `Categoria ${data.name} excluída.`
   };
-  return labels[data.action] || "Ação enviada ao bot.";
+  return labels[data.action] || "Alteração salva.";
 }
 
-function sendPayload(kind, data = {}) {
-  const payload = JSON.stringify({ kind, data });
-  tg?.HapticFeedback?.impactOccurred("light");
+function authHeaders(extra = {}) {
+  return {
+    ...extra,
+    "X-Telegram-Init-Data": tg?.initData || ""
+  };
+}
 
-  if (isTelegramContext && tg?.sendData) {
-    try {
-      tg.sendData(payload);
-      showToast(actionMessage(kind, data));
-      return true;
-    } catch {
-      showToast("Não foi possível enviar agora. Tente novamente.");
-      return false;
-    }
+function applyCatalogUpdate(catalog) {
+  if (!catalog?.bots) return;
+  state.bots = normalizeCatalog(catalog).bots || [];
+  render();
+}
+
+async function apiRequest(path, options = {}) {
+  if (!isTelegramContext || !tg?.initData) {
+    throw new Error("telegram_context_required");
   }
+  const response = await fetch(path, {
+    ...options,
+    cache: "no-store",
+    headers: authHeaders(options.headers || {})
+  });
+  let data = {};
+  try {
+    data = await response.json();
+  } catch {
+    data = {};
+  }
+  if (response.status === 403) {
+    throw new Error("unauthorized");
+  }
+  if (!response.ok) {
+    throw new Error(data.error || "request_failed");
+  }
+  return data;
+}
 
-  console.info("[FMCPT Mini App]", payload);
-  showToast(`Demonstração: ${actionMessage(kind, data)}`);
-  return true;
+async function sendAdminAction(data = {}) {
+  tg?.HapticFeedback?.impactOccurred("light");
+  try {
+    const result = await apiRequest("./api/admin/action", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(data)
+    });
+    applyCatalogUpdate(result.catalog);
+    showToast(actionMessage(data));
+    return true;
+  } catch (error) {
+    showToast(adminErrorMessage(error));
+    return false;
+  }
+}
+
+async function sendCommandForm(form, mode) {
+  tg?.HapticFeedback?.impactOccurred("light");
+  const payload = new FormData(form);
+  payload.set("mode", mode);
+  const name = normalizeCommandName(payload.get("name"));
+  payload.set("name", name);
+  const action = mode === "update" ? "update_command" : "create_command";
+
+  try {
+    const result = await apiRequest("./api/admin/upload-command", {
+      method: "POST",
+      body: payload
+    });
+    applyCatalogUpdate(result.catalog);
+    showToast(actionMessage({ action, name }));
+    form.reset();
+    updateMediaRequirements(form);
+    return true;
+  } catch (error) {
+    showToast(adminErrorMessage(error));
+    return false;
+  }
+}
+
+function adminErrorMessage(error) {
+  const messages = {
+    telegram_context_required: "Abra o painel pelo Telegram.",
+    unauthorized: "Acesso negado para este usuário.",
+    command_exists: "Este comando já existe.",
+    not_found: "Item não encontrado.",
+    request_failed: "Não foi possível salvar agora."
+  };
+  return messages[error.message] || error.message || messages.request_failed;
 }
 
 function findCommand(name) {
@@ -674,7 +726,6 @@ function openCommandSheet(command) {
   elements.sheetAccess.textContent = command.adminOnly ? "Somente administradores" : "Todos do grupo";
   elements.sheetUsageRow.hidden = false;
   elements.sheetAliasesRow.hidden = !(command.aliases || []).length;
-  elements.sheetExecute.dataset.command = command.name;
 
   elements.sheetBackdrop.hidden = false;
   elements.commandSheet.hidden = false;
@@ -692,20 +743,31 @@ function closeCommandSheet() {
   lastFocusedElement?.focus?.();
 }
 
-function executeCommand(commandName) {
-  closeCommandSheet();
-  sendPayload("execute_command", {
-    bot: state.botId,
-    command: commandName
-  });
-}
-
 function normalizeCommandName(value) {
   return String(value || "").trim().replace(/^\/+/, "").toLowerCase();
 }
 
-function sendAdminShortcut(action) {
-  sendPayload("admin_action", { action });
+function updateMediaRequirements(form) {
+  const type = String(form.elements.type?.value || "texto");
+  const content = form.elements.content;
+  const media = form.elements.media;
+  if (!content || !media) return;
+  const isText = type === "texto" || type === "";
+  content.required = isText && form.id === "createCommandForm";
+  media.required = !isText && form.id === "createCommandForm";
+  media.closest(".field").hidden = isText;
+}
+
+function sendAdminShortcut(mode) {
+  if (mode === "custom") {
+    state.view = "commands";
+    state.botId = "comandos";
+    state.category = "category:Comandos personalizados";
+    render();
+    return;
+  }
+  selectView("admin");
+  setAdminMode(mode);
 }
 
 elements.botSwitcher.addEventListener("click", (event) => {
@@ -731,12 +793,6 @@ elements.categoryTabs.addEventListener("click", (event) => {
 });
 
 elements.commandList.addEventListener("click", (event) => {
-  const executeButton = event.target.closest("button[data-command]");
-  if (executeButton) {
-    executeCommand(executeButton.dataset.command);
-    return;
-  }
-
   const detailsButton = event.target.closest("button[data-command-details]");
   if (detailsButton) {
     openCommandSheet(findCommand(detailsButton.dataset.commandDetails));
@@ -757,29 +813,40 @@ document.querySelectorAll("[data-admin]").forEach((button) => {
   button.addEventListener("click", () => sendAdminShortcut(button.dataset.admin));
 });
 
-elements.createCommandForm.addEventListener("submit", (event) => {
+[elements.createCommandForm, elements.updateCommandForm].forEach((form) => {
+  form.elements.type?.addEventListener("change", () => updateMediaRequirements(form));
+  updateMediaRequirements(form);
+});
+
+elements.createCommandForm.addEventListener("submit", async (event) => {
   event.preventDefault();
-  const form = new FormData(event.currentTarget);
-  const name = normalizeCommandName(form.get("name"));
+  const form = event.currentTarget;
+  const data = new FormData(form);
+  const name = normalizeCommandName(data.get("name"));
 
   if (!/^[a-z0-9_]{1,32}$/.test(name)) {
     showToast("Use até 32 letras, números ou sublinhados no nome.");
     return;
   }
 
-  sendPayload("admin_action", {
-    action: "create_text_command",
-    name,
-    description: String(form.get("description") || "").trim(),
-    category: String(form.get("category") || "").trim(),
-    type: String(form.get("type") || "texto"),
-    content: String(form.get("content") || "").trim(),
-    previewUrl: String(form.get("previewUrl") || "").trim()
-  });
-  event.currentTarget.reset();
+  await sendCommandForm(form, "create");
 });
 
-elements.updateCommandForm.addEventListener("submit", (event) => {
+elements.updateCommandForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const data = new FormData(form);
+  const name = normalizeCommandName(data.get("name"));
+
+  if (!/^[a-z0-9_]{1,32}$/.test(name)) {
+    showToast("Informe um nome de comando válido.");
+    return;
+  }
+
+  await sendCommandForm(form, "update");
+});
+
+elements.deleteCommandForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const form = new FormData(event.currentTarget);
   const name = normalizeCommandName(form.get("name"));
@@ -789,36 +856,14 @@ elements.updateCommandForm.addEventListener("submit", (event) => {
     return;
   }
 
-  sendPayload("admin_action", {
-    action: "update_command",
-    name,
-    description: String(form.get("description") || "").trim(),
-    category: String(form.get("category") || "").trim(),
-    type: String(form.get("type") || "").trim(),
-    content: String(form.get("content") || "").trim(),
-    previewUrl: String(form.get("previewUrl") || "").trim()
-  });
-  event.currentTarget.reset();
-});
-
-elements.deleteCommandForm.addEventListener("submit", (event) => {
-  event.preventDefault();
-  const form = new FormData(event.currentTarget);
-  const name = normalizeCommandName(form.get("name"));
-
-  if (!/^[a-z0-9_]{1,32}$/.test(name)) {
-    showToast("Informe um nome de comando válido.");
-    return;
-  }
-
-  sendPayload("admin_action", {
+  const success = await sendAdminAction({
     action: "delete_command",
     name
   });
-  event.currentTarget.reset();
+  if (success) event.currentTarget.reset();
 });
 
-elements.categoryForm.addEventListener("submit", (event) => {
+elements.categoryForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const form = new FormData(event.currentTarget);
   const action = String(form.get("action") || "");
@@ -835,25 +880,21 @@ elements.categoryForm.addEventListener("submit", (event) => {
     return;
   }
 
-  sendPayload("admin_action", { action, name, newName });
-  event.currentTarget.reset();
+  const success = await sendAdminAction({ action, name, newName });
+  if (success) event.currentTarget.reset();
 });
 
-elements.backlogForm.addEventListener("submit", (event) => {
+elements.backlogForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const form = new FormData(event.currentTarget);
   const text = String(form.get("text") || "").trim();
   if (!text) return;
 
-  sendPayload("admin_action", {
+  const success = await sendAdminAction({
     action: "backlog_add",
     text
   });
-  event.currentTarget.reset();
-});
-
-elements.sheetExecute.addEventListener("click", () => {
-  if (state.selectedCommand) executeCommand(state.selectedCommand.name);
+  if (success) event.currentTarget.reset();
 });
 
 elements.closeSheet.addEventListener("click", closeCommandSheet);

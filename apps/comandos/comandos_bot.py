@@ -256,6 +256,26 @@ app = Client(
 # Comandos personalizados carregados
 comandos_personalizados = carregar_comandos()
 categorias_personalizadas = carregar_categorias_personalizadas()
+comandos_personalizados_mtime = COMANDOS_FILE.stat().st_mtime if COMANDOS_FILE.exists() else 0
+
+def recarregar_comandos_se_necessario():
+    """Atualiza comandos criados pelo mini app sem reiniciar o bot."""
+    global comandos_personalizados, comandos_personalizados_mtime
+    mtime = COMANDOS_FILE.stat().st_mtime if COMANDOS_FILE.exists() else 0
+    if mtime == comandos_personalizados_mtime:
+        return
+    comandos_personalizados = carregar_comandos()
+    comandos_personalizados_mtime = mtime
+
+
+def media_source(info):
+    media_id = info.get("media_id")
+    if media_id:
+        return media_id
+    media_path = str(info.get("media_path") or "").strip()
+    if media_path and Path(media_path).is_file():
+        return media_path
+    return None
 
 async def executar_comando_personalizado(client, message, nome, info):
     """Executa um comando personalizado"""
@@ -272,22 +292,23 @@ async def executar_comando_personalizado(client, message, nome, info):
     try:
         tipo = info.get('tipo', 'texto')
         conteudo = info.get('conteudo', '')
+        media = media_source(info)
         
         reply_to = message.reply_to_message.id if message.reply_to_message else message.id
         
         if tipo == 'texto':
             for parte in dividir_texto_longo(conteudo):
                 await client.send_message(message.chat.id, parte, reply_to_message_id=reply_to)
-        elif tipo == 'foto' and 'media_id' in info:
-            await client.send_photo(message.chat.id, info['media_id'], caption=conteudo, reply_to_message_id=reply_to)
-        elif tipo == 'video' and 'media_id' in info:
-            await client.send_video(message.chat.id, info['media_id'], caption=conteudo, reply_to_message_id=reply_to)
-        elif tipo == 'audio' and 'media_id' in info:
-            await client.send_audio(message.chat.id, info['media_id'], caption=conteudo, reply_to_message_id=reply_to)
-        elif tipo == 'voice' and 'media_id' in info:
-            await client.send_voice(message.chat.id, info['media_id'], caption=conteudo, reply_to_message_id=reply_to)
-        elif tipo == 'gif' and 'media_id' in info:
-            await client.send_animation(message.chat.id, info['media_id'], caption=conteudo, reply_to_message_id=reply_to)
+        elif tipo == 'foto' and media:
+            await client.send_photo(message.chat.id, media, caption=conteudo, reply_to_message_id=reply_to)
+        elif tipo == 'video' and media:
+            await client.send_video(message.chat.id, media, caption=conteudo, reply_to_message_id=reply_to)
+        elif tipo == 'audio' and media:
+            await client.send_audio(message.chat.id, media, caption=conteudo, reply_to_message_id=reply_to)
+        elif tipo == 'voice' and media:
+            await client.send_voice(message.chat.id, media, caption=conteudo, reply_to_message_id=reply_to)
+        elif tipo == 'gif' and media:
+            await client.send_animation(message.chat.id, media, caption=conteudo, reply_to_message_id=reply_to)
         else:
             await message.reply_text(f"❌ Erro: tipo de comando não suportado")
     except Exception as e:
@@ -611,15 +632,7 @@ async def handle_mini_app_data(client, message):
     kind = payload.get("kind")
     data = payload.get("data") or {}
     if kind == "execute_command":
-        command = str(data.get("command", "")).strip().lstrip("/")
-        chave_real = next((c for c in comandos_personalizados if c.lower() == command.lower()), None)
-        if chave_real:
-            await executar_comando_personalizado(client, message, chave_real, comandos_personalizados[chave_real])
-            return
-        if command in COMANDOS_INTERNOS:
-            await message.reply_text(f"Execute pelo chat: `/{command}`")
-            return
-        await message.reply_text("❌ Comando desconhecido.")
+        await message.reply_text("❌ O painel agora funciona apenas como catálogo e configuração.")
     elif kind == "admin_action":
         action = str(data.get("action", ""))
         if action == "create_text_command":
@@ -1065,6 +1078,7 @@ async def processar_criacao(client, message):
 async def filtro_comando_personalizado(_, __, message):
     if not message.text:
         return False
+    recarregar_comandos_se_necessario()
     words = message.text.split()
     for word in words:
         if word.startswith('/'):

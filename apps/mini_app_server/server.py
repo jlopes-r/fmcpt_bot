@@ -1,20 +1,39 @@
 import argparse
+from datetime import datetime
 import hashlib
 import hmac
 import json
+import re
 import os
 import time
+import uuid
+from aiohttp.web_request import FileField
 from pathlib import Path
 from urllib.parse import parse_qsl
 
 from aiohttp import ClientSession, web
 
-from packages.config import load_environment, parse_chat_ids
+from packages.config import DATA_DIR, load_environment, parse_chat_ids
 
 
 ROOT = Path(__file__).resolve().parents[2]
 MINI_APP_DIR = ROOT / "apps" / "mini_app"
+CATALOG_FILE = MINI_APP_DIR / "catalog.json"
+COMANDOS_FILE = DATA_DIR / "comandos_personalizados.json"
+CUSTOM_CATEGORIES_FILE = DATA_DIR / "categorias_comandos_personalizados.json"
+BACKLOG_FILE = DATA_DIR / "backlog.json"
+UPLOADS_DIR = DATA_DIR / "custom_command_uploads"
 DEFAULT_AUTH_MAX_AGE = 24 * 60 * 60
+MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+COMMAND_NAME_RE = re.compile(r"^[a-z0-9_]{1,32}$")
+ALLOWED_COMMAND_TYPES = {"texto", "foto", "video", "audio", "voice", "gif"}
+UPLOAD_EXTENSIONS = {
+    "foto": ".jpg",
+    "gif": ".gif",
+    "video": ".mp4",
+    "audio": ".mp3",
+    "voice": ".ogg",
+}
 
 
 def bot_tokens() -> list[str]:
@@ -28,6 +47,154 @@ def bot_tokens() -> list[str]:
 
 def authorized_chat_ids() -> list[int]:
     return parse_chat_ids(os.getenv("GRUPOS_AUTORIZADOS", ""))
+
+
+def load_json(path: Path, default):
+    if not path.exists():
+        return default
+    try:
+        with open(path, "r", encoding="utf-8") as file:
+            data = json.load(file)
+    except (OSError, json.JSONDecodeError):
+        return default
+    return data if isinstance(data, type(default)) else default
+
+
+def save_json(path: Path, data) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as file:
+        json.dump(data, file, ensure_ascii=False, indent=2)
+
+
+def default_custom_category() -> str:
+    return "Comandos personalizados"
+
+
+def normalize_command_name(value: str) -> str:
+    return str(value or "").strip().lstrip("/").lower()
+
+
+def normalize_command_type(value: str | None) -> str:
+    value = str(value or "texto").strip().lower()
+    return value if value in ALLOWED_COMMAND_TYPES else "texto"
+
+
+def category_exists(categories: list[str], name: str) -> str | None:
+    return next((item for item in categories if item.lower() == name.lower()), None)
+
+
+def save_categories(categories: list[str]) -> None:
+    unique = []
+    seen = set()
+    for category in categories:
+        category = str(category or "").strip()
+        key = category.lower()
+        if category and key not in seen:
+            unique.append(category)
+            seen.add(key)
+    save_json(CUSTOM_CATEGORIES_FILE, unique)
+
+
+def load_catalog_payload() -> dict:
+    catalog = load_json(CATALOG_FILE, {"bots": []})
+    custom_commands = load_json(COMANDOS_FILE, {})
+    custom_categories = load_json(CUSTOM_CATEGORIES_FILE, [])
+    for bot in catalog.get("bots", []):
+        if bot.get("id") == "comandos":
+            bot["customCommands"] = custom_commands
+            bot["customCategories"] = custom_categories
+            break
+    return catalog
+
+
+def validate_command_payload(data: dict, *, creating: bool) -> tuple[bool, str]:
+    name = normalize_command_name(data.get("name", ""))
+    command_type = normalize_command_type(data.get("type"))
+    description = str(data.get("description", "")).strip()
+    category = str(data.get("category", "")).strip()
+    content = str(data.get("content", "")).strip()
+
+    if not COMMAND_NAME_RE.match(name):
+        return False, "Nome invalido. Use letras, numeros e underline, ate 32 caracteres."
+    if category and len(category) > 40:
+        return False, "Categoria muito longa. Use ate 40 caracteres."
+    if creating and not description:
+        return False, "Descricao obrigatoria."
+    if creating and command_type == "texto" and not content:
+        return False, "Conteudo obrigatorio para comandos de texto."
+    return True, ""
+
+
+def infer_upload_extension(command_type: str, upload: FileField) -> str:
+    suffix = Path(upload.filename or "").suffix.lower()
+    if suffix and len(suffix) <= 12:
+        return suffix
+    return UPLOAD_EXTENSIONS.get(command_type, ".bin")
+
+
+def save_uploaded_file(command_type: str, upload: FileField) -> str:
+    UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+    extension = infer_upload_extension(command_type, upload)
+    destination = UPLOADS_DIR / f"{uuid.uuid4().hex}{extension}"
+    total = 0
+    with open(destination, "wb") as output:
+        while True:
+            chunk = upload.file.read(1024 * 1024)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > MAX_UPLOAD_BYTES:
+                output.close()
+                destination.unlink(missing_ok=True)
+                raise web.HTTPRequestEntityTooLarge(
+                    max_size=MAX_UPLOAD_BYTES,
+                    actual_size=total,
+                    text="Arquivo maior que 50 MB.",
+                )
+            output.write(chunk)
+    return str(destination)
+
+
+def apply_category(categories: list[str], category: str) -> list[str]:
+    category = category or default_custom_category()
+    if not category_exists(categories, category):
+        categories.append(category)
+        save_categories(categories)
+    return categories
+
+
+def build_command_record(data: dict, user: dict, *, upload_path: str | None, current: dict | None = None) -> dict:
+    current = current.copy() if current else {}
+    command_type = normalize_command_type(data.get("type") or current.get("tipo"))
+    content = str(data.get("content", "")).strip()
+    preview_url = str(data.get("previewUrl", "")).strip()
+
+    record = {
+        **current,
+        "tipo": command_type,
+        "descricao": str(data.get("description", "")).strip() or current.get("descricao", ""),
+        "categoria": str(data.get("category", "")).strip() or current.get("categoria") or default_custom_category(),
+        "conteudo": content if content or command_type == "texto" else current.get("conteudo", ""),
+        "media_id": current.get("media_id"),
+        "criado_por": current.get("criado_por") or user.get("id", 0),
+        "origem": current.get("origem") or "mini_app_server",
+    }
+    if preview_url:
+        record["previewUrl"] = preview_url
+    elif "previewUrl" in current:
+        record["previewUrl"] = current["previewUrl"]
+    if upload_path:
+        record["media_path"] = upload_path
+        record["media_id"] = None
+    elif current.get("media_path"):
+        record["media_path"] = current["media_path"]
+    now = datetime.now().isoformat(timespec="seconds")
+    if current:
+        record["data_alteracao"] = now
+        record["origem_alteracao"] = "mini_app_server"
+    else:
+        record["data_criacao"] = now
+    return record
 
 
 def validate_init_data(init_data: str, token: str, max_age: int = DEFAULT_AUTH_MAX_AGE) -> dict | None:
@@ -116,14 +283,139 @@ async def catalog(request: web.Request) -> web.Response:
     user = await authorize_request(request)
     if not user:
         return web.json_response({"error": "unauthorized"}, status=403)
-    return web.FileResponse(MINI_APP_DIR / "catalog.json")
+    return web.json_response(load_catalog_payload())
+
+
+async def admin_action(request: web.Request) -> web.Response:
+    user = await authorize_request(request)
+    if not user:
+        return web.json_response({"error": "unauthorized"}, status=403)
+    try:
+        payload = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "invalid_json"}, status=400)
+
+    action = str(payload.get("action", ""))
+    commands = load_json(COMANDOS_FILE, {})
+    categories = load_json(CUSTOM_CATEGORIES_FILE, [])
+
+    if action == "delete_command":
+        name = normalize_command_name(payload.get("name", ""))
+        key = next((item for item in commands if item.lower() == name), None)
+        if not key:
+            return web.json_response({"error": "not_found"}, status=404)
+        old_path = Path(str(commands[key].get("media_path", "")))
+        del commands[key]
+        save_json(COMANDOS_FILE, commands)
+        if old_path.is_file() and old_path.is_relative_to(UPLOADS_DIR):
+            old_path.unlink(missing_ok=True)
+        return web.json_response({"ok": True, "catalog": load_catalog_payload()})
+
+    if action in {"create_category", "update_category", "delete_category"}:
+        name = str(payload.get("name", "")).strip()
+        new_name = str(payload.get("newName", "")).strip()
+        if not name or len(name) > 40 or len(new_name) > 40:
+            return web.json_response({"error": "invalid_category"}, status=400)
+        current = category_exists(categories, name)
+        if action == "create_category":
+            if not current:
+                categories.append(name)
+                save_categories(categories)
+            return web.json_response({"ok": True, "catalog": load_catalog_payload()})
+        if action == "update_category":
+            if not new_name:
+                return web.json_response({"error": "missing_new_name"}, status=400)
+            if not current:
+                return web.json_response({"error": "not_found"}, status=404)
+            categories = [new_name if item.lower() == name.lower() else item for item in categories]
+            for info in commands.values():
+                if str(info.get("categoria") or info.get("category") or "").lower() == name.lower():
+                    info["categoria"] = new_name
+            save_categories(categories)
+            save_json(COMANDOS_FILE, commands)
+            return web.json_response({"ok": True, "catalog": load_catalog_payload()})
+        if current:
+            categories = [item for item in categories if item.lower() != name.lower()]
+        for info in commands.values():
+            if str(info.get("categoria") or info.get("category") or "").lower() == name.lower():
+                info["categoria"] = default_custom_category()
+        save_categories(categories)
+        save_json(COMANDOS_FILE, commands)
+        return web.json_response({"ok": True, "catalog": load_catalog_payload()})
+
+    if action == "backlog_add":
+        text = str(payload.get("text", "")).strip()
+        if not text:
+            return web.json_response({"error": "empty_text"}, status=400)
+        backlog = load_json(BACKLOG_FILE, [])
+        next_id = max((item.get("id", 0) for item in backlog if isinstance(item, dict)), default=0) + 1
+        backlog.append({
+            "id": next_id,
+            "sugestao": text,
+            "autor": user.get("first_name") or user.get("username") or "Mini App",
+            "autor_id": user.get("id", 0),
+            "data": datetime.now().strftime("%d/%m/%Y %H:%M"),
+            "origem": "mini_app_server",
+        })
+        save_json(BACKLOG_FILE, backlog)
+        return web.json_response({"ok": True, "id": next_id})
+
+    return web.json_response({"error": "unknown_action"}, status=400)
+
+
+async def upload_command(request: web.Request) -> web.Response:
+    user = await authorize_request(request)
+    if not user:
+        return web.json_response({"error": "unauthorized"}, status=403)
+
+    form = await request.post()
+    data = {key: str(value) for key, value in form.items() if not isinstance(value, FileField)}
+    mode = str(data.get("mode", "create"))
+    creating = mode != "update"
+    ok, error = validate_command_payload(data, creating=creating)
+    if not ok:
+        return web.json_response({"error": error}, status=400)
+
+    name = normalize_command_name(data.get("name", ""))
+    upload = form.get("media")
+    has_upload = isinstance(upload, FileField) and bool(upload.filename)
+
+    commands = load_json(COMANDOS_FILE, {})
+    categories = load_json(CUSTOM_CATEGORIES_FILE, [])
+    key = next((item for item in commands if item.lower() == name), None)
+    if creating and key:
+        return web.json_response({"error": "command_exists"}, status=409)
+    if not creating and not key:
+        return web.json_response({"error": "not_found"}, status=404)
+
+    current = commands.get(key) if key else None
+    command_type = normalize_command_type(data.get("type") or (current or {}).get("tipo"))
+    if creating and command_type != "texto" and not has_upload:
+        return web.json_response({"error": "Arquivo obrigatorio para comandos de midia."}, status=400)
+    if command_type == "texto":
+        upload = None
+        has_upload = False
+    data["type"] = command_type
+
+    upload_path = save_uploaded_file(command_type, upload) if has_upload else None
+    record = build_command_record(data, user, upload_path=upload_path, current=current)
+    if upload_path and key:
+        previous_path = Path(str(commands[key].get("media_path", "")))
+        if previous_path.is_file() and previous_path.is_relative_to(UPLOADS_DIR):
+            previous_path.unlink(missing_ok=True)
+    commands[key or name] = record
+    apply_category(categories, record["categoria"])
+    save_json(COMANDOS_FILE, commands)
+    return web.json_response({"ok": True, "command": name, "catalog": load_catalog_payload()})
 
 
 def create_app() -> web.Application:
-    app = web.Application()
+    app = web.Application(client_max_size=MAX_UPLOAD_BYTES + 1024 * 1024)
     app.router.add_get("/", index)
     app.router.add_get("/index.html", index)
     app.router.add_get("/catalog.json", catalog)
+    app.router.add_post("/api/admin/action", admin_action)
+    app.router.add_post("/api/admin/upload-command", upload_command)
     app.router.add_static("/", MINI_APP_DIR, show_index=False)
     return app
 
