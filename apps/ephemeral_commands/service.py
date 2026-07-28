@@ -98,7 +98,7 @@ def build_custom_command_list() -> str:
         nomes = grupos.get(tipo)
         if nomes:
             text += f"{tipo_emoji.get(tipo, '❓')} <b>{escape(tipo_nome.get(tipo, tipo))}</b> ({len(nomes)}):\n"
-            text += ", ".join(f"<code>/{escape(nome)}</code>" for nome in nomes)
+            text += " ".join(f"/{escape(nome)}" for nome in nomes)
             text += "\n\n"
     return text.strip()
 
