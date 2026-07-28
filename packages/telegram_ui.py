@@ -84,6 +84,16 @@ def build_mini_app_markup_payload(url: str, label: str = "Abrir painel") -> dict
     }
 
 
+def build_web_app_menu_button_payload(url: str, label: str = "Painel") -> dict | None:
+    if not url:
+        return None
+    return {
+        "type": "web_app",
+        "text": label,
+        "web_app": {"url": url},
+    }
+
+
 def _is_button_type_invalid(exc: Exception) -> bool:
     return exc.__class__.__name__ == "ButtonTypeInvalid" or "BUTTON_TYPE_INVALID" in str(exc)
 
@@ -118,6 +128,17 @@ async def set_bot_commands_via_bot_api(bot_token: str, commands: tuple[CommandSp
     if not bot_token:
         return False
     await _bot_api_post(bot_token, "setMyCommands", {"commands": build_bot_commands_payload(commands)})
+    return True
+
+
+async def set_bot_menu_button_via_bot_api(bot_token: str, mini_app_url: str, label: str = "Painel") -> bool:
+    if not bot_token or not mini_app_url:
+        return False
+    await _bot_api_post(
+        bot_token,
+        "setChatMenuButton",
+        {"menu_button": build_web_app_menu_button_payload(mini_app_url, label)},
+    )
     return True
 
 

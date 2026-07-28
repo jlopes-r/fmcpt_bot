@@ -74,7 +74,12 @@ from packages.config import (
     parse_chat_ids,
 )
 from packages.logging_config import configure_rotating_logging
-from packages.telegram_ui import build_bot_commands, reply_command_menu, set_bot_commands_via_bot_api
+from packages.telegram_ui import (
+    build_bot_commands,
+    reply_command_menu,
+    set_bot_commands_via_bot_api,
+    set_bot_menu_button_via_bot_api,
+)
 from packages.url_utils import normalizar_url
 from apps.telegram_bot.downloaders import limite_duracao_filter, processar_com_ytdlp as _processar_com_ytdlp
 from apps.telegram_bot.duplicates import normalizar_link_social
@@ -817,6 +822,7 @@ async def atualizar_menu_comandos_super(client):
         lista_comandos = build_bot_commands(SUPER_COMMANDS)
         if BOT_TOKEN:
             await set_bot_commands_via_bot_api(BOT_TOKEN, SUPER_COMMANDS)
+            await set_bot_menu_button_via_bot_api(BOT_TOKEN, MINI_APP_URL)
         else:
             await client.set_bot_commands(lista_comandos)
         log.info(f"Menu de comandos do Super Bot atualizado no Telegram! ({len(lista_comandos)} comandos)")

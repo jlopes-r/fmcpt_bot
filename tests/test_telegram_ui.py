@@ -6,6 +6,7 @@ from packages.telegram_ui import (
     build_bot_commands_payload,
     build_command_menu_html,
     build_mini_app_markup_payload,
+    build_web_app_menu_button_payload,
     reply_command_menu,
 )
 
@@ -155,6 +156,16 @@ class TelegramUiTests(unittest.IsolatedAsyncioTestCase):
                 "inline_keyboard": [
                     [{"text": "Abrir painel", "web_app": {"url": "https://example.com"}}],
                 ]
+            },
+        )
+
+    async def test_build_web_app_menu_button_payload(self):
+        self.assertEqual(
+            build_web_app_menu_button_payload("https://example.com", "Painel"),
+            {
+                "type": "web_app",
+                "text": "Painel",
+                "web_app": {"url": "https://example.com"},
             },
         )
 

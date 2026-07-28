@@ -17,6 +17,7 @@ from packages.telegram_ui import (
     BOT_API_BASE,
     build_command_menu_html,
     set_bot_commands_via_bot_api,
+    set_bot_menu_button_via_bot_api,
 )
 
 
@@ -215,6 +216,7 @@ class EphemeralCommandService:
             text = f"<b>📊 Status</b>\n\n⏱️ Listener efêmero online há <code>{uptime}s</code>"
         elif command == "sync":
             await set_bot_commands_via_bot_api(runtime.token, runtime.commands)
+            await set_bot_menu_button_via_bot_api(runtime.token, self.mini_app_url)
             text = "✅ Menu de comandos efêmeros atualizado."
         elif command in {"create", "delete", "add", "removegif", "cancelar"}:
             text = "Abra o bot no privado e use o painel para esta ação de configuração."
@@ -234,6 +236,7 @@ class EphemeralCommandService:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=70)) as session:
             await api.post(session, "deleteWebhook", {"drop_pending_updates": False})
             await set_bot_commands_via_bot_api(runtime.token, runtime.commands)
+            await set_bot_menu_button_via_bot_api(runtime.token, self.mini_app_url)
             self.log.info("%s ephemeral command listener started", runtime.name)
 
             while not self.stop_event.is_set():

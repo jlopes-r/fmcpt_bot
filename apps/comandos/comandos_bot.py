@@ -23,7 +23,12 @@ from packages.config import (
     mini_app_url,
     parse_chat_ids,
 )
-from packages.telegram_ui import build_bot_commands, reply_command_menu, set_bot_commands_via_bot_api
+from packages.telegram_ui import (
+    build_bot_commands,
+    reply_command_menu,
+    set_bot_commands_via_bot_api,
+    set_bot_menu_button_via_bot_api,
+)
 
 # Configuração
 def flex_command(commands, prefixes="/", case_sensitive=False):
@@ -231,6 +236,7 @@ async def atualizar_menu_comandos(client):
         lista_comandos = build_bot_commands(COMANDOS_BOT_COMMANDS)
         if BOT_TOKEN:
             await set_bot_commands_via_bot_api(BOT_TOKEN, COMANDOS_BOT_COMMANDS)
+            await set_bot_menu_button_via_bot_api(BOT_TOKEN, MINI_APP_URL)
         else:
             await client.set_bot_commands(lista_comandos)
         log.info(f"Menu de comandos atualizado no Telegram! ({len(lista_comandos)} comandos)")
