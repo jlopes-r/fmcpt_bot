@@ -25,7 +25,7 @@ CUSTOM_CATEGORIES_FILE = DATA_DIR / "categorias_comandos_personalizados.json"
 BACKLOG_FILE = DATA_DIR / "backlog.json"
 UPLOADS_DIR = DATA_DIR / "custom_command_uploads"
 PREVIEW_CACHE_DIR = DATA_DIR / "custom_command_previews"
-DEFAULT_AUTH_MAX_AGE = 24 * 60 * 60
+DEFAULT_AUTH_MAX_AGE = 2 * 60 * 60
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 COMMAND_NAME_RE = re.compile(r"^[a-z0-9_]{1,32}$")
 ALLOWED_COMMAND_TYPES = {"texto", "foto", "video", "audio", "voice", "gif"}
@@ -37,6 +37,34 @@ UPLOAD_EXTENSIONS = {
     "voice": ".ogg",
 }
 MEDIA_KEY_RE = re.compile(r"^[a-f0-9]{32}\.[A-Za-z0-9]{1,12}$")
+PRIVATE_MEDIA_FIELDS = {
+    "media_id",
+    "media_path",
+    "mediaUrl",
+    "media_url",
+    "previewUrl",
+    "preview_url",
+    "thumbnailUrl",
+    "thumbnail_url",
+    "posterUrl",
+    "poster_url",
+}
+SECURITY_HEADERS = {
+    "Content-Security-Policy": (
+        "default-src 'self'; "
+        "script-src 'self' https://telegram.org https://unpkg.com; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' blob: data:; "
+        "media-src 'self' blob:; "
+        "connect-src 'self'; "
+        "base-uri 'none'; "
+        "form-action 'self'; "
+        "frame-ancestors 'none'"
+    ),
+    "Referrer-Policy": "no-referrer",
+    "X-Content-Type-Options": "nosniff",
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=()",
+}
 COMMAND_MEDIA_TYPES = {
     "foto": "image/jpeg",
     "gif": "image/gif",
@@ -57,6 +85,13 @@ def bot_tokens() -> list[str]:
 
 def authorized_chat_ids() -> list[int]:
     return parse_chat_ids(os.getenv("GRUPOS_AUTORIZADOS", ""))
+
+
+def auth_max_age() -> int:
+    try:
+        return int(os.getenv("MINI_APP_AUTH_MAX_AGE", str(DEFAULT_AUTH_MAX_AGE)))
+    except ValueError:
+        return DEFAULT_AUTH_MAX_AGE
 
 
 def load_json(path: Path, default):
@@ -125,7 +160,7 @@ def command_for_catalog(name: str, info: dict) -> dict:
     visible = {
         key: value
         for key, value in info.items()
-        if key not in {"media_id", "media_path"}
+        if key not in PRIVATE_MEDIA_FIELDS
     }
     media_path = private_media_path(info)
     is_private_media = bool(media_path)
@@ -359,7 +394,7 @@ async def authorize_request(request: web.Request) -> dict | None:
 
     user = None
     for token in tokens:
-        user = validate_init_data(init_data, token)
+        user = validate_init_data(init_data, token, max_age=auth_max_age())
         if user:
             break
     if not user:
@@ -554,6 +589,7 @@ def create_app() -> web.Application:
         response = await handler(request)
         if request.path in {"/", "/index.html", "/app.js", "/styles.css", "/catalog.json"}:
             response.headers["Cache-Control"] = "no-store, max-age=0"
+        response.headers.update(SECURITY_HEADERS)
         return response
 
     app.middlewares.append(no_cache_middleware)

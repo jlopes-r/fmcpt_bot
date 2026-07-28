@@ -33,6 +33,24 @@ def signed_init_data(token: str, payload: dict) -> str:
     return urlencode(pairs)
 
 
+def signed_init_data_at(token: str, payload: dict, auth_date: int) -> str:
+    pairs = {
+        "auth_date": str(auth_date),
+        "query_id": "test-query",
+        "user": json.dumps(payload, separators=(",", ":")),
+    }
+    data_check_string = "\n".join(
+        f"{key}={value}" for key, value in sorted(pairs.items())
+    )
+    secret_key = hmac.new(b"WebAppData", token.encode(), hashlib.sha256).digest()
+    pairs["hash"] = hmac.new(
+        secret_key,
+        data_check_string.encode(),
+        hashlib.sha256,
+    ).hexdigest()
+    return urlencode(pairs)
+
+
 class MiniAppServerTest(unittest.TestCase):
     def test_validate_init_data_accepts_signed_telegram_payload(self):
         token = "123456:ABC"
@@ -44,6 +62,12 @@ class MiniAppServerTest(unittest.TestCase):
         init_data = signed_init_data("123456:ABC", {"id": 42})
 
         self.assertIsNone(validate_init_data(init_data, "wrong-token"))
+
+    def test_validate_init_data_rejects_expired_payload_by_default(self):
+        token = "123456:ABC"
+        init_data = signed_init_data_at(token, {"id": 42}, int(time.time()) - 3 * 60 * 60)
+
+        self.assertIsNone(validate_init_data(init_data, token))
 
     def test_load_catalog_payload_overlays_custom_commands(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -107,11 +131,15 @@ class MiniAppServerTest(unittest.TestCase):
                     "tipo": "foto",
                     "media_id": "telegram-file-id",
                     "media_path": str(media),
+                    "previewUrl": "https://tracker.example/preview.jpg",
+                    "mediaUrl": "https://tracker.example/media.jpg",
                     "descricao": "Foto",
                 })
 
         self.assertNotIn("media_id", visible)
         self.assertNotIn("media_path", visible)
+        self.assertNotIn("previewUrl", visible)
+        self.assertNotIn("mediaUrl", visible)
         self.assertTrue(visible["privateMedia"])
         self.assertEqual(visible["mediaKey"], media.name)
 
