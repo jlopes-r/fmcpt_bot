@@ -18,11 +18,11 @@ export async function generateMetadata(): Promise<Metadata> {
     metadataBase,
     title: "FMCPT | Central de comandos",
     description:
-      "Painel Telegram para consultar, buscar e executar comandos dos bots FMCPT.",
+      "Painel Telegram para consultar e gerenciar comandos dos bots FMCPT.",
     openGraph: {
       title: "FMCPT | Central de comandos",
       description:
-        "Consulte e execute os comandos dos bots FMCPT em uma interface rápida.",
+        "Consulte e gerencie os comandos dos bots FMCPT em uma interface rápida.",
       type: "website",
       images: [
         {
@@ -37,7 +37,7 @@ export async function generateMetadata(): Promise<Metadata> {
       card: "summary_large_image",
       title: "FMCPT | Central de comandos",
       description:
-        "Consulte e execute os comandos dos bots FMCPT em uma interface rápida.",
+        "Consulte e gerencie os comandos dos bots FMCPT em uma interface rápida.",
       images: ["/mini/og.png"],
     },
   };
