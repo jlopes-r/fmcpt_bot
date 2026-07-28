@@ -155,11 +155,12 @@ async def reply_command_menu(
 ):
     text = build_command_menu_text(title, commands, bool(mini_app_url)) + extra_text
     if ephemeral:
+        ephemeral_markup = None if _is_group_chat(message) else build_mini_app_markup_payload(mini_app_url)
         sent = await send_ephemeral_text(
             bot_token,
             message,
             text,
-            reply_markup=build_mini_app_markup_payload(mini_app_url),
+            reply_markup=ephemeral_markup,
             log=log,
         )
         if sent:

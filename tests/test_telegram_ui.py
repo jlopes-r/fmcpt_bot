@@ -92,6 +92,36 @@ class TelegramUiTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(result)
         self.assertEqual(message.calls, [])
 
+    async def test_reply_command_menu_omits_web_app_button_for_group_ephemeral(self):
+        message = FakeGroupMessage()
+        commands = (
+            CommandSpec("menu", "Mostra o menu", "Sistema", ephemeral=True),
+        )
+        seen_payloads = []
+        original = telegram_ui._bot_api_post
+
+        async def capture_bot_api(token, method, payload):
+            seen_payloads.append(payload)
+            return {"ok": True, "result": {}}
+
+        telegram_ui._bot_api_post = capture_bot_api
+        try:
+            await reply_command_menu(
+                message,
+                "Menu",
+                commands,
+                "https://example.com",
+                bot_token="123:abc",
+                ephemeral=True,
+                public_fallback=False,
+            )
+        finally:
+            telegram_ui._bot_api_post = original
+
+        self.assertEqual(len(seen_payloads), 1)
+        self.assertEqual(seen_payloads[0]["receiver_user_id"], 456)
+        self.assertNotIn("reply_markup", seen_payloads[0])
+
     async def test_build_bot_commands_payload_marks_ephemeral_commands(self):
         commands = (
             CommandSpec("menu", "Mostra o menu", "Sistema", ephemeral=True),
