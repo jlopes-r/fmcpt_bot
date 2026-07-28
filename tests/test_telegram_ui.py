@@ -2,7 +2,12 @@ import unittest
 
 from packages.command_catalog import CommandSpec
 from packages import telegram_ui
-from packages.telegram_ui import build_bot_commands_payload, build_mini_app_markup_payload, reply_command_menu
+from packages.telegram_ui import (
+    build_bot_commands_payload,
+    build_command_menu_html,
+    build_mini_app_markup_payload,
+    reply_command_menu,
+)
 
 
 class ButtonTypeInvalid(Exception):
@@ -152,6 +157,17 @@ class TelegramUiTests(unittest.IsolatedAsyncioTestCase):
                 ]
             },
         )
+
+    async def test_build_command_menu_html_escapes_content(self):
+        commands = (
+            CommandSpec("menu", "Mostra <menu>", "Interface", usage="/menu <x>"),
+        )
+
+        html = build_command_menu_html("Menu & Ajuda", commands, False)
+
+        self.assertIn("<b>Menu &amp; Ajuda</b>", html)
+        self.assertIn("<code>/menu &lt;x&gt;</code>", html)
+        self.assertIn("Mostra &lt;menu&gt;", html)
 
 
 if __name__ == "__main__":

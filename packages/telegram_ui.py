@@ -23,6 +23,25 @@ def build_command_menu_text(title: str, commands: tuple[CommandSpec, ...], has_m
     return build_help_text(title, commands) + suffix
 
 
+def build_help_html(title: str, commands: tuple[CommandSpec, ...]) -> str:
+    parts = [f"<b>{escape(title)}</b>", ""]
+    for category, category_commands in grouped_commands(commands).items():
+        parts.append(f"<b>{escape(category)}</b>")
+        for command in category_commands:
+            usage = command.usage or f"/{command.name}"
+            aliases = f" (aliases: {', '.join('/' + a for a in command.aliases)})" if command.aliases else ""
+            parts.append(
+                f"- <code>{escape(usage)}</code> - {escape(command.description + aliases)}"
+            )
+        parts.append("")
+    return "\n".join(parts).strip()
+
+
+def build_command_menu_html(title: str, commands: tuple[CommandSpec, ...], has_mini_app: bool) -> str:
+    suffix = "\n\nUse o botao no privado do bot para abrir o painel completo." if has_mini_app else ""
+    return build_help_html(title, commands) + suffix
+
+
 def build_bot_commands(commands: tuple[CommandSpec, ...]):
     from pyrogram.types import BotCommand
 
@@ -107,6 +126,7 @@ async def send_ephemeral_text(
     message,
     text: str,
     reply_markup: dict | None = None,
+    parse_mode: str | None = None,
     log=None,
 ) -> bool:
     user = getattr(message, "from_user", None)
@@ -119,6 +139,8 @@ async def send_ephemeral_text(
         "receiver_user_id": user.id,
         "text": text,
     }
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
     if reply_markup:
         payload["reply_markup"] = reply_markup
 

@@ -14,8 +14,8 @@ class EphemeralCommandServiceTests(unittest.IsolatedAsyncioTestCase):
         service.allowed_chats = {-100123}
         seen = []
 
-        async def fake_send(session, api, chat_id, user_id, text):
-            seen.append((chat_id, user_id, text))
+        async def fake_send(session, api, chat_id, user_id, text, parse_mode=None):
+            seen.append((chat_id, user_id, text, parse_mode))
 
         service.send_ephemeral = fake_send
         runtime = BotRuntime(
@@ -35,7 +35,8 @@ class EphemeralCommandServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(seen), 1)
         self.assertEqual(seen[0][0], -100123)
         self.assertEqual(seen[0][1], 456)
-        self.assertIn("Menu", seen[0][2])
+        self.assertIn("<b>Menu</b>", seen[0][2])
+        self.assertEqual(seen[0][3], "HTML")
 
 
 if __name__ == "__main__":

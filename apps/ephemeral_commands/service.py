@@ -5,6 +5,7 @@ import os
 import signal
 import time
 from dataclasses import dataclass
+from html import escape
 from pathlib import Path
 
 import aiohttp
@@ -14,7 +15,7 @@ from packages.config import DATA_DIR, LOG_DIR, load_environment, mini_app_url, p
 from packages.logging_config import configure_rotating_logging
 from packages.telegram_ui import (
     BOT_API_BASE,
-    build_command_menu_text,
+    build_command_menu_html,
     set_bot_commands_via_bot_api,
 )
 
@@ -92,12 +93,12 @@ def build_custom_command_list() -> str:
     for nomes in grupos.values():
         nomes.sort()
 
-    text = f"**📋 Comandos Personalizados:** {len(comandos)} no total\n\n"
+    text = f"<b>📋 Comandos Personalizados:</b> {len(comandos)} no total\n\n"
     for tipo in ["video", "foto", "audio", "gif", "texto", "voice"]:
         nomes = grupos.get(tipo)
         if nomes:
-            text += f"{tipo_emoji.get(tipo, '❓')} **{tipo_nome.get(tipo, tipo)}** ({len(nomes)}):\n"
-            text += ", ".join(f"/{nome}" for nome in nomes)
+            text += f"{tipo_emoji.get(tipo, '❓')} <b>{escape(tipo_nome.get(tipo, tipo))}</b> ({len(nomes)}):\n"
+            text += ", ".join(f"<code>/{escape(nome)}</code>" for nome in nomes)
             text += "\n\n"
     return text.strip()
 
@@ -106,9 +107,9 @@ def build_gif_stats() -> str:
     catolicos = _load_json(DATA_DIR / "gifs_catolicos.json", [])
     duvida = _load_json(DATA_DIR / "gifs_interrogacao.json", [])
     return (
-        "**📊 Estatísticas de GIFs**\n\n"
-        f"🙏 Instance: `{len(catolicos)}` GIFs\n"
-        f"❓ Dúvida: `{len(duvida)}` GIFs"
+        "<b>📊 Estatísticas de GIFs</b>\n\n"
+        f"🙏 Instance: <code>{len(catolicos)}</code> GIFs\n"
+        f"❓ Dúvida: <code>{len(duvida)}</code> GIFs"
     )
 
 
@@ -116,13 +117,13 @@ def build_backlog_list() -> str:
     backlog = _load_json(DATA_DIR / "backlog.json", [])
     if not backlog:
         return "📭 Nenhuma sugestão pendente no backlog."
-    lines = ["**📋 Backlog pendente**", ""]
+    lines = ["<b>📋 Backlog pendente</b>", ""]
     for i, item in enumerate(backlog[:50], 1):
         if isinstance(item, dict):
             text = item.get("texto") or item.get("text") or json.dumps(item, ensure_ascii=False)
         else:
             text = str(item)
-        lines.append(f"{i}. {text}")
+        lines.append(f"{i}. {escape(text)}")
     if len(backlog) > 50:
         lines.append(f"\n... e mais {len(backlog) - 50} item(ns).")
     return "\n".join(lines)
@@ -165,17 +166,17 @@ class EphemeralCommandService:
         chat_id: int,
         user_id: int,
         text: str,
+        parse_mode: str | None = None,
     ) -> None:
         for part in split_text(text):
-            await api.post(
-                session,
-                "sendMessage",
-                {
-                    "chat_id": chat_id,
-                    "receiver_user_id": user_id,
-                    "text": part,
-                },
-            )
+            payload = {
+                "chat_id": chat_id,
+                "receiver_user_id": user_id,
+                "text": part,
+            }
+            if parse_mode:
+                payload["parse_mode"] = parse_mode
+            await api.post(session, "sendMessage", payload)
 
     async def handle_command(
         self,
@@ -199,8 +200,8 @@ class EphemeralCommandService:
         if command in {"menu", "help"}:
             extra = ""
             if runtime.name == "comandos" and _load_json(DATA_DIR / "comandos_personalizados.json", {}):
-                extra = "\n\n**Comandos personalizados**\nUse `/list` ou o painel no privado para ver todos."
-            text = build_command_menu_text(runtime.title, runtime.commands, bool(self.mini_app_url)) + extra
+                extra = "\n\n<b>Comandos personalizados</b>\nUse <code>/list</code> ou o painel no privado para ver todos."
+            text = build_command_menu_html(runtime.title, runtime.commands, bool(self.mini_app_url)) + extra
         elif runtime.name == "comandos" and command == "list":
             text = build_custom_command_list()
         elif runtime.name == "comandos" and command == "gifstats":
@@ -208,10 +209,10 @@ class EphemeralCommandService:
         elif runtime.name == "comandos" and command == "backlog":
             text = build_backlog_list() if not args else "Use o painel no privado para gerenciar o backlog."
         elif command == "id":
-            text = f"🆔 ID deste Chat: `{chat_id}`"
+            text = f"🆔 ID deste Chat: <code>{chat_id}</code>"
         elif command == "stats" and runtime.name == "super":
             uptime = int(time.time() - self.start_time)
-            text = f"**📊 Status**\n\n⏱️ Listener efêmero online há `{uptime}s`"
+            text = f"<b>📊 Status</b>\n\n⏱️ Listener efêmero online há <code>{uptime}s</code>"
         elif command == "sync":
             await set_bot_commands_via_bot_api(runtime.token, runtime.commands)
             text = "✅ Menu de comandos efêmeros atualizado."
@@ -220,7 +221,7 @@ class EphemeralCommandService:
         else:
             return
 
-        await self.send_ephemeral(session, api, int(chat_id), int(user_id), text)
+        await self.send_ephemeral(session, api, int(chat_id), int(user_id), text, parse_mode="HTML")
         self.log.info("%s handled ephemeral /%s for user=%s chat=%s", runtime.name, command, user_id, chat_id)
 
     async def poll_bot(self, runtime: BotRuntime) -> None:
