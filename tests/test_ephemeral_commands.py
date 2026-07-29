@@ -16,6 +16,17 @@ async def async_none(*args, **kwargs):
     return None
 
 
+class FakeApi:
+    token = "123:abc"
+
+    def __init__(self):
+        self.posts = []
+
+    async def post(self, session, method, payload):
+        self.posts.append((method, payload))
+        return {"ok": True, "result": True}
+
+
 class EphemeralCommandServiceTests(unittest.IsolatedAsyncioTestCase):
     def test_parse_command_strips_bot_username_and_args(self):
         self.assertEqual(parse_command("/menu@fmcpt_bot agora"), ("menu", ["agora"]))
@@ -82,8 +93,8 @@ class EphemeralCommandServiceTests(unittest.IsolatedAsyncioTestCase):
             service.allowed_chats = {-100123}
             seen = []
 
-            async def fake_send(session, api, chat_id, user_id, text, parse_mode=None, entities=None):
-                seen.append((text, entities))
+            async def fake_send(session, api, chat_id, user_id, text, parse_mode=None, entities=None, reply_markup=None, callback_query_id=None):
+                seen.append((text, entities, reply_markup))
 
             service.send_ephemeral = fake_send
             runtime = BotRuntime("comandos", "123:abc", (), "Menu")
@@ -109,9 +120,13 @@ class EphemeralCommandServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any("Comando criado" in item[0] for item in seen))
         self.assertTrue(any(
             entity["type"] == "bot_command"
-            for text, entities in seen
+            for text, entities, _ in seen
             for entity in (entities or [])
             if "/cancelar" in text or "/saudacao" in text
+        ))
+        self.assertTrue(any(
+            markup and markup["inline_keyboard"][0][0]["callback_data"] == "create:cancel"
+            for _, _, markup in seen
         ))
 
     async def test_ephemeral_create_media_command_stores_file_id(self):
@@ -166,6 +181,53 @@ class EphemeralCommandServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertNotIn("sorry", saved)
         self.assertTrue(any("apagado" in item for item in seen))
+
+    async def test_create_type_text_callback_advances_state_ephemerally(self):
+        service = EphemeralCommandService()
+        runtime = BotRuntime("comandos", "123:abc", (), "Menu")
+        api = FakeApi()
+        service.create_states[("comandos", -100123, 456)] = {
+            "step": "type",
+            "data": {"name": "saudacao"},
+            "started_at": 1,
+        }
+        callback = {
+            "id": "callback-1",
+            "data": "create:type:text",
+            "from": {"id": 456},
+            "message": {"chat": {"id": -100123, "type": "supergroup"}},
+        }
+
+        await service.handle_callback_query(None, runtime, api, callback)
+
+        self.assertEqual(service.create_states[("comandos", -100123, 456)]["step"], "text_content")
+        self.assertIn(("answerCallbackQuery", {"callback_query_id": "callback-1"}), api.posts)
+        send_messages = [payload for method, payload in api.posts if method == "sendMessage"]
+        self.assertEqual(send_messages[-1]["callback_query_id"], "callback-1")
+        self.assertEqual(send_messages[-1]["reply_markup"]["inline_keyboard"][0][0]["callback_data"], "create:cancel")
+
+    async def test_create_cancel_callback_clears_state(self):
+        service = EphemeralCommandService()
+        runtime = BotRuntime("comandos", "123:abc", (), "Menu")
+        api = FakeApi()
+        service.create_states[("comandos", -100123, 456)] = {
+            "step": "name",
+            "data": {},
+            "started_at": 1,
+        }
+        callback = {
+            "id": "callback-2",
+            "data": "create:cancel",
+            "from": {"id": 456},
+            "message": {"chat": {"id": -100123, "type": "supergroup"}},
+        }
+
+        await service.handle_callback_query(None, runtime, api, callback)
+
+        self.assertNotIn(("comandos", -100123, 456), service.create_states)
+        send_messages = [payload for method, payload in api.posts if method == "sendMessage"]
+        self.assertIn("cancelada", send_messages[-1]["text"])
+        self.assertEqual(send_messages[-1]["callback_query_id"], "callback-2")
 
 
 if __name__ == "__main__":

@@ -82,6 +82,26 @@ def bot_command_entities(text: str) -> list[dict]:
     return entities
 
 
+def inline_keyboard(*rows: list[tuple[str, str]]) -> dict:
+    return {
+        "inline_keyboard": [
+            [{"text": text, "callback_data": data} for text, data in row]
+            for row in rows
+        ]
+    }
+
+
+def cancel_keyboard() -> dict:
+    return inline_keyboard([("Cancelar", "create:cancel")])
+
+
+def type_keyboard() -> dict:
+    return inline_keyboard(
+        [("Texto", "create:type:text")],
+        [("Cancelar", "create:cancel")],
+    )
+
+
 def _load_json(path: Path, default):
     try:
         if path.exists():
@@ -286,6 +306,8 @@ class EphemeralCommandService:
         text: str,
         parse_mode: str | None = None,
         entities: list[dict] | None = None,
+        reply_markup: dict | None = None,
+        callback_query_id: str | None = None,
     ) -> None:
         parts = split_text(text)
         for part in parts:
@@ -294,10 +316,14 @@ class EphemeralCommandService:
                 "receiver_user_id": user_id,
                 "text": part,
             }
+            if callback_query_id:
+                payload["callback_query_id"] = callback_query_id
             if entities and len(parts) == 1:
                 payload["entities"] = entities
             elif parse_mode:
                 payload["parse_mode"] = parse_mode
+            if reply_markup and len(parts) == 1:
+                payload["reply_markup"] = reply_markup
             await api.post(session, "sendMessage", payload)
 
     async def send_ephemeral_with_commands(
@@ -307,6 +333,7 @@ class EphemeralCommandService:
         chat_id: int,
         user_id: int,
         text: str,
+        reply_markup: dict | None = None,
     ) -> None:
         await self.send_ephemeral(
             session,
@@ -315,6 +342,7 @@ class EphemeralCommandService:
             user_id,
             text,
             entities=bot_command_entities(text),
+            reply_markup=reply_markup,
         )
 
     def state_key(self, runtime: BotRuntime, chat_id: int, user_id: int) -> tuple[str, int, int]:
@@ -342,8 +370,9 @@ class EphemeralCommandService:
                 "📝 Criação de comando personalizado\n\n"
                 "Digite o nome do comando sem a barra.\n"
                 "Exemplo: frias\n\n"
-                "Use /cancelar para desistir."
+                "Use o botão abaixo para desistir."
             ),
+            reply_markup=cancel_keyboard(),
         )
 
     async def cancel_create_flow(
@@ -448,9 +477,10 @@ class EphemeralCommandService:
                 (
                     f"✅ Comando /{name} definido.{warning}\n\n"
                     "Agora escolha o tipo:\n"
-                    "• envie texto para criar uma resposta textual;\n"
+                    "• toque em Texto para criar uma resposta textual;\n"
                     "• ou envie foto, GIF, vídeo, áudio ou voz com legenda opcional."
                 ),
+                reply_markup=type_keyboard(),
             )
             return True
 
@@ -465,6 +495,7 @@ class EphemeralCommandService:
                     user_id,
                     "✅ Tipo texto definido. Agora envie o conteúdo do comando.",
                     parse_mode="HTML",
+                    reply_markup=cancel_keyboard(),
                 )
                 return True
 
@@ -479,6 +510,7 @@ class EphemeralCommandService:
                     user_id,
                     "✅ Mídia recebida. Agora envie uma descrição curta para aparecer no catálogo.",
                     parse_mode="HTML",
+                    reply_markup=cancel_keyboard(),
                 )
                 return True
 
@@ -487,7 +519,8 @@ class EphemeralCommandService:
                 api,
                 chat_id,
                 user_id,
-                "Envie texto ou uma mídia válida: foto, GIF, vídeo, áudio ou voz. Use /cancelar para desistir.",
+                "Envie uma mídia válida: foto, GIF, vídeo, áudio ou voz. Para texto, toque no botão Texto.",
+                reply_markup=type_keyboard(),
             )
             return True
 
@@ -504,6 +537,7 @@ class EphemeralCommandService:
                 user_id,
                 "✅ Conteúdo definido. Agora envie uma descrição curta para aparecer no catálogo.",
                 parse_mode="HTML",
+                reply_markup=cancel_keyboard(),
             )
             return True
 
@@ -543,6 +577,85 @@ class EphemeralCommandService:
 
         self.create_states.pop(key, None)
         return False
+
+    async def handle_callback_query(
+        self,
+        session: aiohttp.ClientSession,
+        runtime: BotRuntime,
+        api: BotApi,
+        callback_query: dict,
+    ) -> None:
+        if runtime.name != "comandos":
+            return
+
+        callback_id = callback_query.get("id")
+        data = str(callback_query.get("data") or "")
+        user = callback_query.get("from") or {}
+        message = callback_query.get("message") or {}
+        chat = message.get("chat") or {}
+        chat_id = chat.get("id")
+        user_id = user.get("id")
+        chat_type = chat.get("type")
+        if chat_type not in {"group", "supergroup"} or not chat_id or not user_id or not callback_id:
+            return
+        chat_id = int(chat_id)
+        user_id = int(user_id)
+        if not self.is_allowed_chat(chat_id):
+            return
+        if not data.startswith("create:"):
+            return
+
+        await api.post(session, "answerCallbackQuery", {"callback_query_id": callback_id})
+        key = self.state_key(runtime, chat_id, user_id)
+
+        if data == "create:cancel":
+            existed = self.create_states.pop(key, None) is not None
+            text = "❌ Criação de comando cancelada." if existed else "Não há criação em andamento."
+            await self.send_ephemeral(
+                session,
+                api,
+                chat_id,
+                user_id,
+                text,
+                callback_query_id=callback_id,
+            )
+            self.log.info("%s handled ephemeral create cancel callback user=%s chat=%s", runtime.name, user_id, chat_id)
+            return
+
+        if data == "create:type:text":
+            state = self.create_states.get(key)
+            if not state:
+                await self.send_ephemeral(
+                    session,
+                    api,
+                    chat_id,
+                    user_id,
+                    "Não há criação em andamento.",
+                    callback_query_id=callback_id,
+                )
+                return
+            if state.get("step") != "type":
+                await self.send_ephemeral(
+                    session,
+                    api,
+                    chat_id,
+                    user_id,
+                    "Este botão não vale mais para a etapa atual.",
+                    callback_query_id=callback_id,
+                )
+                return
+            state["data"]["type"] = "texto"
+            state["step"] = "text_content"
+            await self.send_ephemeral(
+                session,
+                api,
+                chat_id,
+                user_id,
+                "✅ Tipo texto definido. Agora envie o conteúdo do comando.",
+                reply_markup=cancel_keyboard(),
+                callback_query_id=callback_id,
+            )
+            self.log.info("%s handled ephemeral create text callback user=%s chat=%s", runtime.name, user_id, chat_id)
 
     async def handle_command(
         self,
@@ -633,13 +746,16 @@ class EphemeralCommandService:
                         {
                             "offset": offset,
                             "timeout": 50,
-                            "allowed_updates": ["message"],
+                            "allowed_updates": ["message", "callback_query"],
                         },
                     )
                     for update in data.get("result", []):
                         offset = max(offset, update["update_id"] + 1)
-                        message = update.get("message") or {}
-                        await self.handle_command(session, runtime, api, message)
+                        if callback_query := update.get("callback_query"):
+                            await self.handle_callback_query(session, runtime, api, callback_query)
+                        else:
+                            message = update.get("message") or {}
+                            await self.handle_command(session, runtime, api, message)
                 except asyncio.CancelledError:
                     raise
                 except Exception:
