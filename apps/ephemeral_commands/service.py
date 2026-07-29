@@ -25,9 +25,23 @@ from packages.telegram_ui import (
 
 CUSTOM_COMMANDS_FILE = DATA_DIR / "comandos_personalizados.json"
 CUSTOM_CATEGORIES_FILE = DATA_DIR / "categorias_comandos_personalizados.json"
+BACKLOG_FILE = DATA_DIR / "backlog.json"
+BACKLOG_TRASH_FILE = DATA_DIR / "sugestoes_de_merda.json"
 COMMAND_NAME_RE = re.compile(r"^[a-z0-9_]{1,32}$")
 INTERNAL_COMANDOS_COMMANDS = set(command_names(COMANDOS_BOT_COMMANDS))
 DEFAULT_CUSTOM_CATEGORY = "Comandos personalizados"
+CUSTOM_COMMAND_PAGE_SIZE = 35
+BACKLOG_PAGE_SIZE = 10
+CUSTOM_COMMAND_TYPES = ("all", "texto", "foto", "gif", "video", "audio", "voice")
+CUSTOM_COMMAND_TYPE_LABELS = {
+    "all": "Todos",
+    "texto": "Texto",
+    "foto": "Imagem",
+    "gif": "GIF",
+    "video": "Video",
+    "audio": "Audio",
+    "voice": "Voz",
+}
 
 
 @dataclass(frozen=True)
@@ -102,6 +116,19 @@ def type_keyboard() -> dict:
     )
 
 
+def clamp_page(page: int, total_items: int, page_size: int) -> int:
+    if total_items <= 0:
+        return 0
+    max_page = (total_items - 1) // page_size
+    return max(0, min(page, max_page))
+
+
+def page_items(items: list, page: int, page_size: int) -> tuple[list, int, int]:
+    safe_page = clamp_page(page, len(items), page_size)
+    start = safe_page * page_size
+    return items[start:start + page_size], safe_page, max(1, ((len(items) - 1) // page_size) + 1) if items else 1
+
+
 def _load_json(path: Path, default):
     try:
         if path.exists():
@@ -151,6 +178,72 @@ def ensure_custom_category(category: str = DEFAULT_CUSTOM_CATEGORY) -> None:
     if category.lower() not in {c.lower() for c in categories}:
         categories.append(category)
         save_custom_categories(categories)
+
+
+def load_backlog() -> list:
+    data = _load_json(BACKLOG_FILE, [])
+    return data if isinstance(data, list) else []
+
+
+def save_backlog(backlog: list) -> None:
+    _save_json(BACKLOG_FILE, backlog)
+
+
+def load_backlog_trash() -> list:
+    data = _load_json(BACKLOG_TRASH_FILE, [])
+    return data if isinstance(data, list) else []
+
+
+def save_backlog_trash(items: list) -> None:
+    _save_json(BACKLOG_TRASH_FILE, items)
+
+
+def backlog_text(item) -> str:
+    if isinstance(item, dict):
+        return str(item.get("sugestao") or item.get("texto") or item.get("text") or json.dumps(item, ensure_ascii=False))
+    return str(item)
+
+
+def backlog_item_id(item, index: int) -> int:
+    if isinstance(item, dict) and isinstance(item.get("id"), int):
+        return item["id"]
+    return index + 1
+
+
+def next_backlog_id(backlog: list) -> int:
+    return max((item.get("id", 0) for item in backlog if isinstance(item, dict)), default=0) + 1
+
+
+def build_backlog_item(text: str, user: dict) -> dict:
+    backlog = load_backlog()
+    return {
+        "id": next_backlog_id(backlog),
+        "sugestao": text,
+        "autor": user.get("first_name") or user.get("username") or "Anonimo",
+        "autor_id": user.get("id") or 0,
+        "data": datetime.now().strftime("%d/%m/%Y %H:%M"),
+        "origem": "ephemeral_group",
+    }
+
+
+def match_backlog_items(backlog: list, query: str) -> tuple[list, list[str]]:
+    tokens = [item.strip().lower() for item in query.split(",") if item.strip()]
+    matched: list = []
+    failures: list[str] = []
+    for token in tokens:
+        found = []
+        if token.isdigit():
+            wanted = int(token)
+            found = [item for index, item in enumerate(backlog) if backlog_item_id(item, index) == wanted]
+        else:
+            found = [item for item in backlog if token in backlog_text(item).lower()]
+        if not found:
+            failures.append(f"'{token}' não encontrado")
+        elif len(found) > 1:
+            failures.append(f"'{token}' encontrou múltiplos itens")
+        elif found[0] not in matched:
+            matched.append(found[0])
+    return matched, failures
 
 
 def find_custom_command_key(commands: dict, name: str) -> str | None:
@@ -203,41 +296,72 @@ def extract_media_command_data(message: dict) -> tuple[str, str, str] | None:
     return None
 
 
-def build_custom_command_list() -> str:
+def custom_command_type(info: dict) -> str:
+    command_type = str(info.get("tipo") or "texto").lower()
+    if command_type in {"imagem", "image"}:
+        return "foto"
+    return command_type if command_type in CUSTOM_COMMAND_TYPES else "texto"
+
+
+def build_custom_command_list_view(command_type: str = "all", page: int = 0) -> tuple[str, dict | None]:
     comandos = load_custom_commands()
     if not comandos:
-        return "📭 Nenhum comando personalizado criado."
+        return "📭 Nenhum comando personalizado criado.", inline_keyboard([("Criar comando", "create:start")])
 
-    tipo_emoji = {
-        "texto": "📝",
-        "foto": "🖼️",
-        "video": "🎬",
-        "audio": "🎵",
-        "voice": "🎤",
-        "gif": "🎞️",
-    }
-    tipo_nome = {
-        "texto": "Texto",
-        "foto": "Foto",
-        "video": "Vídeo",
-        "audio": "Áudio",
-        "voice": "Voz",
-        "gif": "GIF",
-    }
-    grupos: dict[str, list[str]] = {}
-    for cmd, info in comandos.items():
-        grupos.setdefault(info.get("tipo", "texto"), []).append(cmd)
-    for nomes in grupos.values():
-        nomes.sort()
+    selected_type = command_type if command_type in CUSTOM_COMMAND_TYPES else "all"
+    all_rows = sorted(
+        (name, custom_command_type(info if isinstance(info, dict) else {}))
+        for name, info in comandos.items()
+    )
+    rows = all_rows
+    if selected_type != "all":
+        rows = [row for row in rows if row[1] == selected_type]
 
-    text = f"<b>📋 Comandos Personalizados:</b> {len(comandos)} no total\n\n"
-    for tipo in ["video", "foto", "audio", "gif", "texto", "voice"]:
-        nomes = grupos.get(tipo)
-        if nomes:
-            text += f"{tipo_emoji.get(tipo, '❓')} <b>{escape(tipo_nome.get(tipo, tipo))}</b> ({len(nomes)}):\n"
-            text += " ".join(f"/{escape(nome)}" for nome in nomes)
-            text += "\n\n"
-    return text.strip()
+    visible, safe_page, total_pages = page_items(rows, page, CUSTOM_COMMAND_PAGE_SIZE)
+    counts = {
+        item_type: sum(1 for _, row_type in all_rows if row_type == item_type)
+        for item_type in CUSTOM_COMMAND_TYPES
+        if item_type != "all"
+    }
+    title = CUSTOM_COMMAND_TYPE_LABELS[selected_type]
+    lines = [
+        f"<b>📋 Comandos personalizados</b>",
+        f"Filtro: <b>{escape(title)}</b> • {len(rows)} de {len(comandos)} comando(s)",
+        f"Página {safe_page + 1}/{total_pages}",
+        "",
+    ]
+    if visible:
+        lines.append(" ".join(f"/{escape(name)}" for name, _ in visible))
+    else:
+        lines.append("Nenhum comando neste filtro.")
+
+    filter_rows = [
+        [
+            ("Todos", "list:all:0"),
+            (f"Texto ({counts.get('texto', 0)})", "list:texto:0"),
+        ],
+        [
+            (f"Imagem ({counts.get('foto', 0)})", "list:foto:0"),
+            (f"GIF ({counts.get('gif', 0)})", "list:gif:0"),
+        ],
+        [
+            (f"Vídeo ({counts.get('video', 0)})", "list:video:0"),
+            (f"Áudio ({counts.get('audio', 0)})", "list:audio:0"),
+            (f"Voz ({counts.get('voice', 0)})", "list:voice:0"),
+        ],
+    ]
+    nav_row = []
+    if safe_page > 0:
+        nav_row.append(("Anterior", f"list:{selected_type}:{safe_page - 1}"))
+    if safe_page < total_pages - 1:
+        nav_row.append(("Próxima", f"list:{selected_type}:{safe_page + 1}"))
+    rows_markup = filter_rows + ([nav_row] if nav_row else []) + [[("Criar comando", "create:start")]]
+    return "\n".join(lines), inline_keyboard(*rows_markup)
+
+
+def build_custom_command_list() -> str:
+    text, _ = build_custom_command_list_view()
+    return text
 
 
 def build_gif_stats() -> str:
@@ -250,20 +374,43 @@ def build_gif_stats() -> str:
     )
 
 
-def build_backlog_list() -> str:
-    backlog = _load_json(DATA_DIR / "backlog.json", [])
+def build_backlog_view(page: int = 0, trash: bool = False) -> tuple[str, dict | None]:
+    backlog = load_backlog_trash() if trash else load_backlog()
+    title = "🗑️ Backlog descartado" if trash else "📋 Backlog pendente"
     if not backlog:
-        return "📭 Nenhuma sugestão pendente no backlog."
-    lines = ["<b>📋 Backlog pendente</b>", ""]
-    for i, item in enumerate(backlog[:50], 1):
-        if isinstance(item, dict):
-            text = item.get("texto") or item.get("text") or json.dumps(item, ensure_ascii=False)
-        else:
-            text = str(item)
-        lines.append(f"{i}. {escape(text)}")
-    if len(backlog) > 50:
-        lines.append(f"\n... e mais {len(backlog) - 50} item(ns).")
-    return "\n".join(lines)
+        keyboard = inline_keyboard([("Adicionar", "backlog:add")], [("Pendentes", "backlog:view:0")]) if trash else inline_keyboard([("Adicionar", "backlog:add")])
+        return f"📭 Nenhuma sugestão {'descartada' if trash else 'pendente'} no backlog.", keyboard
+
+    visible, safe_page, total_pages = page_items(list(enumerate(backlog)), page, BACKLOG_PAGE_SIZE)
+    lines = [f"<b>{escape(title)}</b>", f"Página {safe_page + 1}/{total_pages} • {len(backlog)} item(ns)", ""]
+    for index, item in visible:
+        item_id = backlog_item_id(item, index)
+        lines.append(f"{item_id}. {escape(backlog_text(item))}")
+
+    nav_row = []
+    prefix = "backlog:trash" if trash else "backlog:view"
+    if safe_page > 0:
+        nav_row.append(("Anterior", f"{prefix}:{safe_page - 1}"))
+    if safe_page < total_pages - 1:
+        nav_row.append(("Próxima", f"{prefix}:{safe_page + 1}"))
+
+    if trash:
+        rows = ([nav_row] if nav_row else []) + [[("Pendentes", "backlog:view:0")]]
+    else:
+        rows = (
+            ([nav_row] if nav_row else [])
+            + [
+                [("Adicionar", "backlog:add"), ("Concluir", "backlog:done")],
+                [("Mover p/ lixeira", "backlog:trashmove"), ("Ver lixeira", "backlog:trash:0")],
+                [("Limpar tudo", "backlog:clear")],
+            ]
+        )
+    return "\n".join(lines), inline_keyboard(*rows)
+
+
+def build_backlog_list() -> str:
+    text, _ = build_backlog_view()
+    return text
 
 
 class BotApi:
@@ -293,6 +440,8 @@ class EphemeralCommandService:
             BotRuntime("comandos", os.getenv("BOT_TOKEN_COMANDOS", ""), COMANDOS_BOT_COMMANDS, "🤖 Menu de comandos"),
         ]
         self.create_states: dict[tuple[str, int, int], dict] = {}
+        self.backlog_states: dict[tuple[str, int, int], dict] = {}
+        self.pending_deletes: dict[tuple[str, int, int], str] = {}
 
     def is_allowed_chat(self, chat_id: int) -> bool:
         return not self.allowed_chats or chat_id in self.allowed_chats
@@ -347,6 +496,11 @@ class EphemeralCommandService:
 
     def state_key(self, runtime: BotRuntime, chat_id: int, user_id: int) -> tuple[str, int, int]:
         return runtime.name, chat_id, user_id
+
+    def clear_user_states(self, runtime: BotRuntime, chat_id: int, user_id: int) -> None:
+        key = self.state_key(runtime, chat_id, user_id)
+        self.create_states.pop(key, None)
+        self.backlog_states.pop(key, None)
 
     async def start_create_flow(
         self,
@@ -422,16 +576,17 @@ class EphemeralCommandService:
                 f"❌ Comando /{command_name or args[0]} não encontrado.",
             )
             return
-        del commands[key]
-        save_custom_commands(commands)
-        await set_bot_commands_via_bot_api(api.token, COMANDOS_BOT_COMMANDS)
-        await set_bot_commands_menu_button_via_bot_api(api.token)
-        await self.send_ephemeral_with_commands(
+        self.pending_deletes[("comandos", chat_id, user_id)] = key
+        await self.send_ephemeral(
             session,
             api,
             chat_id,
             user_id,
-            f"✅ Comando /{key} apagado.",
+            f"Confirma apagar /{escape(key)}?",
+            reply_markup=inline_keyboard(
+                [("Confirmar exclusão", f"delete:confirm:{key}")],
+                [("Cancelar", "delete:cancel")],
+            ),
         )
 
     async def handle_create_state(
@@ -578,6 +733,86 @@ class EphemeralCommandService:
         self.create_states.pop(key, None)
         return False
 
+    async def handle_backlog_state(
+        self,
+        session: aiohttp.ClientSession,
+        runtime: BotRuntime,
+        api: BotApi,
+        message: dict,
+    ) -> bool:
+        chat_id = int((message.get("chat") or {}).get("id"))
+        user = message.get("from") or {}
+        user_id = int(user.get("id"))
+        key = self.state_key(runtime, chat_id, user_id)
+        state = self.backlog_states.get(key)
+        if not state:
+            return False
+
+        text = message_text(message)
+        command, _ = parse_command(text)
+        if command == "cancelar":
+            self.backlog_states.pop(key, None)
+            await self.send_ephemeral(session, api, chat_id, user_id, "❌ Ação de backlog cancelada.")
+            return True
+
+        action = state.get("action")
+        if action == "add":
+            if not text:
+                await self.send_ephemeral(session, api, chat_id, user_id, "Envie uma sugestão com texto.")
+                return True
+            backlog = load_backlog()
+            item = build_backlog_item(text, user)
+            backlog.append(item)
+            save_backlog(backlog)
+            self.backlog_states.pop(key, None)
+            view_text, markup = build_backlog_view()
+            await self.send_ephemeral(
+                session,
+                api,
+                chat_id,
+                user_id,
+                f"✅ Sugestão #{item['id']} adicionada.\n\n{view_text}",
+                parse_mode="HTML",
+                reply_markup=markup,
+            )
+            return True
+
+        if action in {"done", "trashmove"}:
+            backlog = load_backlog()
+            matched, failures = match_backlog_items(backlog, text)
+            if not matched:
+                await self.send_ephemeral(
+                    session,
+                    api,
+                    chat_id,
+                    user_id,
+                    "Nenhum item encontrado. Envie IDs ou trechos separados por vírgula, ou use /cancelar.",
+                )
+                return True
+            remaining = [item for item in backlog if item not in matched]
+            save_backlog(remaining)
+            if action == "trashmove":
+                trash = load_backlog_trash()
+                trash.extend(matched)
+                save_backlog_trash(trash)
+            self.backlog_states.pop(key, None)
+            verb = "concluído(s)" if action == "done" else "movido(s) para a lixeira"
+            suffix = "\nFalhas: " + "; ".join(failures) if failures else ""
+            view_text, markup = build_backlog_view()
+            await self.send_ephemeral(
+                session,
+                api,
+                chat_id,
+                user_id,
+                f"✅ {len(matched)} item(ns) {verb}.{suffix}\n\n{view_text}",
+                parse_mode="HTML",
+                reply_markup=markup,
+            )
+            return True
+
+        self.backlog_states.pop(key, None)
+        return False
+
     async def handle_callback_query(
         self,
         session: aiohttp.ClientSession,
@@ -602,11 +837,15 @@ class EphemeralCommandService:
         user_id = int(user_id)
         if not self.is_allowed_chat(chat_id):
             return
-        if not data.startswith("create:"):
+        if not data.startswith(("create:", "delete:", "list:", "backlog:")):
             return
 
         await api.post(session, "answerCallbackQuery", {"callback_query_id": callback_id})
         key = self.state_key(runtime, chat_id, user_id)
+
+        if data == "create:start":
+            await self.start_create_flow(session, runtime, api, chat_id, user_id)
+            return
 
         if data == "create:cancel":
             existed = self.create_states.pop(key, None) is not None
@@ -656,6 +895,100 @@ class EphemeralCommandService:
                 callback_query_id=callback_id,
             )
             self.log.info("%s handled ephemeral create text callback user=%s chat=%s", runtime.name, user_id, chat_id)
+            return
+
+        if data == "delete:cancel":
+            self.pending_deletes.pop(key, None)
+            await self.send_ephemeral(session, api, chat_id, user_id, "Exclusão cancelada.", callback_query_id=callback_id)
+            return
+
+        if data.startswith("delete:confirm:"):
+            command_name = data.split(":", 2)[2]
+            pending = self.pending_deletes.get(key)
+            if pending != command_name:
+                await self.send_ephemeral(session, api, chat_id, user_id, "Esta confirmação expirou.", callback_query_id=callback_id)
+                return
+            commands = load_custom_commands()
+            real_key = find_custom_command_key(commands, command_name)
+            if not real_key:
+                self.pending_deletes.pop(key, None)
+                await self.send_ephemeral(session, api, chat_id, user_id, f"Comando /{command_name} não encontrado.", callback_query_id=callback_id)
+                return
+            del commands[real_key]
+            save_custom_commands(commands)
+            self.pending_deletes.pop(key, None)
+            await set_bot_commands_via_bot_api(api.token, COMANDOS_BOT_COMMANDS)
+            await set_bot_commands_menu_button_via_bot_api(api.token)
+            await self.send_ephemeral_with_commands(session, api, chat_id, user_id, f"✅ Comando /{real_key} apagado.")
+            return
+
+        if data.startswith("list:"):
+            _, command_type, page_raw = data.split(":", 2)
+            text, markup = build_custom_command_list_view(command_type, int(page_raw) if page_raw.isdigit() else 0)
+            await self.send_ephemeral(session, api, chat_id, user_id, text, parse_mode="HTML", reply_markup=markup, callback_query_id=callback_id)
+            return
+
+        if data.startswith("backlog:view:"):
+            page_raw = data.rsplit(":", 1)[1]
+            text, markup = build_backlog_view(int(page_raw) if page_raw.isdigit() else 0)
+            await self.send_ephemeral(session, api, chat_id, user_id, text, parse_mode="HTML", reply_markup=markup, callback_query_id=callback_id)
+            return
+
+        if data.startswith("backlog:trash:"):
+            page_raw = data.rsplit(":", 1)[1]
+            text, markup = build_backlog_view(int(page_raw) if page_raw.isdigit() else 0, trash=True)
+            await self.send_ephemeral(session, api, chat_id, user_id, text, parse_mode="HTML", reply_markup=markup, callback_query_id=callback_id)
+            return
+
+        if data == "backlog:add":
+            self.backlog_states[key] = {"action": "add", "started_at": time.time()}
+            await self.send_ephemeral(session, api, chat_id, user_id, "Envie o texto da nova sugestão. Use /cancelar para desistir.", callback_query_id=callback_id)
+            return
+
+        if data in {"backlog:done", "backlog:trashmove"}:
+            action = "done" if data == "backlog:done" else "trashmove"
+            self.backlog_states[key] = {"action": action, "started_at": time.time()}
+            label = "concluir" if action == "done" else "mover para a lixeira"
+            await self.send_ephemeral(
+                session,
+                api,
+                chat_id,
+                user_id,
+                f"Envie os IDs ou trechos dos itens para {label}, separados por vírgula. Use /cancelar para desistir.",
+                callback_query_id=callback_id,
+            )
+            return
+
+        if data == "backlog:clear":
+            await self.send_ephemeral(
+                session,
+                api,
+                chat_id,
+                user_id,
+                "Confirma mover todo o backlog pendente para a lixeira?",
+                reply_markup=inline_keyboard([("Confirmar limpeza", "backlog:clear:confirm")], [("Cancelar", "backlog:view:0")]),
+                callback_query_id=callback_id,
+            )
+            return
+
+        if data == "backlog:clear:confirm":
+            backlog = load_backlog()
+            if backlog:
+                trash = load_backlog_trash()
+                trash.extend(backlog)
+                save_backlog_trash(trash)
+                save_backlog([])
+            text, markup = build_backlog_view()
+            await self.send_ephemeral(
+                session,
+                api,
+                chat_id,
+                user_id,
+                f"✅ {len(backlog)} item(ns) movido(s) para a lixeira.\n\n{text}",
+                parse_mode="HTML",
+                reply_markup=markup,
+                callback_query_id=callback_id,
+            )
 
     async def handle_command(
         self,
@@ -682,6 +1015,10 @@ class EphemeralCommandService:
             if await self.handle_create_state(session, runtime, api, message):
                 return
 
+        if runtime.name == "comandos" and self.state_key(runtime, chat_id, user_id) in self.backlog_states:
+            if await self.handle_backlog_state(session, runtime, api, message):
+                return
+
         if not command:
             return
 
@@ -691,11 +1028,33 @@ class EphemeralCommandService:
                 extra = "\n\n<b>Comandos personalizados</b>\nUse <code>/list</code> ou o painel no privado para ver todos."
             text = build_command_menu_html(runtime.title, runtime.commands, bool(self.mini_app_url)) + extra
         elif runtime.name == "comandos" and command == "list":
-            text = build_custom_command_list()
+            text, markup = build_custom_command_list_view()
+            await self.send_ephemeral(session, api, chat_id, user_id, text, parse_mode="HTML", reply_markup=markup)
+            self.log.info("%s handled ephemeral /list for user=%s chat=%s", runtime.name, user_id, chat_id)
+            return
         elif runtime.name == "comandos" and command == "gifstats":
             text = build_gif_stats()
         elif runtime.name == "comandos" and command == "backlog":
-            text = build_backlog_list() if not args else "Use o painel no privado para gerenciar o backlog."
+            if args:
+                backlog = load_backlog()
+                item = build_backlog_item(" ".join(args), user)
+                backlog.append(item)
+                save_backlog(backlog)
+                text, markup = build_backlog_view()
+                await self.send_ephemeral(
+                    session,
+                    api,
+                    chat_id,
+                    user_id,
+                    f"✅ Sugestão #{item['id']} adicionada.\n\n{text}",
+                    parse_mode="HTML",
+                    reply_markup=markup,
+                )
+            else:
+                text, markup = build_backlog_view()
+                await self.send_ephemeral(session, api, chat_id, user_id, text, parse_mode="HTML", reply_markup=markup)
+            self.log.info("%s handled ephemeral /backlog for user=%s chat=%s", runtime.name, user_id, chat_id)
+            return
         elif command == "id":
             text = f"🆔 ID deste Chat: <code>{chat_id}</code>"
         elif command == "stats" and runtime.name == "super":

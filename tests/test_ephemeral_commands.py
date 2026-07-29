@@ -42,7 +42,7 @@ class EphemeralCommandServiceTests(unittest.IsolatedAsyncioTestCase):
             with patch.object(eph, "CUSTOM_COMMANDS_FILE", data_dir / "comandos_personalizados.json"):
                 text = eph.build_custom_command_list()
 
-        self.assertIn("<b>📋 Comandos Personalizados:</b>", text)
+        self.assertIn("<b>📋 Comandos personalizados</b>", text)
         self.assertIn("/sorry", text)
         self.assertIn("/teste", text)
         self.assertNotIn("<code>/sorry</code>", text)
@@ -169,7 +169,7 @@ class EphemeralCommandServiceTests(unittest.IsolatedAsyncioTestCase):
             seen = []
 
             async def fake_send(*args, **kwargs):
-                seen.append(args[4])
+                seen.append((args[4], kwargs.get("reply_markup")))
 
             service.send_ephemeral = fake_send
 
@@ -179,8 +179,79 @@ class EphemeralCommandServiceTests(unittest.IsolatedAsyncioTestCase):
                 await service.delete_custom_command(None, eph.BotApi("123:abc"), -100123, 456, ["sorry"])
                 saved = eph.load_custom_commands()
 
+        self.assertIn("sorry", saved)
+        self.assertEqual(service.pending_deletes[("comandos", -100123, 456)], "sorry")
+        self.assertTrue(any(
+            markup and markup["inline_keyboard"][0][0]["callback_data"] == "delete:confirm:sorry"
+            for _, markup in seen
+        ))
+
+    async def test_delete_confirm_callback_deletes_custom_command(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            commands_file = Path(tmp) / "comandos_personalizados.json"
+            commands_file.write_text('{"sorry": {"tipo": "texto"}}', encoding="utf-8")
+            service = EphemeralCommandService()
+            runtime = BotRuntime("comandos", "123:abc", (), "Menu")
+            api = FakeApi()
+            service.pending_deletes[("comandos", -100123, 456)] = "sorry"
+            callback = {
+                "id": "callback-delete",
+                "data": "delete:confirm:sorry",
+                "from": {"id": 456},
+                "message": {"chat": {"id": -100123, "type": "supergroup"}},
+            }
+
+            with patch.object(eph, "CUSTOM_COMMANDS_FILE", commands_file), \
+                 patch.object(eph, "set_bot_commands_via_bot_api", new=async_true), \
+                 patch.object(eph, "set_bot_commands_menu_button_via_bot_api", new=async_true):
+                await service.handle_callback_query(None, runtime, api, callback)
+                saved = eph.load_custom_commands()
+
         self.assertNotIn("sorry", saved)
-        self.assertTrue(any("apagado" in item for item in seen))
+        self.assertNotIn(("comandos", -100123, 456), service.pending_deletes)
+
+    def test_custom_command_list_view_filters_and_paginates(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            commands_file = Path(tmp) / "comandos_personalizados.json"
+            commands = {
+                **{f"txt{i}": {"tipo": "texto"} for i in range(40)},
+                "gifzao": {"tipo": "gif"},
+            }
+            commands_file.write_text(eph.json.dumps(commands), encoding="utf-8")
+
+            with patch.object(eph, "CUSTOM_COMMANDS_FILE", commands_file):
+                text, markup = eph.build_custom_command_list_view("texto", 1)
+
+        self.assertIn("Página 2/2", text)
+        self.assertIn("/txt", text)
+        callback_data = [
+            button["callback_data"]
+            for row in markup["inline_keyboard"]
+            for button in row
+        ]
+        self.assertIn("list:texto:0", callback_data)
+        self.assertIn("list:texto:0", callback_data)
+
+    async def test_list_callback_sends_filtered_page(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            commands_file = Path(tmp) / "comandos_personalizados.json"
+            commands_file.write_text('{"foto1": {"tipo": "foto"}}', encoding="utf-8")
+            service = EphemeralCommandService()
+            runtime = BotRuntime("comandos", "123:abc", (), "Menu")
+            api = FakeApi()
+            callback = {
+                "id": "callback-list",
+                "data": "list:foto:0",
+                "from": {"id": 456},
+                "message": {"chat": {"id": -100123, "type": "supergroup"}},
+            }
+
+            with patch.object(eph, "CUSTOM_COMMANDS_FILE", commands_file):
+                await service.handle_callback_query(None, runtime, api, callback)
+
+        send_messages = [payload for method, payload in api.posts if method == "sendMessage"]
+        self.assertIn("/foto1", send_messages[-1]["text"])
+        self.assertEqual(send_messages[-1]["callback_query_id"], "callback-list")
 
     async def test_create_type_text_callback_advances_state_ephemerally(self):
         service = EphemeralCommandService()
@@ -228,6 +299,52 @@ class EphemeralCommandServiceTests(unittest.IsolatedAsyncioTestCase):
         send_messages = [payload for method, payload in api.posts if method == "sendMessage"]
         self.assertIn("cancelada", send_messages[-1]["text"])
         self.assertEqual(send_messages[-1]["callback_query_id"], "callback-2")
+
+    async def test_backlog_add_callback_and_state_persist_item(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            backlog_file = Path(tmp) / "backlog.json"
+            service = EphemeralCommandService()
+            runtime = BotRuntime("comandos", "123:abc", (), "Menu")
+            api = FakeApi()
+            callback = {
+                "id": "callback-backlog-add",
+                "data": "backlog:add",
+                "from": {"id": 456},
+                "message": {"chat": {"id": -100123, "type": "supergroup"}},
+            }
+            message = {
+                "chat": {"id": -100123, "type": "supergroup"},
+                "from": {"id": 456, "first_name": "Ana"},
+                "text": "Nova sugestão",
+            }
+
+            with patch.object(eph, "BACKLOG_FILE", backlog_file):
+                await service.handle_callback_query(None, runtime, api, callback)
+                await service.handle_backlog_state(None, runtime, api, message)
+                backlog = eph.load_backlog()
+
+        self.assertEqual(backlog[0]["sugestao"], "Nova sugestão")
+        self.assertNotIn(("comandos", -100123, 456), service.backlog_states)
+
+    async def test_backlog_done_state_removes_matched_item(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            backlog_file = Path(tmp) / "backlog.json"
+            backlog_file.write_text('[{"id": 7, "sugestao": "Resolver bug"}]', encoding="utf-8")
+            service = EphemeralCommandService()
+            runtime = BotRuntime("comandos", "123:abc", (), "Menu")
+            api = FakeApi()
+            service.backlog_states[("comandos", -100123, 456)] = {"action": "done"}
+            message = {
+                "chat": {"id": -100123, "type": "supergroup"},
+                "from": {"id": 456},
+                "text": "7",
+            }
+
+            with patch.object(eph, "BACKLOG_FILE", backlog_file):
+                await service.handle_backlog_state(None, runtime, api, message)
+                backlog = eph.load_backlog()
+
+        self.assertEqual(backlog, [])
 
 
 if __name__ == "__main__":
