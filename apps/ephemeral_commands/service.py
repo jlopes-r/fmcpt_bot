@@ -509,6 +509,7 @@ class EphemeralCommandService:
         if ephemeral_message_id:
             payload = {
                 "chat_id": chat_id,
+                "receiver_user_id": user_id,
                 "ephemeral_message_id": ephemeral_message_id,
                 "text": text,
             }

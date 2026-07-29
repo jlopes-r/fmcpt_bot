@@ -252,6 +252,7 @@ class EphemeralCommandServiceTests(unittest.IsolatedAsyncioTestCase):
         edits = [payload for method, payload in api.posts if method == "editEphemeralMessageText"]
         self.assertIn("/foto1", edits[-1]["text"])
         self.assertEqual(edits[-1]["ephemeral_message_id"], 99)
+        self.assertEqual(edits[-1]["receiver_user_id"], 456)
 
     async def test_list_callback_without_ephemeral_message_id_sends_fallback_message(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -367,6 +368,7 @@ class EphemeralCommandServiceTests(unittest.IsolatedAsyncioTestCase):
         edits = [payload for method, payload in api.posts if method == "editEphemeralMessageText"]
         self.assertIn("Resolver bug", edits[-1]["text"])
         self.assertEqual(edits[-1]["ephemeral_message_id"], 77)
+        self.assertEqual(edits[-1]["receiver_user_id"], 456)
 
     async def test_backlog_done_state_removes_matched_item(self):
         with tempfile.TemporaryDirectory() as tmp:
