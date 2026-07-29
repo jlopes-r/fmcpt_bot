@@ -494,6 +494,45 @@ class EphemeralCommandService:
             reply_markup=reply_markup,
         )
 
+    async def edit_or_send_ephemeral(
+        self,
+        session: aiohttp.ClientSession,
+        api: BotApi,
+        chat_id: int,
+        user_id: int,
+        text: str,
+        callback_query_id: str,
+        ephemeral_message_id: int | None,
+        parse_mode: str | None = None,
+        reply_markup: dict | None = None,
+    ) -> None:
+        if ephemeral_message_id:
+            payload = {
+                "chat_id": chat_id,
+                "ephemeral_message_id": ephemeral_message_id,
+                "text": text,
+            }
+            if parse_mode:
+                payload["parse_mode"] = parse_mode
+            if reply_markup:
+                payload["reply_markup"] = reply_markup
+            try:
+                await api.post(session, "editEphemeralMessageText", payload)
+                return
+            except Exception as exc:
+                self.log.warning("editEphemeralMessageText failed, sending a new ephemeral message: %s", exc)
+
+        await self.send_ephemeral(
+            session,
+            api,
+            chat_id,
+            user_id,
+            text,
+            parse_mode=parse_mode,
+            reply_markup=reply_markup,
+            callback_query_id=callback_query_id,
+        )
+
     def state_key(self, runtime: BotRuntime, chat_id: int, user_id: int) -> tuple[str, int, int]:
         return runtime.name, chat_id, user_id
 
@@ -828,6 +867,7 @@ class EphemeralCommandService:
         user = callback_query.get("from") or {}
         message = callback_query.get("message") or {}
         chat = message.get("chat") or {}
+        ephemeral_message_id = message.get("ephemeral_message_id")
         chat_id = chat.get("id")
         user_id = user.get("id")
         chat_type = chat.get("type")
@@ -925,19 +965,49 @@ class EphemeralCommandService:
         if data.startswith("list:"):
             _, command_type, page_raw = data.split(":", 2)
             text, markup = build_custom_command_list_view(command_type, int(page_raw) if page_raw.isdigit() else 0)
-            await self.send_ephemeral(session, api, chat_id, user_id, text, parse_mode="HTML", reply_markup=markup, callback_query_id=callback_id)
+            await self.edit_or_send_ephemeral(
+                session,
+                api,
+                chat_id,
+                user_id,
+                text,
+                callback_id,
+                ephemeral_message_id,
+                parse_mode="HTML",
+                reply_markup=markup,
+            )
             return
 
         if data.startswith("backlog:view:"):
             page_raw = data.rsplit(":", 1)[1]
             text, markup = build_backlog_view(int(page_raw) if page_raw.isdigit() else 0)
-            await self.send_ephemeral(session, api, chat_id, user_id, text, parse_mode="HTML", reply_markup=markup, callback_query_id=callback_id)
+            await self.edit_or_send_ephemeral(
+                session,
+                api,
+                chat_id,
+                user_id,
+                text,
+                callback_id,
+                ephemeral_message_id,
+                parse_mode="HTML",
+                reply_markup=markup,
+            )
             return
 
         if data.startswith("backlog:trash:"):
             page_raw = data.rsplit(":", 1)[1]
             text, markup = build_backlog_view(int(page_raw) if page_raw.isdigit() else 0, trash=True)
-            await self.send_ephemeral(session, api, chat_id, user_id, text, parse_mode="HTML", reply_markup=markup, callback_query_id=callback_id)
+            await self.edit_or_send_ephemeral(
+                session,
+                api,
+                chat_id,
+                user_id,
+                text,
+                callback_id,
+                ephemeral_message_id,
+                parse_mode="HTML",
+                reply_markup=markup,
+            )
             return
 
         if data == "backlog:add":
@@ -960,14 +1030,15 @@ class EphemeralCommandService:
             return
 
         if data == "backlog:clear":
-            await self.send_ephemeral(
+            await self.edit_or_send_ephemeral(
                 session,
                 api,
                 chat_id,
                 user_id,
                 "Confirma mover todo o backlog pendente para a lixeira?",
+                callback_id,
+                ephemeral_message_id,
                 reply_markup=inline_keyboard([("Confirmar limpeza", "backlog:clear:confirm")], [("Cancelar", "backlog:view:0")]),
-                callback_query_id=callback_id,
             )
             return
 
@@ -979,15 +1050,16 @@ class EphemeralCommandService:
                 save_backlog_trash(trash)
                 save_backlog([])
             text, markup = build_backlog_view()
-            await self.send_ephemeral(
+            await self.edit_or_send_ephemeral(
                 session,
                 api,
                 chat_id,
                 user_id,
                 f"✅ {len(backlog)} item(ns) movido(s) para a lixeira.\n\n{text}",
+                callback_id,
+                ephemeral_message_id,
                 parse_mode="HTML",
                 reply_markup=markup,
-                callback_query_id=callback_id,
             )
 
     async def handle_command(

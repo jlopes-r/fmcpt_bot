@@ -243,6 +243,27 @@ class EphemeralCommandServiceTests(unittest.IsolatedAsyncioTestCase):
                 "id": "callback-list",
                 "data": "list:foto:0",
                 "from": {"id": 456},
+                "message": {"chat": {"id": -100123, "type": "supergroup"}, "ephemeral_message_id": 99},
+            }
+
+            with patch.object(eph, "CUSTOM_COMMANDS_FILE", commands_file):
+                await service.handle_callback_query(None, runtime, api, callback)
+
+        edits = [payload for method, payload in api.posts if method == "editEphemeralMessageText"]
+        self.assertIn("/foto1", edits[-1]["text"])
+        self.assertEqual(edits[-1]["ephemeral_message_id"], 99)
+
+    async def test_list_callback_without_ephemeral_message_id_sends_fallback_message(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            commands_file = Path(tmp) / "comandos_personalizados.json"
+            commands_file.write_text('{"foto1": {"tipo": "foto"}}', encoding="utf-8")
+            service = EphemeralCommandService()
+            runtime = BotRuntime("comandos", "123:abc", (), "Menu")
+            api = FakeApi()
+            callback = {
+                "id": "callback-list",
+                "data": "list:foto:0",
+                "from": {"id": 456},
                 "message": {"chat": {"id": -100123, "type": "supergroup"}},
             }
 
@@ -325,6 +346,27 @@ class EphemeralCommandServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(backlog[0]["sugestao"], "Nova sugestão")
         self.assertNotIn(("comandos", -100123, 456), service.backlog_states)
+
+    async def test_backlog_view_callback_edits_ephemeral_message(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            backlog_file = Path(tmp) / "backlog.json"
+            backlog_file.write_text('[{"id": 1, "sugestao": "Resolver bug"}]', encoding="utf-8")
+            service = EphemeralCommandService()
+            runtime = BotRuntime("comandos", "123:abc", (), "Menu")
+            api = FakeApi()
+            callback = {
+                "id": "callback-backlog-view",
+                "data": "backlog:view:0",
+                "from": {"id": 456},
+                "message": {"chat": {"id": -100123, "type": "supergroup"}, "ephemeral_message_id": 77},
+            }
+
+            with patch.object(eph, "BACKLOG_FILE", backlog_file):
+                await service.handle_callback_query(None, runtime, api, callback)
+
+        edits = [payload for method, payload in api.posts if method == "editEphemeralMessageText"]
+        self.assertIn("Resolver bug", edits[-1]["text"])
+        self.assertEqual(edits[-1]["ephemeral_message_id"], 77)
 
     async def test_backlog_done_state_removes_matched_item(self):
         with tempfile.TemporaryDirectory() as tmp:
