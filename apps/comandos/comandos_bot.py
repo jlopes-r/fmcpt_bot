@@ -24,12 +24,15 @@ from packages.config import (
     parse_chat_ids,
 )
 from packages.private_access import guard_authorized_group_chat, guard_private_chat_access
+from packages.pyrogram_file_id_compat import patch_pyrogram_file_id
 from packages.telegram_ui import (
     build_bot_commands,
     reply_command_menu,
     set_bot_commands_via_bot_api,
     set_bot_commands_menu_button_via_bot_api,
 )
+
+patch_pyrogram_file_id()
 
 # Configuração
 def flex_command(commands, prefixes="/", case_sensitive=False):
