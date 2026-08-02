@@ -284,7 +284,7 @@ def _parse_api_item(item: dict) -> dict | None:
     caption = caption_obj.get('text', '') if isinstance(caption_obj, dict) else str(caption_obj or '')
     caption = _sanitize_caption(caption)
 
-    uploader = item.get('user', {}).get('username', 'Autor')
+    uploader = (item.get('user') or {}).get('username', 'Autor')
 
     # Carrossel
     carousel = item.get('carousel_media', [])
@@ -326,7 +326,7 @@ def _parse_graphql_media(media: dict) -> dict | None:
     caption = edges[0].get('node', {}).get('text', '') if edges else ''
     caption = _sanitize_caption(caption)
 
-    uploader = media.get('owner', {}).get('username', 'Autor')
+    uploader = (media.get('owner') or {}).get('username', 'Autor')
 
     # Carrossel (sidecar)
     sidecar = media.get('edge_sidecar_to_children', {}).get('edges', [])
