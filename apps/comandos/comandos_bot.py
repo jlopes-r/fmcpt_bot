@@ -1092,7 +1092,6 @@ async def processar_criacao(client, message):
             'data_criacao': str(datetime.now())
         }
         salvar_comandos(comandos_personalizados)
-        await atualizar_menu_comandos(client)
         
         del user_states[user_id]
         
