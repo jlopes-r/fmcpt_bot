@@ -84,7 +84,13 @@ from packages.telegram_ui import (
 from packages.url_utils import normalizar_url
 from apps.telegram_bot.downloaders import limite_duracao_filter, processar_com_ytdlp as _processar_com_ytdlp
 from apps.telegram_bot.duplicates import normalizar_link_social
-from apps.telegram_bot.instagram import download_instagram, fetch_instagram_profile, get_profile_username
+from apps.telegram_bot.instagram import (
+    download_instagram,
+    fetch_instagram_profile,
+    get_profile_username,
+    cookies_known_bad,
+    get_cookie_failure_reason,
+)
 from apps.telegram_bot.media_utils import detectar_extensao as _detectar_extensao, progresso_upload as _progresso_upload
 from apps.telegram_bot.text_utils import dividir_texto_longo, limpar_texto, montar_legenda
 from apps.telegram_bot.twitter import build_vxtwitter_url, match_tweet_url
@@ -438,7 +444,21 @@ async def processar_instagram(client, message, url, usuario, msg_espera, link_du
 
             if not result:
                 if tentativa >= MAX_RETRIES:
-                    await msg_espera.edit_text(erro_aleatorio(ERROS_INSTAGRAM))
+                    msg_base = erro_aleatorio(ERROS_INSTAGRAM)
+                    if cookies_known_bad:
+                        motivo = get_cookie_failure_reason()
+                        await avisar_admin_cookies(client, f"expirados ({motivo})")
+                        msg_detalhada = (
+                            f"{msg_base}\n\n"
+                            f"🔒 **Motivo técnico:** Instagram exigiu autenticação/verificação.\n"
+                            f"📌 **Detalhe:** `{motivo}`\n"
+                            f"💡 **Solução:** Atualize o arquivo de cookies (`data/instagram_cookies.txt`)."
+                        )
+                    else:
+                        msg_detalhada = msg_base
+
+                    await msg_espera.edit_text(msg_detalhada)
+                    _retry_cache[msg_espera.id] = (url, usuario, message.chat.id, message.id)
                     return False
                 continue
 
@@ -542,11 +562,29 @@ async def processar_instagram(client, message, url, usuario, msg_espera, link_du
         except Exception as e:
             if tentativa >= MAX_RETRIES:
                 log.error(f"Erro Instagram handler (após {MAX_RETRIES} tentativas): {e}")
-                # Detecta cookies expirados
-                if "login" in str(e).lower() or "cookie" in str(e).lower():
-                    await avisar_admin_cookies(client, "expirados ou inválidos")
+                msg_base = erro_aleatorio(ERROS_INSTAGRAM)
+                
+                if cookies_known_bad:
+                    motivo = get_cookie_failure_reason()
+                    await avisar_admin_cookies(client, f"expirados ou inválidos ({motivo})")
+                    msg_detalhada = (
+                        f"{msg_base}\n\n"
+                        f"🔒 **Motivo técnico:** Instagram bloqueou por autenticação.\n"
+                        f"📌 **Erro:** `{motivo}`\n"
+                        f"💡 **Solução:** Renovar o `instagram_cookies.txt` no servidor."
+                    )
+                elif "login" in str(e).lower() or "cookie" in str(e).lower() or "checkpoint" in str(e).lower():
+                    await avisar_admin_cookies(client, "expirados ou confirmação pendente")
+                    msg_detalhada = (
+                        f"{msg_base}\n\n"
+                        f"🔒 **Motivo técnico:** O Instagram exigiu login/confirmação.\n"
+                        f"📌 **Erro:** `{str(e)[:150]}`"
+                    )
+                else:
+                    msg_detalhada = msg_base
+
                 try:
-                    await msg_espera.edit_text(erro_aleatorio(ERROS_INSTAGRAM))
+                    await msg_espera.edit_text(msg_detalhada)
                     _retry_cache[msg_espera.id] = (url, usuario, message.chat.id, message.id)
                 except Exception:
                     pass

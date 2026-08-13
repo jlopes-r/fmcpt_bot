@@ -12,10 +12,12 @@ Não depende de: iGram, SaveIG, SnapInsta, Cobalt, RapidAPI.
 import re
 import os
 import json
+import time
 import asyncio
 import logging
 import urllib.parse
 import http.cookiejar
+from datetime import datetime
 from functools import partial
 
 import yt_dlp
@@ -46,10 +48,72 @@ IG_APP_HEADERS = {
     'X-IG-WWW-Claim': '0',
 }
 
+# ─── Estado global de cookies ─────────────────────────────────────────────────
+_cookies_known_bad = False
+_cookies_bad_since: float = 0.0
+_cookies_bad_reason: str = ""
+_COOKIES_BAD_RESET_SECONDS = 1800  # 30 min — depois tenta de novo
+
+
+def cookies_are_valid() -> bool:
+    """Verifica se os cookies estão marcados como válidos.
+    Reseta automaticamente após 30 minutos para re-testar."""
+    global _cookies_known_bad, _cookies_bad_since, _cookies_bad_reason
+    if not _cookies_known_bad:
+        return True
+    elapsed = time.time() - _cookies_bad_since
+    if elapsed > _COOKIES_BAD_RESET_SECONDS:
+        log.info("🔄 Reset automático de _cookies_known_bad após %.0f min", elapsed / 60)
+        _cookies_known_bad = False
+        _cookies_bad_since = 0.0
+        _cookies_bad_reason = ""
+        return True
+    return False
+
+
+def _mark_cookies_bad(reason: str = "") -> None:
+    """Marca cookies como inválidos para evitar retentativas inúteis."""
+    global _cookies_known_bad, _cookies_bad_since, _cookies_bad_reason
+    if not _cookies_known_bad:
+        _cookies_known_bad = True
+        _cookies_bad_since = time.time()
+        _cookies_bad_reason = reason or "Cookies expirados ou inválidos"
+        log.warning("🍪❌ Cookies marcados como INVÁLIDOS: %s", _cookies_bad_reason)
+
+
+def get_cookie_failure_reason() -> str:
+    """Retorna o motivo exato pelo qual os cookies falharam."""
+    global _cookies_bad_reason
+    return _cookies_bad_reason or "Cookies expirados ou login necessário"
+
+
+def reset_cookies_bad() -> None:
+    """Reset manual (chamado quando novos cookies são carregados)."""
+    global _cookies_known_bad, _cookies_bad_since, _cookies_bad_reason
+    _cookies_known_bad = False
+    _cookies_bad_since = 0.0
+    _cookies_bad_reason = ""
+
+
+def _is_challenge_response(resp) -> bool:
+    """Detecta se a resposta foi redirecionada para uma página de challenge/login."""
+    final_url = str(resp.url)
+    if '/challenge/' in final_url or '/accounts/login/' in final_url:
+        return True
+    # Se recebeu 200 mas Content-Type é HTML (não JSON), é challenge
+    content_type = resp.headers.get('content-type', '')
+    if resp.status_code == 200 and 'text/html' in content_type and 'application/json' not in content_type:
+        # Verifica se o body parece HTML de challenge
+        body_start = resp.text[:500] if hasattr(resp, 'text') else ''
+        if any(kw in body_start.lower() for kw in ['challenge', 'login', 'checkpoint', '<!doctype']):
+            return True
+    return False
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  Utilidades
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 def _get_shortcode(url: str) -> str | None:
     """Extrai o shortcode do Instagram da URL."""
@@ -123,7 +187,8 @@ def _shortcode_to_media_id(shortcode: str) -> str:
 
 
 def _load_cookies_from_file(cookie_path: str) -> dict:
-    """Carrega cookies do arquivo Netscape e retorna um dict nome→valor."""
+    """Carrega cookies do arquivo Netscape e retorna um dict nome→valor.
+    Também valida se sessionid existe e não está expirado."""
     cookies = {}
     if not cookie_path or not os.path.exists(cookie_path):
         return cookies
@@ -133,6 +198,29 @@ def _load_cookies_from_file(cookie_path: str) -> dict:
         for cookie in cj:
             cookies[cookie.name] = cookie.value
         log.info("🍪 Cookies carregados: %s", ', '.join(cookies.keys()))
+
+        # ── Validação de saúde dos cookies ──
+        if 'sessionid' not in cookies:
+            log.warning("⚠️ Cookies carregados mas SEM sessionid — autenticação não vai funcionar")
+        else:
+            for cookie in cj:
+                if cookie.name == 'sessionid' and cookie.expires:
+                    now = time.time()
+                    if cookie.expires < now:
+                        dias_expirado = (now - cookie.expires) / 86400
+                        log.warning(
+                            "⚠️ sessionid EXPIRADO há %.1f dias (expirou em %s)",
+                            dias_expirado,
+                            datetime.fromtimestamp(cookie.expires).strftime('%Y-%m-%d %H:%M')
+                        )
+                    else:
+                        dias_restantes = (cookie.expires - now) / 86400
+                        log.info(
+                            "✅ sessionid válido por mais %.1f dias (expira em %s)",
+                            dias_restantes,
+                            datetime.fromtimestamp(cookie.expires).strftime('%Y-%m-%d %H:%M')
+                        )
+                    break
     except Exception as e:
         log.warning("Falha ao carregar cookies: %s", str(e)[:100])
     return cookies
@@ -389,8 +477,19 @@ async def _extract_via_api(shortcode: str, cookies: dict = None) -> dict | None:
             resp = await client.get(api_url, headers=headers)
             log.info("   API resp status: %d", resp.status_code)
 
+            # ── Detectar challenge/login redirect ──
+            if _is_challenge_response(resp):
+                log.warning("   🍪 API redirecionou para challenge — cookies expirados")
+                _mark_cookies_bad("API Interna retornou challenge")
+                return None
+
             if resp.status_code == 200:
-                data = resp.json()
+                try:
+                    data = resp.json()
+                except (json.JSONDecodeError, ValueError):
+                    log.warning("   🍪 API retornou 200 mas body não é JSON — provável challenge")
+                    _mark_cookies_bad("API Interna retornou HTML ao invés de JSON")
+                    return None
                 items = data.get('items', [])
                 if items:
                     result = _parse_api_item(items[0])
@@ -455,8 +554,19 @@ async def _extract_via_graphql(shortcode: str, cookies: dict = None) -> dict | N
                 resp = await client.get(query_url, headers=headers)
                 log.info("   GraphQL doc_id=%s → status=%d", doc_id, resp.status_code)
 
+                # ── Detectar challenge/login redirect ──
+                if _is_challenge_response(resp):
+                    log.warning("   🍪 GraphQL redirecionou para challenge — cookies expirados")
+                    _mark_cookies_bad("GraphQL retornou challenge")
+                    return None
+
                 if resp.status_code == 200:
-                    data = resp.json()
+                    try:
+                        data = resp.json()
+                    except (json.JSONDecodeError, ValueError):
+                        log.warning("   🍪 GraphQL retornou 200 mas body não é JSON — provável challenge")
+                        _mark_cookies_bad("GraphQL retornou HTML ao invés de JSON")
+                        return None
                     # Formato novo (xdt_shortcode_media)
                     media = data.get('data', {}).get('xdt_shortcode_media')
                     # Formato antigo
@@ -496,6 +606,12 @@ async def _extract_via_embed(shortcode: str, cookies: dict = None, embed_path: s
         async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
             resp = await client.get(embed_url, headers=embed_headers)
             log.info("   Embed status: %d, body length: %d", resp.status_code, len(resp.text))
+
+            # ── Detectar challenge/login redirect ──
+            if _is_challenge_response(resp):
+                log.warning("   🍪 Embed redirecionou para challenge — cookies expirados")
+                _mark_cookies_bad("Embed retornou challenge")
+                return None
 
             if resp.status_code != 200:
                 log.info("   Embed retornou %d (provavelmente redirect para login)", resp.status_code)
@@ -709,12 +825,22 @@ async def download_instagram(
       - type: 'photo' | 'video' | 'carousel'
       - title: caption/legenda
       - uploader: nome do autor
+      - _cookies_failed: True se falhou por cookies expirados (para o caller)
     """
     log.info("📷 Instagram Extractor v2: %s", url)
     shortcode = _get_shortcode(url)
 
     # Carrega cookies para autenticar as requisições
     cookies = _load_cookies_from_file(cookie_path)
+
+    # ── Se cookies já são conhecidamente ruins, pula direto pro yt-dlp ──
+    if not cookies_are_valid():
+        log.info("⏩ Cookies marcados como inválidos — pulando camadas 1-3, direto para yt-dlp")
+        result = await _extract_via_ytdlp(url, cookie_path, out_dir)
+        if result:
+            return result
+        log.warning("❌ Cookies inválidos e yt-dlp falhou para: %s", url)
+        return None
 
     # Stories: tenta API primeiro (story_id = media_id), depois yt-dlp
     if _is_story(url):
@@ -724,7 +850,7 @@ async def download_instagram(
             log.info("📖 Story detectado: @%s, media_id=%s", username, story_media_id)
 
             # Camada 1: API Interna (funciona para stories com cookies válidos)
-            if cookies:
+            if cookies and cookies_are_valid():
                 try:
                     async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
                         csrf = cookies.get('csrftoken', '')
@@ -740,15 +866,25 @@ async def download_instagram(
                         resp = await client.get(api_url, headers=headers)
                         log.info("   Story API status: %d", resp.status_code)
 
-                        if resp.status_code == 200:
-                            data = resp.json()
-                            items = data.get('items', [])
-                            if items:
-                                result = _parse_api_item(items[0])
-                                if result:
-                                    log.info("   ✅ Story via API: %d URLs", len(result['urls']))
-                                    return result
-                            log.info("   API retornou 200 mas sem itens válidos para story")
+                        # Detectar challenge
+                        if _is_challenge_response(resp):
+                            log.warning("   🍪 Story API redirecionou para challenge")
+                            _mark_cookies_bad("Story API retornou challenge")
+                        elif resp.status_code == 200:
+                            try:
+                                data = resp.json()
+                            except (json.JSONDecodeError, ValueError):
+                                log.warning("   🍪 Story API body não é JSON")
+                                _mark_cookies_bad("Story API retornou HTML")
+                                data = None
+                            if data:
+                                items = data.get('items', [])
+                                if items:
+                                    result = _parse_api_item(items[0])
+                                    if result:
+                                        log.info("   ✅ Story via API: %d URLs", len(result['urls']))
+                                        return result
+                                log.info("   API retornou 200 mas sem itens válidos para story")
                         else:
                             log.info("   Story API retornou %d", resp.status_code)
                 except Exception as e:
@@ -772,14 +908,18 @@ async def download_instagram(
     if result:
         return result
 
-    # ── Tentativa 2: auto-login para gerar cookies frescos ──
-    if os.getenv('IG_USERNAME') and os.getenv('IG_PASSWORD'):
+    # ── Se challenge foi detectado nas camadas acima, não tenta auto-login ──
+    if _cookies_known_bad:
+        log.info("⏩ Challenge detectado — pulando auto-login, direto para yt-dlp")
+    elif os.getenv('IG_USERNAME') and os.getenv('IG_PASSWORD'):
+        # ── Tentativa 2: auto-login para gerar cookies frescos ──
         log.info("🔄 Cookies falharam. Tentando auto-login para gerar cookies frescos...")
         loop = asyncio.get_running_loop()
         fresh_cookies = await loop.run_in_executor(
             None, _auto_login_and_save_cookies, cookie_path
         )
         if fresh_cookies:
+            reset_cookies_bad()  # Auto-login gerou cookies novos
             result = await _try_all_layers(shortcode, fresh_cookies, url)
             if result:
                 return result
