@@ -317,6 +317,7 @@ async def extrair_e_enviar_midia(client, message, url, usuario, msg_espera, forc
                     'no_warnings': True,
                     'noplaylist': False,
                     'max_filesize': LIMITE_TAMANHO,
+                    'extractor_args': {'youtube': {'player_client': ['android', 'web']}},
                 }
                 
                 if not force_long:
