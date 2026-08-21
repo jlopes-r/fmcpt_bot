@@ -17,7 +17,7 @@ import yt_dlp
 import aiohttp
 
 from pyrogram import Client, filters, raw
-from pyrogram.types import InputMediaPhoto, InputMediaVideo
+from pyrogram.types import InputMediaPhoto, InputMediaVideo, InlineKeyboardMarkup, InlineKeyboardButton
 try:
     from pyrogram.file_id import FileId, FileType
 except ImportError:
@@ -287,7 +287,7 @@ async def encurtar_url(url: str) -> str:
 # -----------------------------------------
 _filtro_duracao = limite_duracao_filter(LIMITE_DURACAO)
 
-async def extrair_e_enviar_midia(client, message, url, usuario, msg_espera):
+async def extrair_e_enviar_midia(client, message, url, usuario, msg_espera, force_long=False):
     """Motor de download genérico. Retorna True se obteve sucesso."""
     global DOWNLOAD_COUNT, _fila_espera
     arquivos_para_deletar = []
@@ -311,14 +311,16 @@ async def extrair_e_enviar_midia(client, message, url, usuario, msg_espera):
 
                 ydl_opts = {
                     'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-                    'outtmpl': str(PASTA_DOWNLOADS / '%(id)s_%(index)s.%(ext)s'),
+                    'outtmpl': '%(id)s.%(ext)s',
                     'paths': {'home': str(PASTA_DOWNLOADS)},
                     'quiet': True,
                     'no_warnings': True,
                     'noplaylist': False,
-                    'match_filter': _filtro_duracao,
                     'max_filesize': LIMITE_TAMANHO,
                 }
+                
+                if not force_long:
+                    ydl_opts['match_filter'] = _filtro_duracao
 
                 if any(d in url for d in ["instagram.com", "instagr.am", "threads.net"]):
                     ydl_opts['http_headers'] = {
@@ -350,11 +352,22 @@ async def extrair_e_enviar_midia(client, message, url, usuario, msg_espera):
                     if not path:
                         path = item.get('filepath')
                         if not path or not os.path.exists(path):
-                            # Verifica se foi filtrado por tamanho antes de dar erro
-                            filesize = item.get('filesize') or item.get('filesize_approx')
-                            if filesize and filesize > LIMITE_TAMANHO:
-                                raise Exception(f"Arquivo muito grande ({filesize / 1024 / 1024:.1f}MB). O limite é de 2GB.")
-                            continue
+                            # Fallback: procura o arquivo na pasta de downloads pelo ID do vídeo
+                            video_id = item.get('id', '')
+                            if video_id:
+                                import glob
+                                padrao = str(PASTA_DOWNLOADS / f"{video_id}.*")
+                                encontrados = glob.glob(padrao)
+                                if encontrados:
+                                    path = encontrados[0]
+                                    log.info(f"Fallback: arquivo encontrado via glob: {path}")
+                            if not path or not os.path.exists(path):
+                                # Verifica se foi filtrado por tamanho antes de dar erro
+                                filesize = item.get('filesize') or item.get('filesize_approx')
+                                if filesize and filesize > LIMITE_TAMANHO:
+                                    raise Exception(f"Arquivo muito grande ({filesize / 1024 / 1024:.1f}MB). O limite é de 2GB.")
+                                log.warning(f"Arquivo não encontrado para item {i}: filepath={item.get('filepath')}, id={item.get('id')}, requested_downloads={item.get('requested_downloads')}")
+                                continue
 
                     arquivos_para_deletar.append(path)
                     ext = path.lower().split('.')[-1]
@@ -366,6 +379,8 @@ async def extrair_e_enviar_midia(client, message, url, usuario, msg_espera):
                         lista_telegram.append(InputMediaVideo(path, caption=cap, supports_streaming=True))
 
                 if not lista_telegram:
+                    # Log detalhado para diagnóstico
+                    log.error(f"Nenhum arquivo válido encontrado. URL={url}, midias={len(midias)}, downloads_dir={list(PASTA_DOWNLOADS.iterdir()) if PASTA_DOWNLOADS.exists() else 'N/A'}")
                     raise Exception("Nenhum arquivo valido encontrado.")
 
                 if len(lista_telegram) == 1:
@@ -394,7 +409,15 @@ async def extrair_e_enviar_midia(client, message, url, usuario, msg_espera):
                 erro_str = str(e)
                 # Erros de limite não fazem sentido tentar de novo
                 if "Video tem" in erro_str:
-                    erro_msg = await msg_espera.edit_text(erro_aleatorio(ERROS_VIDEO_LONGO, min=LIMITE_DURACAO // 60))
+                    texto_aviso = erro_aleatorio(ERROS_VIDEO_LONGO, min=LIMITE_DURACAO // 60)
+                    texto_aviso += "\n\n⚠️ Tem certeza que quer baixar essa merda gigante? Pode demorar pra caralho e bugar o bot."
+                    
+                    botoes = InlineKeyboardMarkup([
+                        [InlineKeyboardButton("✅ Sim, baixa essa porra", callback_data=f"forcelong_{msg_espera.id}")],
+                        [InlineKeyboardButton("❌ Não, foda-se", callback_data=f"cancellong_{msg_espera.id}")]
+                    ])
+                    
+                    erro_msg = await msg_espera.edit_text(texto_aviso, reply_markup=botoes)
                     _retry_cache[msg_espera.id] = (url, usuario, message.chat.id, message.id)
                     return False
                 elif "File is larger" in erro_str:
@@ -965,6 +988,43 @@ async def avisar_admin_cookies(client, motivo="expirados"):
         except Exception as e:
             log.error(f"Falha ao avisar admin sobre cookies: {e}")
 
+@app.on_callback_query(filters.regex(r"^(forcelong|cancellong)_(\d+)"))
+async def callback_long_video(client, callback_query):
+    action = callback_query.matches[0].group(1)
+    msg_id = int(callback_query.matches[0].group(2))
+    
+    if msg_id not in _retry_cache:
+        await callback_query.answer("Essa mensagem já expirou ou foi processada.", show_alert=True)
+        try:
+            await callback_query.message.edit_text("❌ Ação expirada.")
+        except Exception:
+            pass
+        return
+        
+    url, usuario_orig, chat_id, original_msg_id = _retry_cache.pop(msg_id)
+    
+    if action == "cancellong":
+        await callback_query.answer("Download cancelado.")
+        try:
+            await callback_query.message.edit_text(f"🛑 O usuário arregou e cancelou o download do vídeo longo.")
+        except Exception:
+            pass
+        return
+        
+    if action == "forcelong":
+        await callback_query.answer("Forçando download...")
+        try:
+            msg_espera = await callback_query.message.edit_text("⏳ *Forçando o download do vídeo gigante...*")
+        except Exception:
+            msg_espera = callback_query.message
+            
+        try:
+            original_message = await client.get_messages(chat_id, original_msg_id)
+        except Exception:
+            original_message = callback_query.message
+            
+        await extrair_e_enviar_midia(client, original_message, url, usuario_orig, msg_espera, force_long=True)
+
 async def limpeza_periodica():
     """Remove arquivos órfãos da pasta downloads a cada 30 minutos."""
     while True:
@@ -1053,7 +1113,7 @@ async def enviar_midia_quote(client, message, qrt_info, match, msg_espera, usuar
             log.info(f"X quote: baixando video ({int(duracao_s)}s) via yt-dlp...")
             ydl_opts = {
                 'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-                'outtmpl': str(PASTA_DOWNLOADS / f"quote_{match.group(2)}_%(index)s.%(ext)s"),
+                'outtmpl': f"quote_{match.group(2)}_%(index)s.%(ext)s",
                 'paths': {'home': str(PASTA_DOWNLOADS)},
                 'quiet': True,
                 'no_warnings': True,
@@ -1300,7 +1360,7 @@ async def processar_links(client, message):
                             log.info(f"X: baixando video ({int(duracao_s)}s) via yt-dlp...")
                             ydl_opts = {
                                 'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-                                'outtmpl': str(PASTA_DOWNLOADS / f"{match.group(2)}_%(index)s.%(ext)s"),
+                                'outtmpl': f"{match.group(2)}_%(index)s.%(ext)s",
                                 'paths': {'home': str(PASTA_DOWNLOADS)},
                                 'quiet': True,
                                 'no_warnings': True,
