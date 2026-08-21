@@ -287,6 +287,22 @@ async def encurtar_url(url: str) -> str:
 # -----------------------------------------
 _filtro_duracao = limite_duracao_filter(LIMITE_DURACAO)
 
+async def avisar_video_longo(msg_espera, url, usuario, message):
+    texto_aviso = erro_aleatorio(ERROS_VIDEO_LONGO, min=LIMITE_DURACAO // 60)
+    texto_aviso += "\n\n⚠️ Tem certeza que quer baixar essa merda gigante? Pode demorar pra caralho e bugar o bot."
+
+    botoes = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Sim, baixa essa porra", callback_data=f"forcelong_{msg_espera.id}")],
+        [InlineKeyboardButton("❌ Não, foda-se", callback_data=f"cancellong_{msg_espera.id}")]
+    ])
+
+    await msg_espera.edit_text(texto_aviso, reply_markup=botoes)
+    _retry_cache[msg_espera.id] = (url, usuario, message.chat.id, message.id)
+
+def _foi_pulado_por_duracao(item: dict) -> bool:
+    duracao = item.get('duration') or 0
+    return bool(duracao and duracao > LIMITE_DURACAO)
+
 async def extrair_e_enviar_midia(client, message, url, usuario, msg_espera, force_long=False):
     """Motor de download genérico. Retorna True se obteve sucesso."""
     global DOWNLOAD_COUNT, _fila_espera
@@ -367,6 +383,12 @@ async def extrair_e_enviar_midia(client, message, url, usuario, msg_espera, forc
                                 filesize = item.get('filesize') or item.get('filesize_approx')
                                 if filesize and filesize > LIMITE_TAMANHO:
                                     raise Exception(f"Arquivo muito grande ({filesize / 1024 / 1024:.1f}MB). O limite é de 2GB.")
+                                # yt-dlp novo não lança exceção quando o match_filter pula
+                                # o vídeo: retorna o info dict sem requested_downloads.
+                                if not force_long and _foi_pulado_por_duracao(item):
+                                    log.info(f"Vídeo pulado pelo filtro de duração: {item.get('id')} ({item.get('duration')}s)")
+                                    await avisar_video_longo(msg_espera, url, usuario, message)
+                                    return False
                                 log.warning(f"Arquivo não encontrado para item {i}: filepath={item.get('filepath')}, id={item.get('id')}, requested_downloads={item.get('requested_downloads')}")
                                 continue
 
@@ -410,16 +432,7 @@ async def extrair_e_enviar_midia(client, message, url, usuario, msg_espera, forc
                 erro_str = str(e)
                 # Erros de limite não fazem sentido tentar de novo
                 if "Video tem" in erro_str:
-                    texto_aviso = erro_aleatorio(ERROS_VIDEO_LONGO, min=LIMITE_DURACAO // 60)
-                    texto_aviso += "\n\n⚠️ Tem certeza que quer baixar essa merda gigante? Pode demorar pra caralho e bugar o bot."
-                    
-                    botoes = InlineKeyboardMarkup([
-                        [InlineKeyboardButton("✅ Sim, baixa essa porra", callback_data=f"forcelong_{msg_espera.id}")],
-                        [InlineKeyboardButton("❌ Não, foda-se", callback_data=f"cancellong_{msg_espera.id}")]
-                    ])
-                    
-                    erro_msg = await msg_espera.edit_text(texto_aviso, reply_markup=botoes)
-                    _retry_cache[msg_espera.id] = (url, usuario, message.chat.id, message.id)
+                    await avisar_video_longo(msg_espera, url, usuario, message)
                     return False
                 elif "File is larger" in erro_str:
                     await msg_espera.edit_text(erro_aleatorio(ERROS_ARQUIVO_GRANDE))
