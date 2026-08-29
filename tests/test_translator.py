@@ -38,17 +38,19 @@ class TranslatorTest(unittest.TestCase):
         self.assertEqual(resultado, "Confira esta atualização")
         mock_gt.assert_called_once_with(source="auto", target="pt")
 
+    @patch("apps.telegram_bot.translator.time.sleep")
     @patch("apps.telegram_bot.translator._detectar_idioma", return_value="de")
     @patch("apps.telegram_bot.translator.GoogleTranslator")
-    def test_falha_na_traducao_retorna_original(self, mock_gt, mock_detect):
+    def test_falha_na_traducao_retorna_original(self, mock_gt, mock_detect, mock_sleep):
         instancia = mock_gt.return_value
         instancia.translate.return_value = None
         original = "Schauen Sie sich dieses Update an"
         self.assertEqual(traduzir_se_necessario(original), original)
 
+    @patch("apps.telegram_bot.translator.time.sleep")
     @patch("apps.telegram_bot.translator._detectar_idioma", return_value="de")
     @patch("apps.telegram_bot.translator.GoogleTranslator")
-    def test_resposta_de_erro_nao_marca_como_traduzido(self, mock_gt, mock_detect):
+    def test_resposta_de_erro_nao_marca_como_traduzido(self, mock_gt, mock_detect, mock_sleep):
         instancia = mock_gt.return_value
         instancia.translate.return_value = "Error 500 (Server Error)!!1500.That's an error."
         original = "Schauen Sie sich dieses Update an"
@@ -84,14 +86,45 @@ class TraduzirComDetalhesTest(unittest.TestCase):
         self.assertEqual(r["idioma_origem"], "es")
         self.assertTrue(r["foi_traduzido"])
 
+    @patch("apps.telegram_bot.translator.time.sleep")
     @patch("apps.telegram_bot.translator._detectar_idioma", return_value="es")
     @patch("apps.telegram_bot.translator.GoogleTranslator")
-    def test_traducao_null_nao_marca_como_traduzido(self, mock_gt, mock_detect):
+    def test_traducao_null_nao_marca_como_traduzido(self, mock_gt, mock_detect, mock_sleep):
         instancia = mock_gt.return_value
         instancia.translate.return_value = None
         r = traduzir_com_detalhes("Hola mundo")
         self.assertFalse(r["foi_traduzido"])
         self.assertIsNone(r["traduzido"])
+
+    @patch("apps.telegram_bot.translator.time.sleep")
+    @patch("apps.telegram_bot.translator._detectar_idioma", return_value="es")
+    @patch("apps.telegram_bot.translator.GoogleTranslator")
+    def test_retry_apos_erro_500(self, mock_gt, mock_detect, mock_sleep):
+        # Primeira chamada devolve página de erro; a segunda traduz normalmente.
+        instancia = mock_gt.return_value
+        instancia.translate.side_effect = [
+            "Error 500 (Server Error)!!1500.That's an error.",
+            "Confira esta atualização",
+        ]
+        r = traduzir_com_detalhes("Mira esta actualización")
+        self.assertTrue(r["foi_traduzido"])
+        self.assertEqual(r["traduzido"], "Confira esta atualização")
+        self.assertEqual(r["idioma_origem"], "es")
+        # backoff exponencial: 2s (somente 1 espera antes da 2ª tentativa)
+        self.assertEqual(mock_sleep.call_count, 1)
+
+    @patch("apps.telegram_bot.translator.time.sleep")
+    @patch("apps.telegram_bot.translator._detectar_idioma", return_value="es")
+    @patch("apps.telegram_bot.translator.GoogleTranslator")
+    def test_todas_tentativas_falham_nao_traduz(self, mock_gt, mock_detect, mock_sleep):
+        instancia = mock_gt.return_value
+        instancia.translate.return_value = "Error 500 (Server Error)!!1500.That's an error."
+        r = traduzir_com_detalhes("Mira esta actualización")
+        self.assertFalse(r["foi_traduzido"])
+        self.assertIsNone(r["traduzido"])
+        # 3 tentativas -> 2 esperas (2s e 4s de backoff)
+        self.assertEqual(instancia.translate.call_count, 3)
+        self.assertEqual(mock_sleep.call_count, 2)
 
 
 class PareceErroTraducaoTest(unittest.TestCase):

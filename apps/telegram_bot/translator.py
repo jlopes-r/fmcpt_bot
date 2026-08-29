@@ -1,4 +1,5 @@
 import re
+import time
 import logging
 
 from langdetect import detect, DetectorFactory, LangDetectException
@@ -24,6 +25,10 @@ _PADRAO_ERRO_TRADUCAO = re.compile(
     r"(server error|that's an error|<html|<head|<!doctype|error\s*5\d\d|http\s+5\d\d)",
     re.IGNORECASE,
 )
+
+# Tentativas de tradução antes de desistir (retry com backoff).
+MAX_TENTATIVAS_TRADUCAO = 3
+DELAY_BASE_TRADUCAO = 2.0
 
 # Nomes em português para os códigos ISO 639-1 mais comuns.
 NOMES_IDIOMAS = {
@@ -139,15 +144,25 @@ def traduzir_com_detalhes(texto: str, alvo: str = "pt") -> dict:
 
     try:
         tradutor = GoogleTranslator(source="auto", target=alvo)
-        traducao = tradutor.translate(texto_limpo)
-    except Exception as e:
-        log.warning(f"Falha na tradução automática: {e}")
-        return resultado
+        for tentativa in range(1, MAX_TENTATIVAS_TRADUCAO + 1):
+            try:
+                traducao = tradutor.translate(texto_limpo)
+            except Exception as e:
+                log.warning(f"Falha na tradução automática (tentativa {tentativa}/{MAX_TENTATIVAS_TRADUCAO}): {e}")
+                traducao = None
 
-    if traducao and not _parece_erro_traducao(traducao):
-        resultado["traduzido"] = traducao
-        resultado["idioma_origem"] = idioma
-        resultado["foi_traduzido"] = True
+            if traducao and not _parece_erro_traducao(traducao):
+                resultado["traduzido"] = traducao
+                resultado["idioma_origem"] = idioma
+                resultado["foi_traduzido"] = True
+                break
+            if tentativa < MAX_TENTATIVAS_TRADUCAO:
+                # Backoff exponencial: 2s, 4s ...
+                espera = DELAY_BASE_TRADUCAO * (2 ** (tentativa - 1))
+                log.info(f"Tradução indisponível, nova tentativa em {espera:.0f}s...")
+                time.sleep(espera)
+    except Exception as e:
+        log.warning(f"Erro inesperado na tradução automática: {e}")
     return resultado
 
 
