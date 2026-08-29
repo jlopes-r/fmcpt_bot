@@ -100,13 +100,9 @@ def _is_challenge_response(resp) -> bool:
     final_url = str(resp.url)
     if '/challenge/' in final_url or '/accounts/login/' in final_url:
         return True
-    # Se recebeu 200 mas Content-Type é HTML (não JSON), é challenge
-    content_type = resp.headers.get('content-type', '')
-    if resp.status_code == 200 and 'text/html' in content_type and 'application/json' not in content_type:
-        # Verifica se o body parece HTML de challenge
-        body_start = resp.text[:500] if hasattr(resp, 'text') else ''
-        if any(kw in body_start.lower() for kw in ['challenge', 'login', 'checkpoint', '<!doctype']):
-            return True
+    body_start = resp.text[:1000].lower() if hasattr(resp, 'text') else ''
+    if any(kw in body_start for kw in ['/accounts/login/', 'checkpoint_required', 'challenge_required', 'id="loginform"']):
+        return True
     return False
 
 
@@ -568,10 +564,8 @@ async def _extract_via_graphql(shortcode: str, cookies: dict = None) -> dict | N
                         _mark_cookies_bad("GraphQL retornou HTML ao invés de JSON")
                         return None
                     # Formato novo (xdt_shortcode_media)
-                    media = data.get('data', {}).get('xdt_shortcode_media')
-                    # Formato antigo
-                    if not media:
-                        media = data.get('data', {}).get('shortcode_media')
+                    data_obj = data.get('data') or {}
+                    media = data_obj.get('xdt_shortcode_media') or data_obj.get('shortcode_media')
 
                     if media:
                         result = _parse_graphql_media(media)
