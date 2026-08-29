@@ -191,6 +191,7 @@ class EphemeralCommandServiceTests(unittest.IsolatedAsyncioTestCase):
             commands_file = Path(tmp) / "comandos_personalizados.json"
             commands_file.write_text('{"sorry": {"tipo": "texto"}}', encoding="utf-8")
             service = EphemeralCommandService()
+            service.allowed_chats = {-100123}
             runtime = BotRuntime("comandos", "123:abc", (), "Menu")
             api = FakeApi()
             service.pending_deletes[("comandos", -100123, 456)] = "sorry"
@@ -237,6 +238,7 @@ class EphemeralCommandServiceTests(unittest.IsolatedAsyncioTestCase):
             commands_file = Path(tmp) / "comandos_personalizados.json"
             commands_file.write_text('{"foto1": {"tipo": "foto"}}', encoding="utf-8")
             service = EphemeralCommandService()
+            service.allowed_chats = {-100123}
             runtime = BotRuntime("comandos", "123:abc", (), "Menu")
             api = FakeApi()
             callback = {
@@ -259,6 +261,7 @@ class EphemeralCommandServiceTests(unittest.IsolatedAsyncioTestCase):
             commands_file = Path(tmp) / "comandos_personalizados.json"
             commands_file.write_text('{"foto1": {"tipo": "foto"}}', encoding="utf-8")
             service = EphemeralCommandService()
+            service.allowed_chats = {-100123}
             runtime = BotRuntime("comandos", "123:abc", (), "Menu")
             api = FakeApi()
             callback = {
@@ -277,6 +280,7 @@ class EphemeralCommandServiceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_create_type_text_callback_advances_state_ephemerally(self):
         service = EphemeralCommandService()
+        service.allowed_chats = {-100123}
         runtime = BotRuntime("comandos", "123:abc", (), "Menu")
         api = FakeApi()
         service.create_states[("comandos", -100123, 456)] = {
@@ -301,6 +305,7 @@ class EphemeralCommandServiceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_create_cancel_callback_clears_state(self):
         service = EphemeralCommandService()
+        service.allowed_chats = {-100123}
         runtime = BotRuntime("comandos", "123:abc", (), "Menu")
         api = FakeApi()
         service.create_states[("comandos", -100123, 456)] = {
@@ -326,6 +331,7 @@ class EphemeralCommandServiceTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as tmp:
             backlog_file = Path(tmp) / "backlog.json"
             service = EphemeralCommandService()
+            service.allowed_chats = {-100123}
             runtime = BotRuntime("comandos", "123:abc", (), "Menu")
             api = FakeApi()
             callback = {
@@ -353,6 +359,7 @@ class EphemeralCommandServiceTests(unittest.IsolatedAsyncioTestCase):
             backlog_file = Path(tmp) / "backlog.json"
             backlog_file.write_text('[{"id": 1, "sugestao": "Resolver bug"}]', encoding="utf-8")
             service = EphemeralCommandService()
+            service.allowed_chats = {-100123}
             runtime = BotRuntime("comandos", "123:abc", (), "Menu")
             api = FakeApi()
             callback = {
