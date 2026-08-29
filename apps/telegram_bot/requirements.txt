@@ -8,3 +8,5 @@ requests
 httpx
 Pillow
 instaloader
+deep-translator
+langdetect

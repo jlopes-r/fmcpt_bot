@@ -97,6 +97,7 @@ from apps.telegram_bot.instagram import (
 )
 from apps.telegram_bot.media_utils import detectar_extensao as _detectar_extensao, progresso_upload as _progresso_upload
 from apps.telegram_bot.text_utils import dividir_texto_longo, limpar_texto, montar_legenda
+from apps.telegram_bot.translator import traduzir_se_necessario
 from apps.telegram_bot.twitter import build_vxtwitter_url, build_fxtwitter_url, match_tweet_url
 
 load_environment()
@@ -415,6 +416,7 @@ async def extrair_e_enviar_midia(client, message, url, usuario, msg_espera, forc
                 lista_telegram = []
 
                 legenda_base = limpar_texto(info.get('title') or info.get('description') or "")
+                legenda_base = await asyncio.to_thread(traduzir_se_necessario, legenda_base)
                 autor = info.get('uploader') or info.get('channel') or "Autor"
                 legenda_final = montar_legenda(legenda_base, autor, usuario)
 
@@ -1567,7 +1569,9 @@ async def processar_links(client, message):
                     elif tem_midia_no_quote:
                         texto_base += f"\n\n🔁 [Quote de {qrt_info.get('user_name', 'Autor')} logo abaixo 👇]"
                     
-                cap_limpa = limpar_texto(texto_base)
+                # Tradução automática do texto do tweet (e quote) para PT, se não estiver em português
+                texto_traduzido = await asyncio.to_thread(traduzir_se_necessario, texto_base)
+                cap_limpa = limpar_texto(texto_traduzido)
                 legenda = montar_legenda(cap_limpa, res.get('user_name', 'Autor'), usuario, emoji="📸")
 
                 if 'media_extended' in res and len(res['media_extended']) > 0:
