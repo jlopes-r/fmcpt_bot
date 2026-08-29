@@ -1,7 +1,12 @@
 import unittest
 from unittest.mock import patch
 
-from apps.telegram_bot.translator import nome_idioma, traduzir_com_detalhes, traduzir_se_necessario
+from apps.telegram_bot.translator import (
+    _parece_erro_traducao,
+    nome_idioma,
+    traduzir_com_detalhes,
+    traduzir_se_necessario,
+)
 
 
 class TranslatorTest(unittest.TestCase):
@@ -20,20 +25,33 @@ class TranslatorTest(unittest.TestCase):
         self.assertEqual(traduzir_se_necessario(original), original)
 
     @patch("apps.telegram_bot.translator._detectar_idioma", return_value="en")
+    def test_texto_em_ingles_nao_e_traduzido(self, mock_detect):
+        original = "Check out this update from our team"
+        self.assertEqual(traduzir_se_necessario(original), original)
+
+    @patch("apps.telegram_bot.translator._detectar_idioma", return_value="de")
     @patch("apps.telegram_bot.translator.GoogleTranslator")
-    def test_texto_em_ingles_e_traduzido(self, mock_gt, mock_detect):
+    def test_texto_em_outro_idioma_e_traduzido(self, mock_gt, mock_detect):
         instancia = mock_gt.return_value
         instancia.translate.return_value = "Confira esta atualização"
-        resultado = traduzir_se_necessario("Check out this update")
+        resultado = traduzir_se_necessario("Schauen Sie sich dieses Update an")
         self.assertEqual(resultado, "Confira esta atualização")
         mock_gt.assert_called_once_with(source="auto", target="pt")
 
-    @patch("apps.telegram_bot.translator._detectar_idioma", return_value="en")
+    @patch("apps.telegram_bot.translator._detectar_idioma", return_value="de")
     @patch("apps.telegram_bot.translator.GoogleTranslator")
     def test_falha_na_traducao_retorna_original(self, mock_gt, mock_detect):
         instancia = mock_gt.return_value
         instancia.translate.return_value = None
-        original = "Check out this update"
+        original = "Schauen Sie sich dieses Update an"
+        self.assertEqual(traduzir_se_necessario(original), original)
+
+    @patch("apps.telegram_bot.translator._detectar_idioma", return_value="de")
+    @patch("apps.telegram_bot.translator.GoogleTranslator")
+    def test_resposta_de_erro_nao_marca_como_traduzido(self, mock_gt, mock_detect):
+        instancia = mock_gt.return_value
+        instancia.translate.return_value = "Error 500 (Server Error)!!1500.That's an error."
+        original = "Schauen Sie sich dieses Update an"
         self.assertEqual(traduzir_se_necessario(original), original)
 
 
@@ -48,14 +66,22 @@ class TraduzirComDetalhesTest(unittest.TestCase):
         self.assertFalse(r["foi_traduzido"])
 
     @patch("apps.telegram_bot.translator._detectar_idioma", return_value="en")
+    def test_em_ingles_nao_traduz(self, mock_detect):
+        original = "This stays in English"
+        r = traduzir_com_detalhes(original)
+        self.assertFalse(r["foi_traduzido"])
+        self.assertIsNone(r["traduzido"])
+        self.assertEqual(r["original"], original)
+
+    @patch("apps.telegram_bot.translator._detectar_idioma", return_value="es")
     @patch("apps.telegram_bot.translator.GoogleTranslator")
     def test_traduz_com_detalhes(self, mock_gt, mock_detect):
         instancia = mock_gt.return_value
         instancia.translate.return_value = "Confira esta atualização"
-        r = traduzir_com_detalhes("Check out this update")
-        self.assertEqual(r["original"], "Check out this update")
+        r = traduzir_com_detalhes("Mira esta actualización")
+        self.assertEqual(r["original"], "Mira esta actualización")
         self.assertEqual(r["traduzido"], "Confira esta atualização")
-        self.assertEqual(r["idioma_origem"], "en")
+        self.assertEqual(r["idioma_origem"], "es")
         self.assertTrue(r["foi_traduzido"])
 
     @patch("apps.telegram_bot.translator._detectar_idioma", return_value="es")
@@ -66,6 +92,21 @@ class TraduzirComDetalhesTest(unittest.TestCase):
         r = traduzir_com_detalhes("Hola mundo")
         self.assertFalse(r["foi_traduzido"])
         self.assertIsNone(r["traduzido"])
+
+
+class PareceErroTraducaoTest(unittest.TestCase):
+    def test_detecta_pagina_de_erro_http(self):
+        self.assertTrue(_parece_erro_traducao("Error 500 (Server Error)!!1500.That's an error."))
+        self.assertTrue(_parece_erro_traducao("<html><head><title>Error</title></head>"))
+        self.assertTrue(_parece_erro_traducao("server error, please try again later"))
+
+    def test_texto_valido_nao_e_erro(self):
+        self.assertFalse(_parece_erro_traducao("Esta é uma tradução normal em português."))
+        self.assertFalse(_parece_erro_traducao("Check this out"))
+
+    def test_texto_vazio_e_erro(self):
+        self.assertTrue(_parece_erro_traducao(""))
+        self.assertTrue(_parece_erro_traducao("   "))
 
 
 class NomeIdiomaTest(unittest.TestCase):
