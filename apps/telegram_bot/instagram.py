@@ -4,6 +4,9 @@ from apps.telegram_bot.instagram_extractor import (
     get_profile_username,
     _cookies_known_bad as cookies_known_bad,
     get_cookie_failure_reason,
+    _auto_login_and_save_cookies,
+    inspect_cookie_health,
+    reset_cookies_bad,
 )
 
 
@@ -13,4 +16,7 @@ __all__ = [
     "get_profile_username",
     "cookies_known_bad",
     "get_cookie_failure_reason",
+    "_auto_login_and_save_cookies",
+    "inspect_cookie_health",
+    "reset_cookies_bad",
 ]

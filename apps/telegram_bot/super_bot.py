@@ -7,6 +7,7 @@ import time
 import random
 import asyncio
 import logging
+import subprocess
 import psutil
 from datetime import datetime, timedelta
 from functools import partial
@@ -90,10 +91,13 @@ from apps.telegram_bot.instagram import (
     get_profile_username,
     cookies_known_bad,
     get_cookie_failure_reason,
+    _auto_login_and_save_cookies,
+    inspect_cookie_health,
+    reset_cookies_bad,
 )
 from apps.telegram_bot.media_utils import detectar_extensao as _detectar_extensao, progresso_upload as _progresso_upload
 from apps.telegram_bot.text_utils import dividir_texto_longo, limpar_texto, montar_legenda
-from apps.telegram_bot.twitter import build_vxtwitter_url, match_tweet_url
+from apps.telegram_bot.twitter import build_vxtwitter_url, build_fxtwitter_url, match_tweet_url
 
 load_environment()
 ensure_runtime_dirs()
@@ -132,6 +136,60 @@ DOMINIOS_PERMITIDOS = [
     "instagram.com", "instagr.am", "tiktok.com", "threads.net",
     "pinterest.com", "pin.it"
 ]
+
+# -----------------------------------------
+# POOL DE SESSÕES HTTP REUTILIZÁVEIS
+# Reutilizar ClientSession evita o custo de handshake TLS/DNS
+# a cada chamada (principalmente em picos de uso).
+# -----------------------------------------
+_http_session: aiohttp.ClientSession | None = None
+_http_session_lock = asyncio.Lock()
+_HTTP_TIMEOUT_RATE = 5      # requisições leves (encurtar url, checagens)
+
+async def get_http_session() -> aiohttp.ClientSession:
+    """Retorna uma sessão aiohttp compartilhada, criada sob demanda."""
+    global _http_session
+    if _http_session is None or _http_session.closed:
+        async with _http_session_lock:
+            if _http_session is None or _http_session.closed:
+                _http_session = aiohttp.ClientSession(
+                    timeout=aiohttp.ClientTimeout(total=10),
+                    raise_for_status=False,
+                )
+    return _http_session
+
+async def close_http_session() -> None:
+    """Fecha a sessão compartilhada (chamado no shutdown)."""
+    global _http_session
+    if _http_session is not None and not _http_session.closed:
+        await _http_session.close()
+    _http_session = None
+
+# -----------------------------------------
+# CACHE DO ENCURTADOR DE URL
+# -----------------------------------------
+_encurtada_cache: dict[str, str] = {}
+_ENCRTADA_CACHE_MAX = 2000
+
+async def fetch_short(url: str) -> str:
+    """Chama o is.gd uma única vez por URL, com cache em memória."""
+    if url in _encurtada_cache:
+        return _encurtada_cache[url]
+    curta = url
+    try:
+        session = await get_http_session()
+        async with session.get(
+            f"https://is.gd/create.php?format=simple&url={url}",
+            timeout=aiohttp.ClientTimeout(total=_HTTP_TIMEOUT_RATE),
+        ) as r:
+            if r.status == 200:
+                curta = (await r.text()).strip() or url
+    except Exception:
+        pass
+    if len(_encurtada_cache) >= _ENCRTADA_CACHE_MAX:
+        _encurtada_cache.clear()
+    _encurtada_cache[url] = curta
+    return curta
 
 # -----------------------------------------
 from apps.telegram_bot.mensagens_erro import (
@@ -273,14 +331,7 @@ def chat_autorizado(chat_id: int) -> bool:
     return chat_id in GRUPOS_AUTORIZADOS
 
 async def encurtar_url(url: str) -> str:
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(f"https://is.gd/create.php?format=simple&url={url}", timeout=5) as r:
-                if r.status == 200:
-                    return await r.text()
-    except Exception:
-        pass
-    return url
+    return await fetch_short(url)
 
 # -----------------------------------------
 # MOTOR DE DOWNLOAD
@@ -302,6 +353,16 @@ async def avisar_video_longo(msg_espera, url, usuario, message):
 def _foi_pulado_por_duracao(item: dict) -> bool:
     duracao = item.get('duration') or 0
     return bool(duracao and duracao > LIMITE_DURACAO)
+
+def _converter_para_jpg(data: bytes, ext: str) -> tuple[bytes, str]:
+    """Converte webp/heic/heif para jpg. Roda em thread (CPU-bound)."""
+    from PIL import Image
+    import io
+    img = Image.open(io.BytesIO(data))
+    buf = io.BytesIO()
+    img.convert('RGB').save(buf, format='JPEG', quality=95)
+    return buf.getvalue(), 'jpg'
+
 
 async def extrair_e_enviar_midia(client, message, url, usuario, msg_espera, force_long=False):
     """Motor de download genérico. Retorna True se obteve sucesso."""
@@ -527,48 +588,49 @@ async def processar_instagram(client, message, url, usuario, msg_espera, link_du
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
                     'Referer': 'https://www.instagram.com/',
                 }
-                async with aiohttp.ClientSession(headers=cdn_headers) as session:
-                    for i, m_url in enumerate(midias_urls):
-                        try:
-                            async with session.get(m_url) as response:
-                                if response.status == 200:
-                                    content_type = response.headers.get('Content-Type', '')
-                                    ext = _detectar_extensao(m_url, content_type)
-                                    data = await response.read()
-                                    
-                                    # Converte webp/heic → jpg (Telegram rejeita esses formatos como foto)
-                                    if ext in ('webp', 'heic', 'heif'):
-                                        try:
-                                            from PIL import Image
-                                            import io
-                                            img = Image.open(io.BytesIO(data))
-                                            buf = io.BytesIO()
-                                            img.convert('RGB').save(buf, format='JPEG', quality=95)
-                                            data = buf.getvalue()
-                                            ext = 'jpg'
-                                            log.info(f"   Convertido {ext} → jpg para compatibilidade Telegram")
-                                        except Exception as conv_err:
-                                            log.warning(f"Falha ao converter {ext} para jpg: {conv_err}")
-                                            ext = 'jpg'  # Tenta enviar mesmo assim
-                                    
-                                    caminho_temp = PASTA_DOWNLOADS / f"temp_insta_{message.id}_{i}.{ext}"
-                                    
-                                    with open(caminho_temp, 'wb') as f:
-                                        f.write(data)
-                                    
-                                    arquivos_para_deletar.append(str(caminho_temp))
-                                    cap = legenda_final if i == 0 else ""
-                                    is_video = ext in ('mp4', 'mov', 'm4v', 'webm')
+                session = await get_http_session()
 
-                                    if is_video:
-                                        lista_telegram.append(InputMediaVideo(str(caminho_temp), caption=cap, supports_streaming=True))
-                                    else:
-                                        lista_telegram.append(InputMediaPhoto(str(caminho_temp), caption=cap))
-                                    log.info(f"   Mídia {i+1}/{len(midias_urls)} baixada: ext={ext}, size={len(data)} bytes")
-                                else:
-                                    log.warning(f"Falha ao baixar URL do Instagram ({response.status}): {m_url[:100]}")
-                        except Exception as e:
-                            log.error(f"Erro ao baixar midia individual do Instagram: {e}")
+                async def _baixar_midia_ig(i, m_url):
+                    """Baixa uma mídia do carrossel e prepara o InputMedia."""
+                    try:
+                        async with session.get(m_url, headers=cdn_headers) as response:
+                            if response.status != 200:
+                                log.warning(f"Falha ao baixar URL do Instagram ({response.status}): {m_url[:100]}")
+                                return None
+                            content_type = response.headers.get('Content-Type', '')
+                            ext = _detectar_extensao(m_url, content_type)
+                            data = await response.read()
+
+                            # Converte webp/heic → jpg (Telegram rejeita esses formatos como foto)
+                            if ext in ('webp', 'heic', 'heif'):
+                                try:
+                                    data, ext = await asyncio.to_thread(_converter_para_jpg, data, ext)
+                                    log.info("   Convertido para jpg para compatibilidade Telegram")
+                                except Exception as conv_err:
+                                    log.warning(f"Falha ao converter para jpg: {conv_err}")
+                                    ext = 'jpg'  # Tenta enviar mesmo assim
+
+                            caminho_temp = PASTA_DOWNLOADS / f"temp_insta_{message.id}_{i}.{ext}"
+                            with open(caminho_temp, 'wb') as f:
+                                f.write(data)
+
+                            arquivos_para_deletar.append(str(caminho_temp))
+                            cap = legenda_final if i == 0 else ""
+                            is_video = ext in ('mp4', 'mov', 'm4v', 'webm')
+                            if is_video:
+                                item = InputMediaVideo(str(caminho_temp), caption=cap, supports_streaming=True)
+                            else:
+                                item = InputMediaPhoto(str(caminho_temp), caption=cap)
+                            log.info(f"   Mídia {i+1}/{len(midias_urls)} baixada: ext={ext}, size={len(data)} bytes")
+                            return item
+                    except Exception as e:
+                        log.error(f"Erro ao baixar midia individual do Instagram: {e}")
+                        return None
+
+                resultados = await asyncio.gather(
+                    *(_baixar_midia_ig(i, m_url) for i, m_url in enumerate(midias_urls))
+                )
+                lista_telegram = [r for r in resultados if r is not None]
 
             # Envio parcial: envia o que conseguiu, mesmo se nem tudo foi baixado
             if lista_telegram:
@@ -936,6 +998,126 @@ async def cmd_sync(client, message):
         await message.reply_text("❌ Erro ao atualizar o menu. Veja os logs.")
 
 
+def _is_admin(message) -> bool:
+    """Verifica se quem enviou a mensagem é o admin configurado."""
+    user = getattr(message, "from_user", None)
+    return bool(user and user.id == ADMIN_ID)
+
+
+def _atualizar_ytdlp_sync() -> dict:
+    """Executa pip install -U yt-dlp em thread e retorna o resultado."""
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "--upgrade", "yt-dlp"],
+            capture_output=True, text=True, timeout=600,
+        )
+        output = (proc.stdout or "") + "\n" + (proc.stderr or "")
+        atualizado = proc.returncode == 0
+        return {"ok": atualizado, "output": output.strip()}
+    except Exception as e:
+        return {"ok": False, "output": f"Erro ao executar pip: {e}"}
+
+
+async def _atualizar_ytdlp_async() -> dict:
+    """Versão assíncrona (em thread) de atualizar o yt-dlp."""
+    return await asyncio.to_thread(_atualizar_ytdlp_sync)
+
+
+@app.on_message(filters.command("update_ytdlp"))
+async def cmd_update_ytdlp(client, message):
+    if not chat_autorizado(message.chat.id):
+        return
+    if not _is_admin(message):
+        await message.reply_text("⛔ Comando restrito ao admin.")
+        return
+    aviso = await message.reply_text("🔄 Atualizando yt-dlp, aguarde...")
+    try:
+        res = await _atualizar_ytdlp_async()
+        if res["ok"]:
+            txt = "✅ **yt-dlp atualizado com sucesso!**"
+            if any(txt2 in res["output"] for txt2 in ("already up-to-date", "Satisfied", "Requirement already")):
+                txt = "✅ yt-dlp já está na versão mais recente."
+            try:
+                versao = subprocess.run(
+                    [sys.executable, "-m", "yt_dlp", "--version"],
+                    capture_output=True, text=True, timeout=30,
+                ).stdout.strip()
+                if versao:
+                    txt += f"\n📦 Versão atual: `{versao}`"
+            except Exception:
+                pass
+        else:
+            txt = "❌ **Falha ao atualizar yt-dlp.**\n"
+            txt += f"```\n{res['output'][-1000:]}\n```"
+        await aviso.edit_text(txt)
+    except Exception as e:
+        log.error(f"Erro no comando update_ytdlp: {e}")
+        await aviso.edit_text(f"❌ Erro inesperado: {str(e)[:200]}")
+
+
+@app.on_message(filters.command("ig_status"))
+async def cmd_ig_status(client, message):
+    if not chat_autorizado(message.chat.id):
+        return
+    if not _is_admin(message):
+        await message.reply_text("⛔ Comando restrito ao admin.")
+        return
+    try:
+        relatorio = await asyncio.to_thread(inspect_cookie_health, COOKIE_PATH)
+        for parte in dividir_texto_longo(relatorio):
+            await message.reply_text(parte)
+    except Exception as e:
+        log.error(f"Erro no comando ig_status: {e}")
+        await message.reply_text(f"❌ Erro ao verificar cookies: {str(e)[:200]}")
+
+
+@app.on_message(filters.command("ig_renew"))
+async def cmd_ig_renew(client, message):
+    if not chat_autorizado(message.chat.id):
+        return
+    if not _is_admin(message):
+        await message.reply_text("⛔ Comando restrito ao admin.")
+        return
+    aviso = await message.reply_text("🍪 Gerando cookies novos do Instagram... aguarde.")
+    try:
+        cookies = await asyncio.to_thread(_auto_login_and_save_cookies, COOKIE_PATH)
+        if cookies:
+            if "sessionid" in cookies:
+                await aviso.edit_text("✅ **Cookies renovados com sucesso!**\nGenerei um `sessionid` novo. O download do Instagram deve voltar a funcionar.")
+                if os.path.exists(COOKIE_PATH):
+                    await asyncio.to_thread(reset_cookies_bad)
+            else:
+                await aviso.edit_text("⚠️ Login feito, mas o `sessionid` não foi encontrado nos cookies gerados. Verifique os logs.")
+        else:
+            await aviso.edit_text(
+                "❌ Não foi possível gerar cookies novos.\n"
+                "Verifique `IG_USERNAME` / `IG_PASSWORD` no .env e o 2FA da conta.\n"
+                "Detalhes nos logs."
+            )
+    except Exception as e:
+        log.error(f"Erro no comando ig_renew: {e}")
+        await aviso.edit_text(f"❌ Erro ao renovar cookies: {str(e)[:200]}")
+
+
+async def limpeza_update_ytdlp_periodica():
+    """Atualiza o yt-dlp automaticamente a cada 3 dias (de madrugada)."""
+    while True:
+        await asyncio.sleep(3 * 86400)  # 3 dias
+        try:
+            hora = datetime.now().hour
+            if 3 <= hora <= 5:  # madrugada
+                log.info("🔄 Auto-update periódico do yt-dlp...")
+                res = await _atualizar_ytdlp_async()
+                if res["ok"]:
+                    log.info("✅ yt-dlp auto-atualizado (periódico).")
+                else:
+                    log.warning("⚠️ Auto-update do yt-dlp falhou: %s", res["output"][-300:])
+            else:
+                log.info("Auto-update do yt-dlp fora da janela de madrugada, adiado.")
+        except Exception as e:
+            log.error(f"Erro no auto-update periódico do yt-dlp: {e}")
+
+
 async def filtro_web_app_data(_, __, message):
     return bool(getattr(message, "web_app_data", None))
 
@@ -1157,16 +1339,16 @@ async def enviar_midia_quote(client, message, qrt_info, match, msg_espera, usuar
                 log.info(f"X quote: tentando download direto: {video_url}")
                 try:
                     video_path = str(PASTA_DOWNLOADS / f"x_quote_{match.group(2)}_{int(time.time())}.mp4")
-                    async with aiohttp.ClientSession() as dl_session:
-                        async with dl_session.get(video_url, timeout=60) as dl_resp:
-                            if dl_resp.status == 200:
-                                with open(video_path, 'wb') as vf:
-                                    vf.write(await dl_resp.read())
-                                arquivos_quote.append(video_path)
-                                caption_video = legenda_quote if not lista_quote else ""
-                                lista_quote.append(InputMediaVideo(video_path, caption=caption_video, supports_streaming=True))
-                            else:
-                                raise Exception("Download direto falhou")
+                    dl_session = await get_http_session()
+                    async with dl_session.get(video_url, timeout=aiohttp.ClientTimeout(total=60)) as dl_resp:
+                        if dl_resp.status == 200:
+                            with open(video_path, 'wb') as vf:
+                                vf.write(await dl_resp.read())
+                            arquivos_quote.append(video_path)
+                            caption_video = legenda_quote if not lista_quote else ""
+                            lista_quote.append(InputMediaVideo(video_path, caption=caption_video, supports_streaming=True))
+                        else:
+                            raise Exception("Download direto falhou")
                 except Exception as e2:
                     log.error(f"X quote direct download erro: {e2}")
 
@@ -1290,7 +1472,7 @@ async def processar_links(client, message):
         # Apenas CHECA se é duplicado (sem registrar). Registro acontece só após sucesso.
         url_norm = normalizar_link_social(url_raw)
 
-        repetido_db, info_db = db.checar_link(url_norm, message.chat.id)
+        repetido_db, info_db = await asyncio.to_thread(db.checar_link, url_norm, message.chat.id)
 
         # Registra o último link enviado pelo usuário (para validar /bloq)
         _ultimo_link_por_usuario[user_id] = {
@@ -1315,11 +1497,34 @@ async def processar_links(client, message):
         try:
             match = match_tweet_url(url_raw)
             if match:
-                api_url = build_vxtwitter_url(match.group(1), match.group(2))
+                username = match.group(1)
+                status_id = match.group(2)
+                api_url_vx = build_vxtwitter_url(username, status_id)
+                api_url_fx = build_fxtwitter_url(username, status_id)
                 headers = {"Accept-Encoding": "gzip, deflate"}
-                async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10), headers=headers) as session:
-                    async with session.get(api_url) as resp:
-                        res = await resp.json()
+                _x_timeout = aiohttp.ClientTimeout(total=30)
+
+                res = None
+                session = await get_http_session()
+                try:
+                    async with session.get(api_url_vx, headers=headers, timeout=_x_timeout) as resp:
+                        if resp.status == 200:
+                            res = await resp.json()
+                        else:
+                            raise ValueError("vxtwitter HTTP status != 200")
+                except Exception as e:
+                    log.warning(f"vxtwitter falhou para {url_raw} ({e}), tentando fxtwitter...")
+                    async with session.get(api_url_fx, headers=headers, timeout=_x_timeout) as resp:
+                        if resp.status == 200:
+                            res = await resp.json()
+                            # fxtwitter returns the tweet wrapped in {"tweet": {...}}
+                            if "tweet" in res:
+                                res = res["tweet"]
+                        else:
+                            raise ValueError("fxtwitter HTTP status != 200")
+                                
+                if not res:
+                    raise Exception("Falha ao puxar dados do X (ambas as APIs falharam)")
 
                 texto_base = res.get('text', '')
                 
@@ -1330,14 +1535,27 @@ async def processar_links(client, message):
                     if 'media_extended' not in qrt_info and 'id' in qrt_info:
                         try:
                             qrt_user = qrt_info.get('user_screen_name', 'i')
-                            url_qrt = build_vxtwitter_url(qrt_user, qrt_info["id"])
-                            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as s:
-                                async with s.get(url_qrt) as r:
-                                    qrt_data = await r.json()
-                            if 'media_extended' in qrt_data and qrt_data['media_extended']:
-                                qrt_info['media_extended'] = qrt_data['media_extended']
-                            if 'text' in qrt_data and not qrt_info.get('text'):
-                                qrt_info['text'] = qrt_data['text']
+                            url_qrt_vx = build_vxtwitter_url(qrt_user, qrt_info["id"])
+                            url_qrt_fx = build_fxtwitter_url(qrt_user, qrt_info["id"])
+                            qrt_data = None
+                            try:
+                                async with session.get(url_qrt_vx, timeout=_x_timeout) as r:
+                                    if r.status == 200:
+                                        qrt_data = await r.json()
+                                    else:
+                                        raise ValueError("QRT vx fail")
+                            except Exception:
+                                async with session.get(url_qrt_fx, timeout=_x_timeout) as r:
+                                    if r.status == 200:
+                                        qrt_data = await r.json()
+                                        if "tweet" in qrt_data:
+                                            qrt_data = qrt_data["tweet"]
+
+                            if qrt_data:
+                                if 'media_extended' in qrt_data and qrt_data['media_extended']:
+                                    qrt_info['media_extended'] = qrt_data['media_extended']
+                                if 'text' in qrt_data and not qrt_info.get('text'):
+                                    qrt_info['text'] = qrt_data['text']
                         except Exception as e:
                             log.error(f"Erro ao buscar quote antecipado: {e}")
 
@@ -1408,14 +1626,14 @@ async def processar_links(client, message):
                                 log.info(f"X: tentando download direto: {video_url}")
                                 try:
                                     video_path = str(PASTA_DOWNLOADS / f"x_{match.group(2)}_{int(time.time())}.mp4")
-                                    async with aiohttp.ClientSession() as dl_session:
-                                        async with dl_session.get(video_url, timeout=60) as dl_resp:
-                                            if dl_resp.status == 200:
-                                                with open(video_path, 'wb') as vf: vf.write(await dl_resp.read())
-                                                arquivos_x.append(video_path)
-                                                caption_video = legenda if not lista_telegram else ""
-                                                lista_telegram.append(InputMediaVideo(video_path, caption=caption_video, supports_streaming=True))
-                                            else: raise Exception("Download direto falhou")
+                                    dl_session = await get_http_session()
+                                    async with dl_session.get(video_url, timeout=aiohttp.ClientTimeout(total=60)) as dl_resp:
+                                        if dl_resp.status == 200:
+                                            with open(video_path, 'wb') as vf: vf.write(await dl_resp.read())
+                                            arquivos_x.append(video_path)
+                                            caption_video = legenda if not lista_telegram else ""
+                                            lista_telegram.append(InputMediaVideo(video_path, caption=caption_video, supports_streaming=True))
+                                        else: raise Exception("Download direto falhou")
                                 except Exception as e2:
                                     log.error(f"X direct download erro: {e2}")
                                     raise
@@ -1472,7 +1690,7 @@ async def processar_links(client, message):
                     await enviar_midia_quote(client, message, qrt_info, match, msg_espera, usuario)
 
                 # Registra link e verifica duplicata SOMENTE após sucesso
-                repetido_db, info_db = db.registrar_link_e_checar(url_norm, message.chat.id, message.from_user.first_name or "Membro", user_id)
+                repetido_db, info_db = await asyncio.to_thread(db.registrar_link_e_checar, url_norm, message.chat.id, message.from_user.first_name or "Membro", user_id)
                 if repetido_db:
                     await enviar_aviso_duplicado(client, message, {}, info_db, usuario)
         except Exception as e:
@@ -1527,7 +1745,7 @@ async def processar_links(client, message):
 
         if sucesso:
             _failed_url_cache.pop(url_norm, None)
-            repetido_db, info_db = db.registrar_link_e_checar(url_norm, message.chat.id, message.from_user.first_name or "Membro", user_id)
+            repetido_db, info_db = await asyncio.to_thread(db.registrar_link_e_checar, url_norm, message.chat.id, message.from_user.first_name or "Membro", user_id)
             if repetido_db:
                 await enviar_aviso_duplicado(client, message, {}, info_db, usuario)
         else:
@@ -1551,7 +1769,7 @@ async def processar_links(client, message):
         sucesso = await extrair_e_enviar_midia(client, message, url, usuario, msg_espera)
 
         if sucesso and not any(d in url_raw for d in ["youtube.com", "youtu.be"]):
-            repetido_db, info_db = db.registrar_link_e_checar(url_norm, message.chat.id, message.from_user.first_name or "Membro", user_id)
+            repetido_db, info_db = await asyncio.to_thread(db.registrar_link_e_checar, url_norm, message.chat.id, message.from_user.first_name or "Membro", user_id)
             if repetido_db:
                 await enviar_aviso_duplicado(client, message, {}, info_db, usuario)
         async with _processing_lock:
@@ -1577,7 +1795,7 @@ async def processar_links(client, message):
         sucesso = await extrair_e_enviar_midia(client, message, url, usuario, msg_espera)
 
         if sucesso and not any(d in url_raw for d in ["youtube.com", "youtu.be"]):
-            repetido_db, info_db = db.registrar_link_e_checar(url_norm, message.chat.id, message.from_user.first_name or "Membro", user_id)
+            repetido_db, info_db = await asyncio.to_thread(db.registrar_link_e_checar, url_norm, message.chat.id, message.from_user.first_name or "Membro", user_id)
             if repetido_db:
                 await enviar_aviso_duplicado(client, message, {}, info_db, usuario)
         
@@ -1659,5 +1877,12 @@ if __name__ == "__main__":
 
     log.info("Super Bot iniciado!")
     asyncio.get_event_loop().create_task(limpeza_periodica())
+    asyncio.get_event_loop().create_task(limpeza_update_ytdlp_periodica())
     asyncio.get_event_loop().create_task(notificar_atualizacao())
-    app.run()
+    try:
+        app.run()
+    finally:
+        try:
+            asyncio.get_event_loop().run_until_complete(close_http_session())
+        except Exception:
+            pass

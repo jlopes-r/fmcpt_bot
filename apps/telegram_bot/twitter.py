@@ -10,3 +10,7 @@ def match_tweet_url(url: str):
 
 def build_vxtwitter_url(username: str, status_id: str) -> str:
     return f"https://api.vxtwitter.com/{username}/status/{status_id}"
+
+
+def build_fxtwitter_url(username: str, status_id: str) -> str:
+    return f"https://api.fxtwitter.com/{username}/status/{status_id}"

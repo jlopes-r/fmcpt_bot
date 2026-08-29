@@ -222,6 +222,68 @@ def _load_cookies_from_file(cookie_path: str) -> dict:
     return cookies
 
 
+def inspect_cookie_health(cookie_path: str) -> str:
+    """Gera um relatório legível sobre o estado dos cookies do Instagram.
+
+    Lê o arquivo Netscape na hora, verifica se o sessionid existe e se está
+    expirado, e retorna quantos dias faltam para expirar (ou há quanto expirou).
+    """
+    if not cookie_path or not os.path.exists(cookie_path):
+        return "❌ Arquivo de cookies não encontrado em:\n`%s`" % cookie_path
+
+    try:
+        cj = http.cookiejar.MozillaCookieJar(cookie_path)
+        cj.load(ignore_discard=True, ignore_expires=True)
+    except Exception as e:
+        return "❌ Falha ao ler o arquivo de cookies: %s" % str(e)[:200]
+
+    total = len(cj)
+    nomes = sorted(cookie.name for cookie in cj)
+    tem_sessionid = any(cookie.name == 'sessionid' for cookie in cj)
+
+    linhas = [f"🍪 **Cookies do Instagram**", ""]
+    linhas.append(f"📄 Arquivo: `{cookie_path}`")
+    linhas.append(f"🔢 Cookies: `{total}`")
+    if nomes:
+        linhas.append(f"🧩 Campos: `{', '.join(nomes)}`")
+
+    sessionid = None
+    for cookie in cj:
+        if cookie.name == 'sessionid':
+            sessionid = cookie
+            break
+
+    linhas.append("")
+    if not tem_sessionid:
+        linhas.append("⚠️ **Sem `sessionid`** — a autenticação não vai funcionar.")
+        linhas.append("💡 Use `/ig_renew` para gerar cookies novos.")
+    elif sessionid.expires:
+        now = time.time()
+        if sessionid.expires < now:
+            dias = (now - sessionid.expires) / 86400
+            linhas.append(
+                "❌ **sessionid EXPIRADO** há %.1f dias (expirou em %s).\n"
+                "💡 Use `/ig_renew` para gerar cookies novos." % (
+                    dias,
+                    datetime.fromtimestamp(sessionid.expires).strftime('%Y-%m-%d %H:%M'),
+                )
+            )
+        else:
+            dias = (sessionid.expires - now) / 86400
+            linhas.append(
+                "✅ **sessionid VÁLIDO** por mais %.1f dias (expira em %s)." % (
+                    dias,
+                    datetime.fromtimestamp(sessionid.expires).strftime('%Y-%m-%d %H:%M'),
+                )
+            )
+    else:
+        linhas.append("ℹ️ `sessionid` presente, mas sem data de expiração registrada.")
+
+    linhas.append("")
+    linhas.append("Status global em memória: " + ("⚠️ cookies marcados como INVALIDOS" if _cookies_known_bad else "✅ ok"))
+    return "\n".join(linhas)
+
+
 def _build_cookie_header(cookies: dict) -> str:
     """Monta a string Cookie: para o header HTTP."""
     return '; '.join(f'{k}={v}' for k, v in cookies.items())
