@@ -31,6 +31,15 @@ fi
 # Faz o pull
 echo "📥 Executando git pull..."
 git pull
+# Instala/atualiza as dependencias do bot no venv
+# (usa python -m pip por causa do shebang quebrado de bin/pip)
+echo "📦 Instalando dependencias do bot (pip install)..."
+if [ -f "apps/telegram_bot/requirements.txt" ]; then
+    venv/bin/python -m pip install -r apps/telegram_bot/requirements.txt
+else
+    echo "  ⚠️  requirements.txt nao encontrado"
+fi
+echo ""
 
 # Pega o novo HEAD
 NEW_HEAD=$(git rev-parse HEAD 2>/dev/null)
