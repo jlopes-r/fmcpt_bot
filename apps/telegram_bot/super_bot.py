@@ -97,7 +97,7 @@ from apps.telegram_bot.instagram import (
 )
 from apps.telegram_bot.media_utils import detectar_extensao as _detectar_extensao, progresso_upload as _progresso_upload
 from apps.telegram_bot.text_utils import dividir_texto_longo, limpar_texto, montar_legenda
-from apps.telegram_bot.translator import traduzir_se_necessario
+from apps.telegram_bot.translator import nome_idioma, traduzir_com_detalhes, traduzir_se_necessario
 from apps.telegram_bot.twitter import build_vxtwitter_url, build_fxtwitter_url, match_tweet_url
 
 load_environment()
@@ -1569,9 +1569,18 @@ async def processar_links(client, message):
                     elif tem_midia_no_quote:
                         texto_base += f"\n\n🔁 [Quote de {qrt_info.get('user_name', 'Autor')} logo abaixo 👇]"
                     
-                # Tradução automática do texto do tweet (e quote) para PT, se não estiver em português
-                texto_traduzido = await asyncio.to_thread(traduzir_se_necessario, texto_base)
-                cap_limpa = limpar_texto(texto_traduzido)
+                # Tradução automática do texto do tweet (e quote) para PT, se não estiver em português.
+                # Se traduzir, inclui o texto original + aviso do idioma de origem.
+                detalhes_trad = await asyncio.to_thread(traduzir_com_detalhes, texto_base)
+                if detalhes_trad["foi_traduzido"]:
+                    cap_limpa = (
+                        f"{detalhes_trad['traduzido']}\n\n"
+                        f"---\n"
+                        f"🔎 Traduzido do {nome_idioma(detalhes_trad['idioma_origem'])}:\n\n"
+                        f"{limpar_texto(detalhes_trad['original'])}"
+                    )
+                else:
+                    cap_limpa = limpar_texto(detalhes_trad["original"])
                 legenda = montar_legenda(cap_limpa, res.get('user_name', 'Autor'), usuario, emoji="📸")
 
                 if 'media_extended' in res and len(res['media_extended']) > 0:
