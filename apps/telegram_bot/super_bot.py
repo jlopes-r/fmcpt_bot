@@ -93,6 +93,7 @@ from apps.telegram_bot.instagram import (
     get_cookie_failure_reason,
     _auto_login_and_save_cookies,
     inspect_cookie_health,
+    validate_cookie_health,
     reset_cookies_bad,
 )
 from apps.telegram_bot.media_utils import detectar_extensao as _detectar_extensao, progresso_upload as _progresso_upload
@@ -1060,6 +1061,13 @@ async def cmd_ig_status(client, message):
         return
     try:
         relatorio = await asyncio.to_thread(inspect_cookie_health, COOKIE_PATH)
+        validacao = await validate_cookie_health(COOKIE_PATH)
+        if validacao.get('valid'):
+            relatorio += "\n\n🟢 **Validação real:** sessão CONFIRMADA com o Instagram."
+            if validacao.get('username'):
+                relatorio += f"\n👤 Logado como **@{validacao['username']}**"
+        else:
+            relatorio += "\n\n🔴 **Validação real:** ❌ " + (validacao.get('reason') or 'sessão inválida')
         for parte in dividir_texto_longo(relatorio):
             await message.reply_text(parte)
     except Exception as e:

@@ -292,6 +292,72 @@ def inspect_cookie_health(cookie_path: str) -> str:
     return "\n".join(linhas)
 
 
+async def validate_cookie_health(cookie_path: str) -> dict:
+    """Confere a validade REAL dos cookies fazendo uma chamada autenticada à API
+    do Instagram (accounts/current_user). Se a sessão voltar com dados do usuário,
+    os cookies estão funcionando de verdade — não apenas dentro da data de expiração.
+
+    Retorna:
+      {'valid': True, 'username': ..., 'full_name': ..., 'user_id': ...}  OU
+      {'valid': False, 'reason': '...'}
+    """
+    if not cookie_path or not os.path.exists(cookie_path):
+        return {"valid": False, "reason": "Arquivo de cookies não encontrado"}
+
+    cookies = _load_cookies_from_file(cookie_path)
+    if not cookies or 'sessionid' not in cookies:
+        return {"valid": False, "reason": "Arquivo de cookies sem `sessionid`"}
+
+    headers = {
+        **BROWSER_HEADERS,
+        **IG_APP_HEADERS,
+        'X-Requested-With': 'XMLHttpRequest',
+        'Cookie': _build_cookie_header(cookies),
+    }
+    csrf = cookies.get('csrftoken')
+    if csrf:
+        headers['X-CSRFToken'] = csrf
+
+    api_url = 'https://www.instagram.com/api/v1/accounts/current_user/?edit=true'
+    try:
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+            resp = await client.get(api_url, headers=headers)
+            log.info("🍪 Validação real do cookie: status=%d", resp.status_code)
+
+            if _is_challenge_response(resp):
+                _mark_cookies_bad("Validação real retornou challenge/login")
+                return {"valid": False, "reason": "Instagram exigiu login/verificação (challenge)"}
+
+            body_low = (resp.text or '')[:2000].lower()
+            if any(kw in body_low for kw in ('login_required', 'checkpoint_required', 'challenge_required')):
+                _mark_cookies_bad("Validação real: sessão rejeitada pelo Instagram")
+                return {"valid": False, "reason": "Sessão rejeitada pelo Instagram (login/checkpoint necessário)"}
+
+            if resp.status_code == 200:
+                try:
+                    data = resp.json()
+                except (json.JSONDecodeError, ValueError):
+                    _mark_cookies_bad("Validação real retornou HTML em vez de JSON")
+                    return {"valid": False, "reason": "Resposta não-JSON — provável página de login"}
+
+                user = data.get('user')
+                if user and isinstance(user, dict) and user.get('username'):
+                    reset_cookies_bad()
+                    return {
+                        'valid': True,
+                        'username': user.get('username', ''),
+                        'full_name': user.get('full_name', ''),
+                        'user_id': user.get('pk') or user.get('id'),
+                        'reason': '',
+                    }
+
+            body = (resp.text or '')[:300]
+            return {"valid": False, "reason": f"Instagram respondeu {resp.status_code}: {body[:120]}"}
+    except Exception as e:
+        log.info("❌ Validação real falhou: %s", str(e)[:150])
+        return {"valid": False, "reason": f"Erro ao validar cookies: {str(e)[:120]}"}
+
+
 def _build_cookie_header(cookies: dict) -> str:
     """Monta a string Cookie: para o header HTTP."""
     return '; '.join(f'{k}={v}' for k, v in cookies.items())
