@@ -35,9 +35,9 @@ SUPER_COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec("ping", "Verifica se o bot esta online", "Utilidades"),
     CommandSpec("retry", "Tenta novamente um download que falhou", "Utilidades", usage="/retry em resposta ao erro"),
     CommandSpec("sync", "Sincroniza o autocomplete do Telegram", "Administracao", admin_only=True, ephemeral=True),
-    CommandSpec("update_ytdlp", "Atualiza o yt-dlp manualmente", "Administracao", admin_only=True, ephemeral=True),
-    CommandSpec("ig_status", "Verifica a validade dos cookies do Instagram", "Administracao", admin_only=True, ephemeral=True),
-    CommandSpec("ig_renew", "Gera cookies novos do Instagram via auto-login", "Administracao", admin_only=True, ephemeral=True),
+    CommandSpec("update_ytdlp", "Atualiza o yt-dlp manualmente", "Administracao", ephemeral=True),
+    CommandSpec("ig_status", "Verifica a validade dos cookies do Instagram", "Administracao", ephemeral=True),
+    CommandSpec("ig_renew", "Gera cookies novos do Instagram via auto-login", "Administracao", ephemeral=True),
 )
 
 

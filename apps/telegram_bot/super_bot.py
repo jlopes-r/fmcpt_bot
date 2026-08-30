@@ -1029,9 +1029,6 @@ async def _atualizar_ytdlp_async() -> dict:
 async def cmd_update_ytdlp(client, message):
     if not chat_autorizado(message.chat.id):
         return
-    if not _is_admin(message):
-        await message.reply_text("⛔ Comando restrito ao admin.")
-        return
     aviso = await message.reply_text("🔄 Atualizando yt-dlp, aguarde...")
     try:
         res = await _atualizar_ytdlp_async()
@@ -1061,9 +1058,6 @@ async def cmd_update_ytdlp(client, message):
 async def cmd_ig_status(client, message):
     if not chat_autorizado(message.chat.id):
         return
-    if not _is_admin(message):
-        await message.reply_text("⛔ Comando restrito ao admin.")
-        return
     try:
         relatorio = await asyncio.to_thread(inspect_cookie_health, COOKIE_PATH)
         for parte in dividir_texto_longo(relatorio):
@@ -1076,9 +1070,6 @@ async def cmd_ig_status(client, message):
 @app.on_message(filters.command("ig_renew"))
 async def cmd_ig_renew(client, message):
     if not chat_autorizado(message.chat.id):
-        return
-    if not _is_admin(message):
-        await message.reply_text("⛔ Comando restrito ao admin.")
         return
     aviso = await message.reply_text("🍪 Gerando cookies novos do Instagram... aguarde.")
     try:

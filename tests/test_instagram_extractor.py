@@ -1,4 +1,5 @@
 import unittest
+import time
 from unittest.mock import AsyncMock, patch
 
 from apps.telegram_bot import instagram_extractor as ig
@@ -111,6 +112,32 @@ class InstagramExtractorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, photo_result)
         embed.assert_awaited_once_with("ABC123", {}, "p")
         ytdlp.assert_not_awaited()
+
+    async def test_cookies_flagged_bad_still_attempts_layers(self):
+        reel_url = "https://www.instagram.com/reel/DNBCJoiOp9J/"
+        video_result = {
+            "urls": ["https://example.com/reel.mp4"],
+            "type": "video",
+            "title": "Reel",
+            "uploader": "Autor",
+        }
+
+        ig._cookies_known_bad = True
+        ig._cookies_bad_since = time.time()
+        self.addCleanup(ig.reset_cookies_bad)
+
+        with (
+            patch.object(ig, "_load_cookies_from_file", return_value={"sessionid": "abc"}),
+            patch.object(ig, "_extract_via_api", new=AsyncMock(return_value=video_result)),
+            patch.object(ig, "_extract_via_graphql", new=AsyncMock(return_value=None)),
+            patch.object(ig, "_extract_via_embed", new=AsyncMock(return_value=None)),
+            patch.object(ig, "_extract_via_ytdlp", new=AsyncMock()) as ytdlp,
+        ):
+            result = await ig.download_instagram(reel_url, "C:/tmp/cookies.txt", "C:/tmp")
+
+        self.assertEqual(result, video_result)
+        ytdlp.assert_not_awaited()
+        self.assertFalse(ig._cookies_known_bad)
 
 
 if __name__ == "__main__":

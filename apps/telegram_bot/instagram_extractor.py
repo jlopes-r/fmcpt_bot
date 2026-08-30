@@ -96,12 +96,20 @@ def reset_cookies_bad() -> None:
 
 
 def _is_challenge_response(resp) -> bool:
-    """Detecta se a resposta foi redirecionada para uma página de challenge/login."""
+    """Detecta se a resposta foi redirecionada para uma página de challenge/login.
+    Também reconhece as mensagens JSON que a API interna retorna quando a sessão
+    foi bloqueada/exigida (checkpoint_required, login_required, challenge_required)."""
     final_url = str(resp.url)
     if '/challenge/' in final_url or '/accounts/login/' in final_url:
         return True
-    body_start = resp.text[:1000].lower() if hasattr(resp, 'text') else ''
-    if any(kw in body_start for kw in ['/accounts/login/', 'checkpoint_required', 'challenge_required', 'id="loginform"']):
+    body_start = resp.text[:3000].lower() if hasattr(resp, 'text') else ''
+    if any(kw in body_start for kw in [
+        '/accounts/login/',
+        'checkpoint_required',
+        'challenge_required',
+        'login_required',
+        'id="loginform"',
+    ]):
         return True
     return False
 
@@ -511,52 +519,68 @@ def _parse_graphql_media(media: dict) -> dict | None:
 
 async def _extract_via_api(shortcode: str, cookies: dict = None) -> dict | None:
     """
-    Usa a API interna do Instagram: i.instagram.com/api/v1/media/{media_id}/info/
-    Essa é a mesma API que o app móvel usa. Com cookies, funciona de qualquer IP.
+    Usa a API interna do Instagram: /api/v1/media/{media_id}/info/
+    Tenta primeiro o endpoint web (www.instagram.com — combina com os headers
+    de navegador desktop e com o X-IG-App-ID web) e depois o do app (i.instagram.com).
+    Com cookies de sessão válidos, funciona de qualquer IP.
     """
     cookies = cookies or {}
     media_id = _shortcode_to_media_id(shortcode)
     log.info("🔌 Camada 1 (API Interna): shortcode=%s → media_id=%s", shortcode, media_id)
 
+    api_urls = [
+        f'https://www.instagram.com/api/v1/media/{media_id}/info/',
+        f'https://i.instagram.com/api/v1/media/{media_id}/info/',
+    ]
+
     try:
         async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
             # Monta headers com cookies de autenticação
             csrf = cookies.get('csrftoken', '')
-            api_url = f'https://i.instagram.com/api/v1/media/{media_id}/info/'
             headers = {
                 **BROWSER_HEADERS,
                 **IG_APP_HEADERS,
+                'X-Requested-With': 'XMLHttpRequest',
             }
             if csrf:
                 headers['X-CSRFToken'] = csrf
             if cookies:
                 headers['Cookie'] = _build_cookie_header(cookies)
 
-            resp = await client.get(api_url, headers=headers)
-            log.info("   API resp status: %d", resp.status_code)
+            for api_url in api_urls:
+                host = api_url.split('//')[1].split('/')[0]
+                resp = await client.get(api_url, headers=headers)
+                log.info("   API resp status: %d (%s)", resp.status_code, host)
 
-            # ── Detectar challenge/login redirect ──
-            if _is_challenge_response(resp):
-                log.warning("   🍪 API redirecionou para challenge — cookies expirados")
-                _mark_cookies_bad("API Interna retornou challenge")
-                return None
-
-            if resp.status_code == 200:
-                try:
-                    data = resp.json()
-                except (json.JSONDecodeError, ValueError):
-                    log.warning("   🍪 API retornou 200 mas body não é JSON — provável challenge")
-                    _mark_cookies_bad("API Interna retornou HTML ao invés de JSON")
+                # ── Detectar challenge/login redirect ──
+                if _is_challenge_response(resp):
+                    log.warning("   🍪 API (%s) redirecionou para challenge — cookies expirados", host)
+                    _mark_cookies_bad("API Interna retornou challenge")
                     return None
-                items = data.get('items', [])
-                if items:
-                    result = _parse_api_item(items[0])
-                    if result:
-                        log.info("   ✅ API retornou %d URLs", len(result['urls']))
-                        return result
-                log.info("   API retornou JSON mas sem itens válidos")
-            else:
-                log.info("   API retornou %d: %s", resp.status_code, resp.text[:100])
+
+                if resp.status_code == 200:
+                    try:
+                        data = resp.json()
+                    except (json.JSONDecodeError, ValueError):
+                        log.warning("   🍪 API (%s) retornou 200 mas body não é JSON — provável challenge", host)
+                        _mark_cookies_bad("API Interna retornou HTML ao invés de JSON")
+                        return None
+                    items = data.get('items', [])
+                    if items:
+                        result = _parse_api_item(items[0])
+                        if result:
+                            log.info("   ✅ API (%s) retornou %d URLs", host, len(result['urls']))
+                            return result
+                    log.info("   API (%s) retornou JSON mas sem itens válidos", host)
+                elif resp.status_code in (400, 401, 403, 429):
+                    body = (resp.text or '')[:300].lower()
+                    if any(kw in body for kw in ('checkpoint_required', 'login_required', 'challenge_required')):
+                        log.warning("   🍪 API (%s) retornou %d com login/challenge — marcando cookies ruins", host, resp.status_code)
+                        _mark_cookies_bad("API retornou %d com login/challenge" % resp.status_code)
+                        return None
+                    log.info("   API (%s) retornou %d: %s", host, resp.status_code, resp.text[:100])
+                else:
+                    log.info("   API (%s) retornou %d: %s", host, resp.status_code, resp.text[:100])
 
     except Exception as e:
         log.info("   ❌ API Interna falhou: %s", str(e)[:150])
@@ -889,14 +913,16 @@ async def download_instagram(
     # Carrega cookies para autenticar as requisições
     cookies = _load_cookies_from_file(cookie_path)
 
-    # ── Se cookies já são conhecidamente ruins, pula direto pro yt-dlp ──
+    # ── BUG ANTERIOR: quando _cookies_known_bad era True, pulávamos as camadas 1-3
+    #    direto pro yt-dlp. Mas os cookies são relidos do disco a cada chamada e o
+    #    sessionid pode estar válido — o flag costuma ser gravado por um rate-limit
+    #    temporário do Instagram, não por cookies expirados. Então SEMPRE tentamos
+    #    as camadas 1-3 com os cookies atuais antes de cair pro yt-dlp.
     if not cookies_are_valid():
-        log.info("⏩ Cookies marcados como inválidos — pulando camadas 1-3, direto para yt-dlp")
-        result = await _extract_via_ytdlp(url, cookie_path, out_dir)
-        if result:
-            return result
-        log.warning("❌ Cookies inválidos e yt-dlp falhou para: %s", url)
-        return None
+        log.info(
+            "⚠️ Cookies marcados como inválidos antes (%s) — tentando camadas 1-3 mesmo assim",
+            get_cookie_failure_reason(),
+        )
 
     # Stories: tenta API primeiro (story_id = media_id), depois yt-dlp
     if _is_story(url):
@@ -906,7 +932,7 @@ async def download_instagram(
             log.info("📖 Story detectado: @%s, media_id=%s", username, story_media_id)
 
             # Camada 1: API Interna (funciona para stories com cookies válidos)
-            if cookies and cookies_are_valid():
+            if cookies:
                 try:
                     async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
                         csrf = cookies.get('csrftoken', '')
@@ -939,6 +965,7 @@ async def download_instagram(
                                     result = _parse_api_item(items[0])
                                     if result:
                                         log.info("   ✅ Story via API: %d URLs", len(result['urls']))
+                                        reset_cookies_bad()  # sessão funcionou — flag era falso positivo
                                         return result
                                 log.info("   API retornou 200 mas sem itens válidos para story")
                         else:
@@ -962,6 +989,7 @@ async def download_instagram(
     # ── Tentativa 1: com cookies existentes ──
     result = await _try_all_layers(shortcode, cookies, url)
     if result:
+        reset_cookies_bad()  # as camadas funcionaram — cookies estão OK
         return result
 
     # ── Se challenge foi detectado nas camadas acima, não tenta auto-login ──
@@ -978,6 +1006,7 @@ async def download_instagram(
             reset_cookies_bad()  # Auto-login gerou cookies novos
             result = await _try_all_layers(shortcode, fresh_cookies, url)
             if result:
+                reset_cookies_bad()
                 return result
     else:
         log.info("🔑 Auto-login não disponível (IG_USERNAME/IG_PASSWORD não configurados)")
