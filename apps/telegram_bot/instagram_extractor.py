@@ -293,12 +293,12 @@ def inspect_cookie_health(cookie_path: str) -> str:
 
 
 async def validate_cookie_health(cookie_path: str) -> dict:
-    """Confere a validade REAL dos cookies fazendo uma chamada autenticada à API
-    do Instagram (accounts/current_user). Se a sessão voltar com dados do usuário,
-    os cookies estão funcionando de verdade — não apenas dentro da data de expiração.
+    """Confere a validade REAL dos cookies chamando um endpoint autenticado da API
+    web do Instagram (news/inbox). Ele só retorna 200 com dados para quem está
+    logado — diferente do /api/v1/media que responde mesmo deslogado.
 
     Retorna:
-      {'valid': True, 'username': ..., 'full_name': ..., 'user_id': ...}  OU
+      {'valid': True}                                                    OU
       {'valid': False, 'reason': '...'}
     """
     if not cookie_path or not os.path.exists(cookie_path):
@@ -318,41 +318,39 @@ async def validate_cookie_health(cookie_path: str) -> dict:
     if csrf:
         headers['X-CSRFToken'] = csrf
 
-    api_url = 'https://www.instagram.com/api/v1/accounts/current_user/?edit=true'
+    api_url = 'https://www.instagram.com/api/v1/news/inbox/'
     try:
         async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
             resp = await client.get(api_url, headers=headers)
             log.info("🍪 Validação real do cookie: status=%d", resp.status_code)
+            text = resp.text or ''
+            body_low = text[:3000].lower()
 
-            if _is_challenge_response(resp):
-                _mark_cookies_bad("Validação real retornou challenge/login")
-                return {"valid": False, "reason": "Instagram exigiu login/verificação (challenge)"}
-
-            body_low = (resp.text or '')[:2000].lower()
-            if any(kw in body_low for kw in ('login_required', 'checkpoint_required', 'challenge_required')):
+            # Sinais claros de sessão inválida / bloqueio
+            if _is_challenge_response(resp) or any(
+                kw in body_low for kw in ('login_required', 'checkpoint_required', 'challenge_required')
+            ):
                 _mark_cookies_bad("Validação real: sessão rejeitada pelo Instagram")
-                return {"valid": False, "reason": "Sessão rejeitada pelo Instagram (login/checkpoint necessário)"}
+                return {"valid": False, "reason": "Instagram exigiu login/verificação — sessão inválida"}
 
             if resp.status_code == 200:
                 try:
                     data = resp.json()
                 except (json.JSONDecodeError, ValueError):
-                    _mark_cookies_bad("Validação real retornou HTML em vez de JSON")
-                    return {"valid": False, "reason": "Resposta não-JSON — provável página de login"}
+                    return {"valid": False, "reason": "Resposta não-JSON — possível bloqueio"}
 
-                user = data.get('user')
-                if user and isinstance(user, dict) and user.get('username'):
-                    reset_cookies_bad()
-                    return {
-                        'valid': True,
-                        'username': user.get('username', ''),
-                        'full_name': user.get('full_name', ''),
-                        'user_id': user.get('pk') or user.get('id'),
-                        'reason': '',
-                    }
+                if any(k in data for k in ('counts', 'new_stories', 'old_stories')):
+                    reset_cookies_bad()  # endpoint autenticado respondeu ⇒ sessão está valendo
+                    return {'valid': True, 'reason': ''}
 
-            body = (resp.text or '')[:300]
-            return {"valid": False, "reason": f"Instagram respondeu {resp.status_code}: {body[:120]}"}
+                return {"valid": False, "reason": f"Resposta inesperada: {text[:120]}"}
+
+            if resp.status_code in (400, 401, 403):
+                _mark_cookies_bad("Validação real: status %d do Instagram" % resp.status_code)
+                return {"valid": False, "reason": f"Instagram rejeitou a sessão (status {resp.status_code})"}
+
+            # 429 = rate-limit transitório — não marca cookies como ruins
+            return {"valid": False, "reason": f"Instagram limitou requisições (status {resp.status_code}) — tente de novo em instantes"}
     except Exception as e:
         log.info("❌ Validação real falhou: %s", str(e)[:150])
         return {"valid": False, "reason": f"Erro ao validar cookies: {str(e)[:120]}"}

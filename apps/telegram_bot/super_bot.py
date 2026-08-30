@@ -1064,8 +1064,6 @@ async def cmd_ig_status(client, message):
         validacao = await validate_cookie_health(COOKIE_PATH)
         if validacao.get('valid'):
             relatorio += "\n\n🟢 **Validação real:** sessão CONFIRMADA com o Instagram."
-            if validacao.get('username'):
-                relatorio += f"\n👤 Logado como **@{validacao['username']}**"
         else:
             relatorio += "\n\n🔴 **Validação real:** ❌ " + (validacao.get('reason') or 'sessão inválida')
         for parte in dividir_texto_longo(relatorio):

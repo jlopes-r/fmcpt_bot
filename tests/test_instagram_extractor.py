@@ -56,23 +56,16 @@ class FakeAsyncClient:
         return FakeProfileResponse()
 
 
-class FakeCurrentUserResponse:
+class FakeNewsResponse:
     status_code = 200
-    url = "https://www.instagram.com/api/v1/accounts/current_user/?edit=true"
-    text = '{"user": {"pk": "12345", "username": "bt_mengo", "full_name": "Mengo"}, "status": "ok"}'
+    url = "https://www.instagram.com/api/v1/news/inbox/"
+    text = '{"counts":{"likes":0,"new_posts":0},"new_stories":[],"old_stories":[]}'
 
     def json(self):
-        return {
-            "user": {
-                "pk": "12345",
-                "username": "bt_mengo",
-                "full_name": "Mengo",
-            },
-            "status": "ok",
-        }
+        return {"counts": {"likes": 0, "new_posts": 0}, "new_stories": [], "old_stories": []}
 
 
-class FakeCurrentUserClient:
+class FakeNewsClient:
     def __init__(self, *args, **kwargs):
         self.requests = []
 
@@ -84,12 +77,12 @@ class FakeCurrentUserClient:
 
     async def get(self, url, headers=None):
         self.requests.append((url, headers))
-        return FakeCurrentUserResponse()
+        return FakeNewsResponse()
 
 
 class FakeLoginRequiredResponse:
     status_code = 400
-    url = "https://www.instagram.com/api/v1/accounts/current_user/?edit=true"
+    url = "https://www.instagram.com/api/v1/news/inbox/"
     text = '{"message": "login_required"}'
 
     def json(self):
@@ -135,13 +128,11 @@ class InstagramExtractorTest(unittest.IsolatedAsyncioTestCase):
         with (
             patch("apps.telegram_bot.instagram_extractor.os.path.exists", return_value=True),
             patch.object(ig, "_load_cookies_from_file", return_value={"sessionid": "abc", "csrftoken": "xyz"}),
-            patch.object(ig.httpx, "AsyncClient", FakeCurrentUserClient),
+            patch.object(ig.httpx, "AsyncClient", FakeNewsClient),
         ):
             result = await ig.validate_cookie_health("C:/tmp/cookies.txt")
 
         self.assertTrue(result["valid"])
-        self.assertEqual(result["username"], "bt_mengo")
-        self.assertEqual(result["user_id"], "12345")
 
     async def test_validate_cookie_health_rejects_login_required(self):
         ig._cookies_known_bad = False
