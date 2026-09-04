@@ -61,8 +61,105 @@ _COOKIES_BAD_RESET_SECONDS = 1800  # 30 min — depois tenta de novo
 # em rajada so piora. Guardamos quando o ultimo 429 aconteceu e damos um
 # cooldown para dar espaco entre tentativas.
 _ig_429_since: float = 0.0
-_IG_429_COOLDOWN = 90.0          # segundos de respeito apos um 429
-_IG_PROFILE_PACING = 1.2         # espaco entre API -> HTML -> oembed
+_IG_429_COOLDOWN = 120.0         # segundos de respeito apos um 429
+_IG_PROFILE_PACING = 2.0         # espaco entre API -> HTML -> oembed
+
+# ─── Cache de perfil ──────────────────────────────────────────────────────────
+# Buscar o perfil no Instagram toda hora (web_profile_info) enche o rate-limit
+# (429). Guardamos o ultimo perfil valido buscado por N minutos em memoria e em
+# disco, e so re-buscamos se passar do TTL. Serve tambem de fallback quando um
+# 429 interrompe uma nova busca.
+_IG_PROFILE_CACHE_TTL = 3600.0   # 1h
+_profile_cache_ttl: dict = {}    # username -> expiry timestamp
+_profile_cache: dict = {}        # username -> profile dict
+
+if os.environ.get("IG_DATA_DIR"):
+    _profile_cache_path = os.path.join(os.environ["IG_DATA_DIR"], "profile_cache.json")
+else:
+    _project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    _profile_cache_path = os.path.join(_project_root, "data", "profile_cache.json")
+
+
+def _profile_cache_load() -> None:
+    """Carrega o cache de disco para a memoria (username -> (expiry, profile))."""
+    global _profile_cache, _profile_cache_ttl
+    try:
+        if os.path.exists(_profile_cache_path):
+            with open(_profile_cache_path, "r", encoding="utf-8") as fh:
+                raw = json.load(fh)
+            now = time.time()
+            _profile_cache = {}
+            _profile_cache_ttl = {}
+            for username, entry in (raw.get("profiles") or {}).items():
+                expiry = float(entry.get("expiry") or 0)
+                if expiry > now:
+                    _profile_cache[username] = entry.get("profile")
+                    _profile_cache_ttl[username] = expiry
+    except Exception as e:
+        log.info("⚠️ Nao conseguiu carregar cache de perfil: %s", str(e)[:120])
+
+
+def _profile_cache_save() -> None:
+    """Persiste o cache de perfil em disco."""
+    try:
+        payload = {
+            "profiles": {
+                username: {"expiry": exp, "profile": _profile_cache.get(username)}
+                for username, exp in _profile_cache_ttl.items()
+            },
+            "saved_at": time.time(),
+        }
+        tmp = _profile_cache_path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, ensure_ascii=False)
+        os.replace(tmp, _profile_cache_path)
+    except Exception as e:
+        log.info("⚠️ Nao conseguiu salvar cache de perfil: %s", str(e)[:120])
+
+
+def _profile_cache_get(username: str) -> dict | None:
+    """Retorna o perfil cacheado (se valido) ou None."""
+    exp = _profile_cache_ttl.get(username)
+    if not exp:
+        return None
+    if time.time() > exp:
+        _profile_cache.pop(username, None)
+        _profile_cache_ttl.pop(username, None)
+        return None
+    return _profile_cache.get(username)
+
+
+def _profile_cache_store(username: str, profile: dict) -> None:
+    """Guarda/renova o perfil cacheado."""
+    _profile_cache[username] = profile
+    _profile_cache_ttl[username] = time.time() + _IG_PROFILE_CACHE_TTL
+
+
+def _profile_cache_upsert_privacy(username: str, is_private: bool) -> None:
+    """Grava is_private no cache (cria entrada minima se nao existir)."""
+    existing = _profile_cache.get(username)
+    if existing and isinstance(existing, dict) and existing.get('is_private') is not None:
+        return
+    profile = dict(existing) if isinstance(existing, dict) else {'username': username}
+    profile['is_private'] = is_private
+    _profile_cache_store(username, profile)
+
+
+def _profile_cache_clear() -> None:
+    """Limpa o cache em memoria e no disco."""
+    global _profile_cache, _profile_cache_ttl
+    _profile_cache = {}
+    _profile_cache_ttl = {}
+    try:
+        if os.path.exists(_profile_cache_path):
+            os.remove(_profile_cache_path)
+    except Exception:
+        pass
+
+
+_profile_cache_load()
+
+# ─── Fim cache de perfil ──────────────────────────────────────────────────────
 
 
 def _mark_ig_429() -> None:
@@ -463,10 +560,22 @@ def _parse_profile_from_html(html: str) -> dict | None:
 
 
 async def fetch_instagram_profile(url: str, cookie_path: str = '') -> dict | None:
-    """Busca dados públicos de um perfil do Instagram."""
+    """Busca dados públicos de um perfil do Instagram, com cache de 1h.
+
+    Usa cache em memoria/disco primeiro (chave = username). Só bate na API do
+    Instagram (web_profile_info / HTML / oembed) se o cache expirou. Isso evita
+    o 429 de rate-limit que aparecia ao re-buscar o mesmo perfil a cada mensagem.
+    Se a chamada de rede falhar ou levar 429 e houver cache, devolve o cache.
+    """
     username = get_profile_username(url)
     if not username:
         return None
+
+    # 1) Cache valido? responde na hora, sem tocar no Instagram.
+    cached = _profile_cache_get(username)
+    if cached:
+        log.info("👤 Instagram perfil @%s (cache)", username)
+        return cached
 
     cookies = _load_cookies_from_file(cookie_path)
     headers = {
@@ -480,6 +589,7 @@ async def fetch_instagram_profile(url: str, cookie_path: str = '') -> dict | Non
     api_url = f'https://www.instagram.com/api/v1/users/web_profile_info/?username={urllib.parse.quote(username)}'
     page_url = f'https://www.instagram.com/{urllib.parse.quote(username)}/'
 
+    result = None
     try:
         async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
             # Se houve 429 recente, espera o cooldown antes de tentar de novo
@@ -492,28 +602,34 @@ async def fetch_instagram_profile(url: str, cookie_path: str = '') -> dict | Non
             if resp.status_code == 200:
                 user = resp.json().get('data', {}).get('user')
                 result = _parse_profile_user(user)
-                if result and result.get('username'):
-                    return result
 
-            await asyncio.sleep(_IG_PROFILE_PACING)
-            resp = await client.get(page_url, headers=headers)
-            log.info("👤 Instagram perfil HTML @%s status=%d", username, resp.status_code)
-            if resp.status_code == 429:
-                _mark_ig_429()
-            if resp.status_code == 200:
-                html_result = _parse_profile_from_html(resp.text)
-                if html_result and html_result.get('username'):
-                    return html_result
+            if not result or not result.get('username'):
+                await asyncio.sleep(_IG_PROFILE_PACING)
+                resp = await client.get(page_url, headers=headers)
+                log.info("👤 Instagram perfil HTML @%s status=%d", username, resp.status_code)
+                if resp.status_code == 429:
+                    _mark_ig_429()
+                if resp.status_code == 200:
+                    result = _parse_profile_from_html(resp.text)
 
-            # Fallback final: oembed — leve, bem menos propenso a 429, e devolve
-            # ao menos o nome/autor/pf do perfil para o card/resposta nao falhar.
-            await asyncio.sleep(_IG_PROFILE_PACING)
-            oembed_result = await _fetch_profile_via_oembed(client, username)
-            if oembed_result and oembed_result.get('username'):
-                return oembed_result
+            if not result or not result.get('username'):
+                # Fallback final: oembed — leve, menos propenso a 429, devolve ao
+                # menos nome/autor/pf para o card/resposta nao falhar.
+                await asyncio.sleep(_IG_PROFILE_PACING)
+                result = await _fetch_profile_via_oembed(client, username)
     except Exception as e:
         log.info("❌ Falha ao buscar perfil Instagram @%s: %s", username, str(e)[:150])
 
+    # 3) Sucesso -> atualiza cache. Falha -> reutiliza cache antigo se houver.
+    if result and result.get('username'):
+        _profile_cache_store(username, result)
+        _profile_cache_save()
+        return result
+
+    fallback = _profile_cache_get(username)
+    if fallback:
+        log.info("👤 Instagram perfil @%s (cache apos falha/429)", username)
+        return fallback
     return None
 
 
@@ -561,6 +677,11 @@ async def detect_profile_privado(url: str, cookie_path: str = '') -> bool | None
     if not username:
         return None
 
+    # Reaproveita o cache de perfil (evita segunda chamada ao Instagram).
+    cached = _profile_cache_get(username)
+    if cached and cached.get('is_private') is not None:
+        return bool(cached.get('is_private'))
+
     cookies = _load_cookies_from_file(cookie_path)
     headers = {
         **BROWSER_HEADERS,
@@ -597,10 +718,13 @@ async def detect_profile_privado(url: str, cookie_path: str = '') -> bool | None
             localizado = True
             break
     if localizado is None and re.search(r'"is_private"\s*:\s*false', html):
+        _profile_cache_upsert_privacy(username, False)
         return False
     # Marcadores claros de conta inexistente ou login obrigatório (indeterminado)
     if 'Page Not Found' in html or 'the page you requested could not be found' in html.lower():
         return None
+    if localizado is True:
+        _profile_cache_upsert_privacy(username, True)
     return localizado
 
 
@@ -712,7 +836,8 @@ def _parse_graphql_media(media: dict) -> dict | None:
     caption = edges[0].get('node', {}).get('text', '') if edges else ''
     caption = _sanitize_caption(caption)
 
-    uploader = (media.get('owner') or {}).get('username', 'Autor')
+    owner = media.get('owner') or {}
+    uploader = owner.get('username', 'Autor')
 
     # Carrossel (sidecar)
     sidecar = media.get('edge_sidecar_to_children', {}).get('edges', [])
@@ -742,6 +867,8 @@ def _parse_graphql_media(media: dict) -> dict | None:
         'type': media_type,
         'title': caption,
         'uploader': uploader,
+        'media_full_name': owner.get('full_name') or '',
+        'media_avatar': owner.get('profile_pic_url') or '',
     }
 
 
