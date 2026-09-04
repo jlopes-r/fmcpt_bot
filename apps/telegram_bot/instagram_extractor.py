@@ -17,6 +17,7 @@ import asyncio
 import logging
 import urllib.parse
 import http.cookiejar
+import tempfile
 from datetime import datetime
 from functools import partial
 
@@ -980,9 +981,20 @@ async def _extract_via_ytdlp(url: str, cookie_path: str, out_dir: str) -> dict |
         },
     }
 
-    # Adiciona cookies se existirem
+    # Adiciona cookies se existirem. Usamos uma CÓPIA temporária para o
+    # yt-dlp nunca sobrescrever o arquivo autenticado original (ele já chegou
+    # a regravar instagram_cookies.txt removendo o sessionid e deixando só
+    # cookies anônimos, o que derruba a Camada 1/API Interna).
+    cookie_copy_path = None
     if cookie_path and os.path.exists(cookie_path):
-        ydl_opts['cookiefile'] = cookie_path
+        try:
+            fd, cookie_copy_path = tempfile.mkstemp(prefix="ig_cookies_", suffix=".txt")
+            with open(cookie_path, "rb") as fsrc:
+                os.write(fd, fsrc.read())
+            os.close(fd)
+            ydl_opts['cookiefile'] = cookie_copy_path
+        except Exception as e:
+            log.warning("Falha ao copiar cookies para yt-dlp: %s", str(e)[:100])
 
     try:
         info = await asyncio.wait_for(
@@ -1026,6 +1038,12 @@ async def _extract_via_ytdlp(url: str, cookie_path: str, out_dir: str) -> dict |
     except Exception as e:
         log.warning("   ❌ yt-dlp falhou: %s", str(e)[:300])
         return None
+    finally:
+        if cookie_copy_path and os.path.exists(cookie_copy_path):
+            try:
+                os.remove(cookie_copy_path)
+            except OSError:
+                pass
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
