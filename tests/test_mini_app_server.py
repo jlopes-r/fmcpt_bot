@@ -121,6 +121,26 @@ class MiniAppServerTest(unittest.TestCase):
         self.assertIsNone(record["media_id"])
         self.assertEqual(record["media_path"], "/srv/fmcpt/data/custom_command_uploads/file.jpg")
 
+    def test_build_command_record_clears_media_when_type_becomes_text(self):
+        record = server.build_command_record(
+            {
+                "name": "texto",
+                "type": "texto",
+                "description": "Resposta",
+                "content": "Oi",
+            },
+            {"id": 123},
+            upload_path=None,
+            current={
+                "tipo": "foto",
+                "media_id": "telegram-file-id",
+                "media_path": "/srv/fmcpt/data/custom_command_uploads/file.jpg",
+            },
+        )
+
+        self.assertIsNone(record["media_id"])
+        self.assertNotIn("media_path", record)
+
     def test_command_for_catalog_hides_private_media_path(self):
         with tempfile.TemporaryDirectory() as tmp:
             uploads = Path(tmp)
@@ -187,17 +207,82 @@ class MiniAppServerTest(unittest.TestCase):
             headers = {"X-Forwarded-For": "203.0.113.7"}
             transport = None
 
-        server._rate_limit_buckets.clear()
-        with patch.object(server, "rate_limit_config", return_value=(2, 60)):
+        server.clear_request_caches()
+        with patch.object(server, "TRUST_PROXY_HEADERS", True), \
+             patch.object(server, "rate_limit_config", return_value=(2, 60)):
             self.assertFalse(server.is_rate_limited(FakeRequest(), 42))
             self.assertFalse(server.is_rate_limited(FakeRequest(), 42))
             self.assertTrue(server.is_rate_limited(FakeRequest(), 42))
+
+    def test_client_ip_ignores_forwarded_header_without_trusted_proxy(self):
+        class FakeTransport:
+            def get_extra_info(self, _name):
+                return ("198.51.100.8", 443)
+
+        request = SimpleNamespace(
+            headers={"X-Forwarded-For": "203.0.113.7"},
+            transport=FakeTransport(),
+        )
+
+        with patch.object(server, "TRUST_PROXY_HEADERS", False):
+            self.assertEqual(server.client_ip(request), "198.51.100.8")
 
     def test_security_headers_do_not_allow_external_icon_cdn(self):
         csp = server.SECURITY_HEADERS["Content-Security-Policy"]
 
         self.assertIn("script-src 'self' https://telegram.org", csp)
         self.assertNotIn("unpkg.com", csp)
+
+
+class MiniAppServerAsyncTest(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        server.clear_request_caches()
+
+    async def asyncTearDown(self):
+        server.clear_request_caches()
+
+    async def test_membership_result_is_cached_for_short_period(self):
+        class FakeResponse:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            async def json(self):
+                return {"ok": True, "result": {"status": "member"}}
+
+        class FakeSession:
+            closed = False
+
+            def __init__(self):
+                self.calls = []
+
+            def post(self, url, **kwargs):
+                self.calls.append((url, kwargs))
+                return FakeResponse()
+
+        session = FakeSession()
+        with patch.object(server, "MEMBERSHIP_CACHE_TTL", 120):
+            self.assertTrue(
+                await server.validate_user_membership(42, ["123:token"], [-100], session)
+            )
+            self.assertTrue(
+                await server.validate_user_membership(42, ["123:token"], [-100], session)
+            )
+
+        self.assertEqual(len(session.calls), 1)
+
+    async def test_app_closes_shared_telegram_session(self):
+        app = server.create_app()
+        runner = server.web.AppRunner(app)
+        await runner.setup()
+        session = app[server.TELEGRAM_HTTP_SESSION_KEY]
+
+        self.assertFalse(session.closed)
+
+        await runner.cleanup()
+        self.assertTrue(session.closed)
 
 
 if __name__ == "__main__":

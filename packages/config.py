@@ -25,7 +25,10 @@ def get_int_env(name: str, default: int = 0) -> int:
     value = os.getenv(name)
     if value in (None, ""):
         return default
-    return int(value)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def get_bool_env(name: str, default: bool = False) -> bool:
@@ -38,7 +41,16 @@ def get_bool_env(name: str, default: bool = False) -> bool:
 def parse_chat_ids(raw: str | None) -> list[int]:
     if not raw:
         return []
-    return [int(item.strip()) for item in raw.split(",") if item.strip()]
+    chat_ids = []
+    for item in raw.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        try:
+            chat_ids.append(int(item))
+        except ValueError:
+            continue
+    return chat_ids
 
 
 def ensure_runtime_dirs() -> None:

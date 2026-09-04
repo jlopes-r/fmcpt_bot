@@ -1,0 +1,1 @@
+-r apps/telegram_bot/requirements.txt

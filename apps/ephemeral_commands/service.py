@@ -14,6 +14,11 @@ import aiohttp
 
 from packages.command_catalog import COMANDOS_BOT_COMMANDS, SUPER_COMMANDS, CommandSpec, command_names
 from packages.config import DATA_DIR, LOG_DIR, load_environment, mini_app_url, parse_chat_ids
+from packages.json_store import (
+    load_json as _load_json_safe,
+    save_json as _save_json_safe,
+    update_json as _update_json_safe,
+)
 from packages.logging_config import configure_rotating_logging
 from packages.telegram_ui import (
     BOT_API_BASE,
@@ -130,17 +135,11 @@ def page_items(items: list, page: int, page_size: int) -> tuple[list, int, int]:
 
 
 def _load_json(path: Path, default):
-    try:
-        if path.exists():
-            return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        logging.getLogger("EphemeralCommands").exception("Failed to read %s", path)
-    return default
+    return _load_json_safe(path, default)
 
 
 def _save_json(path: Path, data) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    _save_json_safe(path, data)
 
 
 def load_custom_commands() -> dict:
@@ -150,6 +149,10 @@ def load_custom_commands() -> dict:
 
 def save_custom_commands(commands: dict) -> None:
     _save_json(CUSTOM_COMMANDS_FILE, commands)
+
+
+def update_custom_commands(updater) -> dict:
+    return _update_json_safe(CUSTOM_COMMANDS_FILE, {}, updater)
 
 
 def load_custom_categories() -> list[str]:
@@ -174,10 +177,11 @@ def save_custom_categories(categories: list[str]) -> None:
 
 
 def ensure_custom_category(category: str = DEFAULT_CUSTOM_CATEGORY) -> None:
-    categories = load_custom_categories()
-    if category.lower() not in {c.lower() for c in categories}:
-        categories.append(category)
-        save_custom_categories(categories)
+    def add_category(categories: list) -> None:
+        if category.lower() not in {str(c).lower() for c in categories}:
+            categories.append(category)
+
+    _update_json_safe(CUSTOM_CATEGORIES_FILE, [], add_category)
 
 
 def load_backlog() -> list:
@@ -187,6 +191,10 @@ def load_backlog() -> list:
 
 def save_backlog(backlog: list) -> None:
     _save_json(BACKLOG_FILE, backlog)
+
+
+def update_backlog(updater) -> list:
+    return _update_json_safe(BACKLOG_FILE, [], updater)
 
 
 def load_backlog_trash() -> list:
@@ -214,8 +222,8 @@ def next_backlog_id(backlog: list) -> int:
     return max((item.get("id", 0) for item in backlog if isinstance(item, dict)), default=0) + 1
 
 
-def build_backlog_item(text: str, user: dict) -> dict:
-    backlog = load_backlog()
+def build_backlog_item(text: str, user: dict, backlog: list | None = None) -> dict:
+    backlog = backlog if backlog is not None else load_backlog()
     return {
         "id": next_backlog_id(backlog),
         "sugestao": text,
@@ -740,9 +748,8 @@ class EphemeralCommandService:
             if not text:
                 await self.send_ephemeral(session, api, chat_id, user_id, "A descrição não pode ser vazia.")
                 return True
-            commands = load_custom_commands()
             command_name = data["name"]
-            commands[command_name] = {
+            record = {
                 "tipo": data.get("type", "texto"),
                 "conteudo": data.get("content", ""),
                 "media_id": data.get("media_id"),
@@ -752,7 +759,7 @@ class EphemeralCommandService:
                 "data_criacao": str(datetime.now()),
                 "origem": "ephemeral_group",
             }
-            save_custom_commands(commands)
+            update_custom_commands(lambda commands: commands.__setitem__(command_name, record))
             ensure_custom_category(DEFAULT_CUSTOM_CATEGORY)
             await set_bot_commands_via_bot_api(api.token, COMANDOS_BOT_COMMANDS)
             await set_bot_commands_menu_button_via_bot_api(api.token)
@@ -800,10 +807,15 @@ class EphemeralCommandService:
             if not text:
                 await self.send_ephemeral(session, api, chat_id, user_id, "Envie uma sugestão com texto.")
                 return True
-            backlog = load_backlog()
-            item = build_backlog_item(text, user)
-            backlog.append(item)
-            save_backlog(backlog)
+            created: dict[str, dict] = {}
+
+            def add_backlog_item(backlog: list) -> None:
+                item = build_backlog_item(text, user, backlog)
+                backlog.append(item)
+                created["item"] = item
+
+            update_backlog(add_backlog_item)
+            item = created["item"]
             self.backlog_states.pop(key, None)
             view_text, markup = build_backlog_view()
             await self.send_ephemeral(
@@ -949,14 +961,20 @@ class EphemeralCommandService:
             if pending != command_name:
                 await self.send_ephemeral(session, api, chat_id, user_id, "Esta confirmação expirou.", callback_query_id=callback_id)
                 return
-            commands = load_custom_commands()
-            real_key = find_custom_command_key(commands, command_name)
+            deleted: dict[str, str] = {}
+
+            def delete_command(commands: dict) -> None:
+                real_key = find_custom_command_key(commands, command_name)
+                if real_key:
+                    deleted["name"] = real_key
+                    del commands[real_key]
+
+            update_custom_commands(delete_command)
+            real_key = deleted.get("name")
             if not real_key:
                 self.pending_deletes.pop(key, None)
                 await self.send_ephemeral(session, api, chat_id, user_id, f"Comando /{command_name} não encontrado.", callback_query_id=callback_id)
                 return
-            del commands[real_key]
-            save_custom_commands(commands)
             self.pending_deletes.pop(key, None)
             await set_bot_commands_via_bot_api(api.token, COMANDOS_BOT_COMMANDS)
             await set_bot_commands_menu_button_via_bot_api(api.token)
@@ -1109,10 +1127,15 @@ class EphemeralCommandService:
             text = build_gif_stats()
         elif runtime.name == "comandos" and command == "backlog":
             if args:
-                backlog = load_backlog()
-                item = build_backlog_item(" ".join(args), user)
-                backlog.append(item)
-                save_backlog(backlog)
+                created: dict[str, dict] = {}
+
+                def add_backlog_item(backlog: list) -> None:
+                    item = build_backlog_item(" ".join(args), user, backlog)
+                    backlog.append(item)
+                    created["item"] = item
+
+                update_backlog(add_backlog_item)
+                item = created["item"]
                 text, markup = build_backlog_view()
                 await self.send_ephemeral(
                     session,

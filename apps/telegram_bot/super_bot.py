@@ -8,6 +8,7 @@ import random
 import asyncio
 import logging
 import subprocess
+import uuid
 import psutil
 from datetime import datetime, timedelta
 from urllib.parse import urlparse, urlunparse
@@ -119,11 +120,15 @@ DOWNLOAD_COUNT = 0
 DOWNLOAD_COUNT_LOCK = asyncio.Lock()
 
 LIMITE_DURACAO = 600
-LIMITE_TAMANHO = 2_000_000_000  # Aumentado para 2GB (limite do Telegram para bots via MTProto)
-MAX_DOWNLOADS = 3
+LIMITE_TAMANHO = max(1, get_int_env("MAX_MEDIA_BYTES", 2_000_000_000))
+MAX_DOWNLOADS = max(1, get_int_env("MAX_DOWNLOADS", 3))
 MAX_RETRIES = 2
 RATE_LIMIT = 10
 RATE_JANELA = 60
+IG_MEDIA_DOWNLOAD_CONCURRENCY = max(1, get_int_env("IG_MEDIA_DOWNLOAD_CONCURRENCY", 3))
+IG_MAX_CAROUSEL_ITEMS = max(1, get_int_env("IG_MAX_CAROUSEL_ITEMS", 20))
+PROFILE_PICTURE_MAX_BYTES = max(1, get_int_env("PROFILE_PICTURE_MAX_BYTES", 10 * 1024 * 1024))
+PROCESSING_URL_TTL = max(60, get_int_env("PROCESSING_URL_TTL", 2 * 60 * 60))
 
 AUDIO_BOCA_LEITE_DIR = os.path.join(RAIZ, "assets", "audios")
 PASTA_DOWNLOADS = DOWNLOADS_DIR
@@ -226,12 +231,13 @@ def erro_aleatorio(lista, **kwargs):
 PACKS = {"repetido": "POSTREPETIDO", "meus": "Meus325", "monkes": "Monkes"}
 
 semaforo = asyncio.Semaphore(MAX_DOWNLOADS)
+_ig_media_download_semaphore = asyncio.Semaphore(IG_MEDIA_DOWNLOAD_CONCURRENCY)
 _historico_uso = defaultdict(list)
 _fila_espera = 0
 _fila_lock = asyncio.Lock()
 _retry_cache = {}  # msg_erro_id -> (url, usuario, chat_id, original_msg_id)
 _failed_url_cache = {}  # url_norm -> timestamp (cooldown para URLs que falharam recentemente)
-_processing_urls = set()  # URLs em processamento (evita downloads duplicados simultâneos)
+_processing_urls: dict[str, float] = {}  # URL -> inicio do processamento
 _processing_lock = asyncio.Lock()
 _usuarios_bloqueados = {}  # user_id -> timestamp (cooldown de castigo de 5min)
 _uso_bloq = defaultdict(list)  # admin_id -> [timestamps dos blocks aplicados hoje]
@@ -362,14 +368,18 @@ def _foi_pulado_por_duracao(item: dict) -> bool:
     duracao = item.get('duration') or 0
     return bool(duracao and duracao > LIMITE_DURACAO)
 
-def _converter_para_jpg(data: bytes, ext: str) -> tuple[bytes, str]:
-    """Converte webp/heic/heif para jpg. Roda em thread (CPU-bound)."""
+def _converter_arquivo_para_jpg(origem: Path, destino: Path) -> None:
+    """Converte webp/heic/heif para jpg sem manter o arquivo inteiro em memoria."""
     from PIL import Image
-    import io
-    img = Image.open(io.BytesIO(data))
-    buf = io.BytesIO()
-    img.convert('RGB').save(buf, format='JPEG', quality=95)
-    return buf.getvalue(), 'jpg'
+    with Image.open(origem) as imagem:
+        imagem.convert('RGB').save(destino, format='JPEG', quality=95)
+
+
+def _caminho_temporario(prefixo: str, message, indice: int, extensao: str) -> Path:
+    """Gera nomes unicos mesmo quando chats diferentes compartilham message.id."""
+    chat_id = getattr(getattr(message, "chat", None), "id", "chat")
+    ext = extensao.lower().lstrip(".") or "bin"
+    return PASTA_DOWNLOADS / f"{prefixo}_{chat_id}_{message.id}_{indice}_{uuid.uuid4().hex}.{ext}"
 
 
 def _probe_video_attrs(video_path, timeout=10):
@@ -662,7 +672,14 @@ async def processar_instagram(client, message, url, usuario, msg_espera, link_du
                         lista_telegram.append(InputMediaVideo(path, caption=cap, supports_streaming=True))
 
             elif 'urls' in result:
-                midias_urls = result['urls']
+                todas_midias_urls = list(result['urls'])
+                midias_urls = todas_midias_urls[:IG_MAX_CAROUSEL_ITEMS]
+                if len(todas_midias_urls) > len(midias_urls):
+                    log.warning(
+                        "Instagram retornou %s midias; limitando o carrossel a %s itens.",
+                        len(todas_midias_urls),
+                        IG_MAX_CAROUSEL_ITEMS,
+                    )
                 await msg_espera.edit_text(f"✨ Extraído! Baixando {len(midias_urls)} {'item' if len(midias_urls) == 1 else 'itens'}...")
                 
                 # Headers para CDN do Instagram (evita 403)
@@ -673,48 +690,58 @@ async def processar_instagram(client, message, url, usuario, msg_espera, link_du
                 session = await get_http_session()
 
                 async def _baixar_midia_ig(i, m_url):
-                    """Baixa uma mídia do carrossel e prepara o InputMedia."""
+                    """Baixa uma mídia do carrossel em disco e prepara o InputMedia."""
+                    caminho_temp = None
+                    caminho_convertido = None
                     try:
-                        async with session.get(m_url, headers=cdn_headers) as response:
-                            if response.status != 200:
-                                log.warning(f"Falha ao baixar URL do Instagram ({response.status}): {m_url[:100]}")
-                                return None
-                            content_type = response.headers.get('Content-Type', '')
-                            ext = _detectar_extensao(m_url, content_type)
-                            # Stream com limite de tamanho (aborta se passar de 2GB)
-                            if response.content_length and response.content_length > LIMITE_TAMANHO:
-                                log.warning(f"Mídia IG muito grande ({response.content_length} bytes): {m_url[:100]}")
-                                return None
-                            dados_pendentes = bytearray()
-                            async for chunk in response.content.iter_chunked(1024 * 1024):
-                                dados_pendentes.extend(chunk)
-                                if len(dados_pendentes) > LIMITE_TAMANHO:
-                                    raise Exception(f"Mídia IG muito grande (> {LIMITE_TAMANHO} bytes)")
-                            data = bytes(dados_pendentes)
+                        async with _ig_media_download_semaphore:
+                            caminho_temp = _caminho_temporario("temp_insta", message, i, "bin")
+                            ext = "jpg"
 
-                            # Converte webp/heic → jpg (Telegram rejeita esses formatos como foto)
+                            def definir_extensao(response):
+                                nonlocal ext
+                                ext = _detectar_extensao(m_url, response.headers.get('Content-Type', ''))
+
+                            await _baixar_url_limitado(
+                                session,
+                                m_url,
+                                str(caminho_temp),
+                                LIMITE_TAMANHO,
+                                headers=cdn_headers,
+                                on_response=definir_extensao,
+                            )
+                            destino = caminho_temp.with_suffix(f".{ext}")
+                            caminho_temp.replace(destino)
+                            caminho_temp = destino
+
+                            # Converte webp/heic para jpg sem duplicar o arquivo na RAM.
                             if ext in ('webp', 'heic', 'heif'):
-                                try:
-                                    data, ext = await asyncio.to_thread(_converter_para_jpg, data, ext)
-                                    log.info("   Convertido para jpg para compatibilidade Telegram")
-                                except Exception as conv_err:
-                                    log.warning(f"Falha ao converter para jpg: {conv_err}")
-                                    ext = 'jpg'  # Tenta enviar mesmo assim
+                                caminho_convertido = _caminho_temporario("temp_insta", message, i, "jpg")
+                                await asyncio.to_thread(
+                                    _converter_arquivo_para_jpg,
+                                    caminho_temp,
+                                    caminho_convertido,
+                                )
+                                caminho_temp.unlink(missing_ok=True)
+                                caminho_temp = caminho_convertido
+                                caminho_convertido = None
+                                ext = 'jpg'
+                                log.info("   Convertido para jpg para compatibilidade Telegram")
 
-                            caminho_temp = PASTA_DOWNLOADS / f"temp_insta_{message.id}_{i}.{ext}"
-                            with open(caminho_temp, 'wb') as f:
-                                f.write(data)
-
-                            arquivos_para_deletar.append(str(caminho_temp))
-                            cap = legenda_final if i == 0 else ""
-                            is_video = ext in ('mp4', 'mov', 'm4v', 'webm')
-                            if is_video:
-                                item = InputMediaVideo(str(caminho_temp), caption=cap, supports_streaming=True)
-                            else:
-                                item = InputMediaPhoto(str(caminho_temp), caption=cap)
-                            log.info(f"   Mídia {i+1}/{len(midias_urls)} baixada: ext={ext}, size={len(data)} bytes")
-                            return item
+                        arquivos_para_deletar.append(str(caminho_temp))
+                        cap = legenda_final if i == 0 else ""
+                        is_video = ext in ('mp4', 'mov', 'm4v', 'webm')
+                        if is_video:
+                            item = InputMediaVideo(str(caminho_temp), caption=cap, supports_streaming=True)
+                        else:
+                            item = InputMediaPhoto(str(caminho_temp), caption=cap)
+                        tamanho = caminho_temp.stat().st_size
+                        log.info(f"   Mídia {i+1}/{len(midias_urls)} baixada: ext={ext}, size={tamanho} bytes")
+                        return item
                     except Exception as e:
+                        for caminho in (caminho_temp, caminho_convertido):
+                            if caminho:
+                                caminho.unlink(missing_ok=True)
                         log.error(f"Erro ao baixar midia individual do Instagram: {e}")
                         return None
 
@@ -832,6 +859,21 @@ def montar_resposta_perfil_instagram(profile):
     return "\n".join(linhas)[:1024]
 
 
+async def _baixar_bytes_limitados(session, url: str, limite_bytes: int) -> bytes | None:
+    """Baixa bytes pequenos com limite real mesmo quando o servidor omite Content-Length."""
+    async with session.get(url, timeout=aiohttp.ClientTimeout(total=20)) as resp:
+        if resp.status != 200:
+            return None
+        if resp.content_length and resp.content_length > limite_bytes:
+            return None
+        dados = bytearray()
+        async for chunk in resp.content.iter_chunked(64 * 1024):
+            dados.extend(chunk)
+            if len(dados) > limite_bytes:
+                return None
+        return bytes(dados)
+
+
 async def responder_perfil_instagram(client, message, url):
     profile = await fetch_instagram_profile(url, COOKIE_PATH)
     if not profile:
@@ -854,18 +896,18 @@ async def responder_perfil_instagram(client, message, url):
     if photo_url:
         try:
             dl_session = await get_http_session()
-            async with dl_session.get(
-                photo_url, timeout=aiohttp.ClientTimeout(total=20)
-            ) as resp:
-                if resp.status == 200 and (not resp.content_length or resp.content_length <= LIMITE_TAMANHO):
-                    foto_bytes = await resp.read()
+            foto_bytes = await _baixar_bytes_limitados(
+                dl_session,
+                photo_url,
+                PROFILE_PICTURE_MAX_BYTES,
+            )
         except Exception as e:
             log.warning("Falha ao baixar foto do perfil Instagram: %s", str(e)[:150])
 
     # Monta o card estilizado (roda em thread para não travar o loop)
     try:
         card_bytes = await asyncio.to_thread(_gerar_card_perfil, profile, foto_bytes)
-        card_path = PASTA_DOWNLOADS / f"card_insta_{message.id}.png"
+        card_path = _caminho_temporario("card_insta", message, 0, "png")
         with open(card_path, "wb") as f:
             f.write(card_bytes)
         try:
@@ -883,7 +925,7 @@ async def responder_perfil_instagram(client, message, url):
             return
         except Exception as e:
             log.warning("Falha ao enviar card do Instagram: %s", str(e)[:150])
-            os.remove(card_path)
+            card_path.unlink(missing_ok=True)
     except Exception as e:
         log.warning("Falha ao gerar card do Instagram: %s", str(e)[:150])
 
@@ -1555,10 +1597,14 @@ async def limpeza_periodica():
             if len(_retry_cache) > 500:
                 _retry_cache.clear()
                 
-            # Limpa locks de processamento orfãos (se houver algum travado há mais de 10 min)
-            # Como o set não guarda o tempo, limpamos tudo se estiver muito grande
-            if len(_processing_urls) > 100:
-                _processing_urls.clear()
+            # Nao libera downloads ativos apenas pelo volume: remove so locks velhos.
+            agora_monotonic = time.monotonic()
+            processamentos_expirados = [
+                url for url, inicio in _processing_urls.items()
+                if agora_monotonic - inicio > PROCESSING_URL_TTL
+            ]
+            for url in processamentos_expirados:
+                _processing_urls.pop(url, None)
                 
             # Failed URL cache
             agora = time.time()
@@ -1792,7 +1838,7 @@ async def processar_links(client, message):
             if url_norm in _processing_urls:
                 await message.reply_text(erro_aleatorio(ERROS_LINK_PROCESSANDO))
                 return
-            _processing_urls.add(url_norm)
+            _processing_urls[url_norm] = time.monotonic()
 
     # 1. TWITTER / X
     if url_raw and re.search(r'(x|twitter)\.com', url_raw):
@@ -2025,7 +2071,7 @@ async def processar_links(client, message):
                 if os.path.exists(p):
                     os.remove(p)
             async with _processing_lock:
-                _processing_urls.discard(url_norm)
+                _processing_urls.pop(url_norm, None)
         return
 
     # 2. INSTAGRAM (handler dedicado)
@@ -2038,7 +2084,7 @@ async def processar_links(client, message):
         if ig_parts and get_profile_username(url_raw):
             await responder_perfil_instagram(client, message, url_raw)
             async with _processing_lock:
-                _processing_urls.discard(url_norm)
+                _processing_urls.pop(url_norm, None)
             return
 
         # Aceita se qualquer segmento do path é um tipo conhecido (ex: /username/reel/SHORTCODE/)
@@ -2051,7 +2097,7 @@ async def processar_links(client, message):
             log.info("Instagram link não reconhecido: %s (parts=%s)", url_raw, ig_parts)
             await message.reply_text("❌ Link do Instagram não reconhecido.\nEnvie um perfil, post, Reels ou Stories específico.")
             async with _processing_lock:
-                _processing_urls.discard(url_norm)
+                _processing_urls.pop(url_norm, None)
             return
 
         agora_ts = time.time()
@@ -2060,7 +2106,7 @@ async def processar_links(client, message):
             tempo_str = f"{tr // 60}min {tr % 60}s"
             await message.reply_text(erro_aleatorio(ERROS_COOLDOWN, tempo=tempo_str))
             async with _processing_lock:
-                _processing_urls.discard(url_norm)
+                _processing_urls.pop(url_norm, None)
             return
             
         msg_espera = await message.reply_text("⏳ *Baixando do Instagram...*")
@@ -2075,7 +2121,7 @@ async def processar_links(client, message):
             _failed_url_cache[url_norm] = agora_ts
             
         async with _processing_lock:
-            _processing_urls.discard(url_norm)
+            _processing_urls.pop(url_norm, None)
         return
 
     # 3. YOUTUBE, TIKTOK, THREADS, PINTEREST (yt-dlp generico)
@@ -2096,7 +2142,7 @@ async def processar_links(client, message):
             if repetido_db:
                 await enviar_aviso_duplicado(client, message, {}, info_db, usuario)
         async with _processing_lock:
-            _processing_urls.discard(url_norm)
+            _processing_urls.pop(url_norm, None)
         return
 
 
@@ -2123,7 +2169,7 @@ async def processar_links(client, message):
                 await enviar_aviso_duplicado(client, message, {}, info_db, usuario)
         
         async with _processing_lock:
-            _processing_urls.discard(url_norm)
+            _processing_urls.pop(url_norm, None)
 
 # -----------------------------------------
 # NOTIFICAÇÃO DE ATUALIZAÇÃO
@@ -2227,11 +2273,17 @@ if __name__ == "__main__":
 
     async def _rodar_with_canario():
         await app.start()
-        asyncio.get_event_loop().create_task(_canario_conectividade())
-        asyncio.get_event_loop().create_task(notificar_atualizacao())
+        tarefas_fundo = [
+            asyncio.create_task(_canario_conectividade(), name="canario-conectividade"),
+            asyncio.create_task(notificar_atualizacao(), name="notificar-atualizacao"),
+            asyncio.create_task(limpeza_periodica(), name="limpeza-periodica"),
+        ]
         try:
             await idle()
         finally:
+            for tarefa in tarefas_fundo:
+                tarefa.cancel()
+            await asyncio.gather(*tarefas_fundo, return_exceptions=True)
             await app.stop()
 
     try:

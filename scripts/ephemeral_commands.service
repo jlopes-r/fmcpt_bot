@@ -5,9 +5,9 @@ After=network.target
 [Service]
 Type=simple
 User=juanl
-WorkingDirectory=/home/juanl/fmcpt_bot
-Environment=ENV_FILE=/home/juanl/fmcpt_bot/apps/telegram_bot/.env
-ExecStart=/home/juanl/fmcpt_bot/venv/bin/python -m apps.ephemeral_commands.service
+WorkingDirectory=/home/juanl/bot
+Environment=ENV_FILE=/home/juanl/bot/apps/telegram_bot/.env
+ExecStart=/home/juanl/bot/venv/bin/python -m apps.ephemeral_commands.service
 Restart=always
 RestartSec=10
 

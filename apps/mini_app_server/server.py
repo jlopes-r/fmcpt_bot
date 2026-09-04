@@ -15,7 +15,12 @@ from urllib.parse import parse_qsl
 
 from aiohttp import ClientSession, web
 
-from packages.config import DATA_DIR, load_environment, parse_chat_ids
+from packages.config import DATA_DIR, get_bool_env, get_int_env, load_environment, parse_chat_ids
+from packages.json_store import (
+    load_json as _load_json_safe,
+    save_json as _save_json_safe,
+    update_json as _update_json_safe,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -30,6 +35,8 @@ DEFAULT_AUTH_MAX_AGE = 2 * 60 * 60
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 API_RATE_LIMIT_REQUESTS = 60
 API_RATE_LIMIT_WINDOW = 60
+MEMBERSHIP_CACHE_TTL = max(0, get_int_env("MINI_APP_MEMBERSHIP_CACHE_TTL", 120))
+TRUST_PROXY_HEADERS = get_bool_env("MINI_APP_TRUST_PROXY_HEADERS", False)
 COMMAND_NAME_RE = re.compile(r"^[a-z0-9_]{1,32}$")
 ALLOWED_COMMAND_TYPES = {"texto", "foto", "video", "audio", "voice", "gif"}
 UPLOAD_EXTENSIONS = {
@@ -101,6 +108,15 @@ UPLOAD_MAGIC_TYPES = {
     "voice": {"ogg"},
 }
 _rate_limit_buckets: dict[tuple[str, str, int], deque[float]] = defaultdict(deque)
+_membership_cache: dict[tuple[int, tuple[int, ...]], tuple[bool, float]] = {}
+_last_rate_limit_cleanup = 0.0
+TELEGRAM_HTTP_SESSION_KEY = web.AppKey("telegram_http_session", ClientSession)
+
+
+def refresh_runtime_config() -> None:
+    global MEMBERSHIP_CACHE_TTL, TRUST_PROXY_HEADERS
+    MEMBERSHIP_CACHE_TTL = max(0, get_int_env("MINI_APP_MEMBERSHIP_CACHE_TTL", 120))
+    TRUST_PROXY_HEADERS = get_bool_env("MINI_APP_TRUST_PROXY_HEADERS", False)
 
 
 def bot_tokens() -> list[str]:
@@ -133,20 +149,15 @@ def rate_limit_config() -> tuple[int, int]:
 
 
 def load_json(path: Path, default):
-    if not path.exists():
-        return default
-    try:
-        with open(path, "r", encoding="utf-8") as file:
-            data = json.load(file)
-    except (OSError, json.JSONDecodeError):
-        return default
-    return data if isinstance(data, type(default)) else default
+    return _load_json_safe(path, default)
 
 
 def save_json(path: Path, data) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as file:
-        json.dump(data, file, ensure_ascii=False, indent=2)
+    _save_json_safe(path, data)
+
+
+def update_json(path: Path, default, updater):
+    return _update_json_safe(path, default, updater)
 
 
 def default_custom_category() -> str:
@@ -163,7 +174,7 @@ def normalize_command_type(value: str | None) -> str:
 
 
 def category_exists(categories: list[str], name: str) -> str | None:
-    return next((item for item in categories if item.lower() == name.lower()), None)
+    return next((item for item in categories if str(item).lower() == name.lower()), None)
 
 
 def save_categories(categories: list[str]) -> None:
@@ -356,12 +367,11 @@ def apply_category(categories: list[str], category: str) -> list[str]:
     category = category or default_custom_category()
     if not category_exists(categories, category):
         categories.append(category)
-        save_categories(categories)
     return categories
 
 
 def build_command_record(data: dict, user: dict, *, upload_path: str | None, current: dict | None = None) -> dict:
-    current = current.copy() if current else {}
+    current = current.copy() if isinstance(current, dict) else {}
     command_type = normalize_command_type(data.get("type") or current.get("tipo"))
     content = str(data.get("content", "")).strip()
     preview_url = str(data.get("previewUrl", "")).strip()
@@ -380,7 +390,10 @@ def build_command_record(data: dict, user: dict, *, upload_path: str | None, cur
         record["previewUrl"] = preview_url
     elif "previewUrl" in current:
         record["previewUrl"] = current["previewUrl"]
-    if upload_path:
+    if command_type == "texto":
+        record.pop("media_path", None)
+        record["media_id"] = None
+    elif upload_path:
         record["media_path"] = upload_path
         record["media_id"] = None
     elif current.get("media_path"):
@@ -428,16 +441,34 @@ def validate_init_data(init_data: str, token: str, max_age: int = DEFAULT_AUTH_M
     return user
 
 
-async def validate_user_membership(user_id: int, tokens: list[str], chat_ids: list[int]) -> bool:
+def clear_request_caches() -> None:
+    global _last_rate_limit_cleanup
+    _membership_cache.clear()
+    _rate_limit_buckets.clear()
+    _last_rate_limit_cleanup = 0.0
+
+
+async def validate_user_membership(
+    user_id: int,
+    tokens: list[str],
+    chat_ids: list[int],
+    session: ClientSession | None = None,
+) -> bool:
     if not chat_ids:
         return False
 
-    async with ClientSession() as session:
+    cache_key = (int(user_id), tuple(sorted(set(int(chat_id) for chat_id in chat_ids))))
+    now = time.monotonic()
+    cached = _membership_cache.get(cache_key)
+    if cached and cached[1] > now:
+        return cached[0]
+
+    async def check_membership(client_session: ClientSession) -> bool:
         for token in tokens:
             for chat_id in chat_ids:
                 url = f"https://api.telegram.org/bot{token}/getChatMember"
                 try:
-                    async with session.post(
+                    async with client_session.post(
                         url,
                         json={"chat_id": chat_id, "user_id": user_id},
                         timeout=10,
@@ -450,7 +481,17 @@ async def validate_user_membership(user_id: int, tokens: list[str], chat_ids: li
                 status = data.get("result", {}).get("status")
                 if status not in {"left", "kicked", None}:
                     return True
-    return False
+        return False
+
+    if session is None or getattr(session, "closed", False):
+        async with ClientSession() as temporary_session:
+            allowed = await check_membership(temporary_session)
+    else:
+        allowed = await check_membership(session)
+
+    if MEMBERSHIP_CACHE_TTL:
+        _membership_cache[cache_key] = (allowed, now + MEMBERSHIP_CACHE_TTL)
+    return allowed
 
 
 async def authorize_request(request: web.Request) -> dict | None:
@@ -467,22 +508,34 @@ async def authorize_request(request: web.Request) -> dict | None:
     if not user:
         return None
 
-    if not await validate_user_membership(int(user["id"]), tokens, authorized_chat_ids()):
+    session = request.app.get(TELEGRAM_HTTP_SESSION_KEY)
+    if not await validate_user_membership(
+        int(user["id"]),
+        tokens,
+        authorized_chat_ids(),
+        session=session,
+    ):
         return None
     return user
 
 
 def client_ip(request: web.Request) -> str:
     forwarded_for = request.headers.get("X-Forwarded-For", "")
-    if forwarded_for:
+    if TRUST_PROXY_HEADERS and forwarded_for:
         return forwarded_for.split(",", 1)[0].strip()
     peer = request.transport.get_extra_info("peername") if request.transport else None
     return str(peer[0]) if peer else "unknown"
 
 
 def is_rate_limited(request: web.Request, user_id: int) -> bool:
+    global _last_rate_limit_cleanup
     limit, window = rate_limit_config()
     now = time.monotonic()
+    if now - _last_rate_limit_cleanup >= max(window, 60):
+        for key, bucket in list(_rate_limit_buckets.items()):
+            if not bucket or now - bucket[-1] > window:
+                _rate_limit_buckets.pop(key, None)
+        _last_rate_limit_cleanup = now
     route = request.match_info.route.resource.canonical if request.match_info.route.resource else request.path
     key = (client_ip(request), route, int(user_id))
     bucket = _rate_limit_buckets[key]
@@ -517,17 +570,24 @@ async def admin_action(request: web.Request) -> web.Response:
         return web.json_response({"error": "invalid_json"}, status=400)
 
     action = str(payload.get("action", ""))
-    commands = load_json(COMANDOS_FILE, {})
-    categories = load_json(CUSTOM_CATEGORIES_FILE, [])
 
     if action == "delete_command":
         name = normalize_command_name(payload.get("name", ""))
-        key = next((item for item in commands if item.lower() == name), None)
-        if not key:
+        removed: dict[str, object] = {}
+
+        def remove_command(commands: dict) -> None:
+            key = next((item for item in commands if item.lower() == name), None)
+            if not key:
+                return
+            removed["found"] = True
+            command = commands[key]
+            removed["media_path"] = command.get("media_path") if isinstance(command, dict) else None
+            del commands[key]
+
+        update_json(COMANDOS_FILE, {}, remove_command)
+        if not removed.get("found"):
             return web.json_response({"error": "not_found"}, status=404)
-        old_path = Path(str(commands[key].get("media_path", "")))
-        del commands[key]
-        save_json(COMANDOS_FILE, commands)
+        old_path = Path(str(removed.get("media_path") or ""))
         if old_path.is_file() and old_path.is_relative_to(UPLOADS_DIR):
             old_path.unlink(missing_ok=True)
         return web.json_response({"ok": True, "catalog": load_catalog_payload()})
@@ -537,49 +597,80 @@ async def admin_action(request: web.Request) -> web.Response:
         new_name = str(payload.get("newName", "")).strip()
         if not name or len(name) > 40 or len(new_name) > 40:
             return web.json_response({"error": "invalid_category"}, status=400)
-        current = category_exists(categories, name)
         if action == "create_category":
-            if not current:
-                categories.append(name)
-                save_categories(categories)
+            update_json(
+                CUSTOM_CATEGORIES_FILE,
+                [],
+                lambda categories: apply_category(categories, name),
+            )
             return web.json_response({"ok": True, "catalog": load_catalog_payload()})
         if action == "update_category":
             if not new_name:
                 return web.json_response({"error": "missing_new_name"}, status=400)
-            if not current:
+            renamed: dict[str, bool] = {}
+
+            def rename_category(categories: list) -> None:
+                current = category_exists(categories, name)
+                if not current:
+                    return
+                renamed["found"] = True
+                for index, category in enumerate(categories):
+                    if category.lower() == name.lower():
+                        categories[index] = new_name
+
+            update_json(CUSTOM_CATEGORIES_FILE, [], rename_category)
+            if not renamed.get("found"):
                 return web.json_response({"error": "not_found"}, status=404)
-            categories = [new_name if item.lower() == name.lower() else item for item in categories]
-            for info in commands.values():
-                if str(info.get("categoria") or info.get("category") or "").lower() == name.lower():
-                    info["categoria"] = new_name
-            save_categories(categories)
-            save_json(COMANDOS_FILE, commands)
+
+            def rename_commands(commands: dict) -> None:
+                for info in commands.values():
+                    if isinstance(info, dict) and str(
+                        info.get("categoria") or info.get("category") or ""
+                    ).lower() == name.lower():
+                        info["categoria"] = new_name
+
+            update_json(COMANDOS_FILE, {}, rename_commands)
             return web.json_response({"ok": True, "catalog": load_catalog_payload()})
-        if current:
-            categories = [item for item in categories if item.lower() != name.lower()]
-        for info in commands.values():
-            if str(info.get("categoria") or info.get("category") or "").lower() == name.lower():
-                info["categoria"] = default_custom_category()
-        save_categories(categories)
-        save_json(COMANDOS_FILE, commands)
+
+        def delete_category(categories: list) -> None:
+            categories[:] = [
+                category for category in categories if str(category).lower() != name.lower()
+            ]
+
+        def reset_command_categories(commands: dict) -> None:
+            for info in commands.values():
+                if isinstance(info, dict) and str(
+                    info.get("categoria") or info.get("category") or ""
+                ).lower() == name.lower():
+                    info["categoria"] = default_custom_category()
+
+        update_json(CUSTOM_CATEGORIES_FILE, [], delete_category)
+        update_json(COMANDOS_FILE, {}, reset_command_categories)
         return web.json_response({"ok": True, "catalog": load_catalog_payload()})
 
     if action == "backlog_add":
         text = str(payload.get("text", "")).strip()
         if not text:
             return web.json_response({"error": "empty_text"}, status=400)
-        backlog = load_json(BACKLOG_FILE, [])
-        next_id = max((item.get("id", 0) for item in backlog if isinstance(item, dict)), default=0) + 1
-        backlog.append({
-            "id": next_id,
-            "sugestao": text,
-            "autor": user.get("first_name") or user.get("username") or "Mini App",
-            "autor_id": user.get("id", 0),
-            "data": datetime.now().strftime("%d/%m/%Y %H:%M"),
-            "origem": "mini_app_server",
-        })
-        save_json(BACKLOG_FILE, backlog)
-        return web.json_response({"ok": True, "id": next_id})
+        created: dict[str, int] = {}
+
+        def add_backlog_item(backlog: list) -> None:
+            next_id = max(
+                (item.get("id", 0) for item in backlog if isinstance(item, dict)),
+                default=0,
+            ) + 1
+            backlog.append({
+                "id": next_id,
+                "sugestao": text,
+                "autor": user.get("first_name") or user.get("username") or "Mini App",
+                "autor_id": user.get("id", 0),
+                "data": datetime.now().strftime("%d/%m/%Y %H:%M"),
+                "origem": "mini_app_server",
+            })
+            created["id"] = next_id
+
+        update_json(BACKLOG_FILE, [], add_backlog_item)
+        return web.json_response({"ok": True, "id": created["id"]})
 
     return web.json_response({"error": "unknown_action"}, status=400)
 
@@ -602,7 +693,6 @@ async def upload_command(request: web.Request) -> web.Response:
     has_upload = isinstance(upload, FileField) and bool(upload.filename)
 
     commands = load_json(COMANDOS_FILE, {})
-    categories = load_json(CUSTOM_CATEGORIES_FILE, [])
     key = next((item for item in commands if item.lower() == name), None)
     if creating and key:
         return web.json_response({"error": "command_exists"}, status=409)
@@ -619,14 +709,48 @@ async def upload_command(request: web.Request) -> web.Response:
     data["type"] = command_type
 
     upload_path = save_uploaded_file(command_type, upload) if has_upload else None
-    record = build_command_record(data, user, upload_path=upload_path, current=current)
-    if upload_path and key:
-        previous_path = Path(str(commands[key].get("media_path", "")))
-        if previous_path.is_file() and previous_path.is_relative_to(UPLOADS_DIR):
-            previous_path.unlink(missing_ok=True)
-    commands[key or name] = record
-    apply_category(categories, record["categoria"])
-    save_json(COMANDOS_FILE, commands)
+    outcome: dict[str, object] = {}
+
+    def save_command(current_commands: dict) -> None:
+        current_key = next((item for item in current_commands if item.lower() == name), None)
+        if creating and current_key:
+            outcome["error"] = "command_exists"
+            return
+        if not creating and not current_key:
+            outcome["error"] = "not_found"
+            return
+        current_record = current_commands.get(current_key) if current_key else None
+        if not isinstance(current_record, dict):
+            current_record = {}
+        record = build_command_record(
+            data,
+            user,
+            upload_path=upload_path,
+            current=current_record,
+        )
+        outcome["previous_path"] = (current_record or {}).get("media_path")
+        outcome["new_path"] = record.get("media_path")
+        outcome["category"] = record["categoria"]
+        current_commands[current_key or name] = record
+
+    update_json(COMANDOS_FILE, {}, save_command)
+    if error := outcome.get("error"):
+        if upload_path:
+            Path(upload_path).unlink(missing_ok=True)
+        status = 409 if error == "command_exists" else 404
+        return web.json_response({"error": error}, status=status)
+
+    previous_path = Path(str(outcome.get("previous_path") or ""))
+    new_path = Path(str(outcome.get("new_path") or ""))
+    if previous_path != new_path and previous_path.is_file() and previous_path.is_relative_to(UPLOADS_DIR):
+        previous_path.unlink(missing_ok=True)
+
+    category = str(outcome["category"])
+    update_json(
+        CUSTOM_CATEGORIES_FILE,
+        [],
+        lambda current_categories: apply_category(current_categories, category),
+    )
     return web.json_response({"ok": True, "command": name, "catalog": load_catalog_payload()})
 
 
@@ -670,8 +794,21 @@ async def command_preview(request: web.Request) -> web.StreamResponse:
     return media_file_response(downloaded, info.get("tipo"))
 
 
+async def open_telegram_http_session(app: web.Application) -> None:
+    app[TELEGRAM_HTTP_SESSION_KEY] = ClientSession()
+
+
+async def close_telegram_http_session(app: web.Application) -> None:
+    session = app.get(TELEGRAM_HTTP_SESSION_KEY)
+    if session and not session.closed:
+        await session.close()
+    clear_request_caches()
+
+
 def create_app() -> web.Application:
     app = web.Application(client_max_size=MAX_UPLOAD_BYTES + 1024 * 1024)
+    app.on_startup.append(open_telegram_http_session)
+    app.on_cleanup.append(close_telegram_http_session)
 
     @web.middleware
     async def api_auth_rate_limit_middleware(request, handler):
@@ -707,13 +844,16 @@ def create_app() -> web.Application:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Servidor privado do Mini App Telegram.")
-    parser.add_argument("--host", default=os.getenv("MINI_APP_HOST", "127.0.0.1"))
-    parser.add_argument("--port", type=int, default=int(os.getenv("MINI_APP_PORT", "8080")))
+    parser.add_argument("--host")
+    parser.add_argument("--port", type=int)
     parser.add_argument("--env-file", default=os.getenv("ENV_FILE"))
     args = parser.parse_args()
 
     load_environment(args.env_file)
-    web.run_app(create_app(), host=args.host, port=args.port)
+    refresh_runtime_config()
+    host = args.host or os.getenv("MINI_APP_HOST", "127.0.0.1")
+    port = args.port if args.port is not None else get_int_env("MINI_APP_PORT", 8080)
+    web.run_app(create_app(), host=host, port=port)
 
 
 if __name__ == "__main__":

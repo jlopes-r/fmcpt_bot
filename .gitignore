@@ -20,6 +20,8 @@ data/*.db
 data/*.db-journal
 data/*.txt
 data/*.json
+data/.*.lock
+data/.*.tmp
 *.json
 data/*.json
 

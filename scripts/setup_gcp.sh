@@ -1,4 +1,9 @@
 #!/bin/bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+cd "$PROJECT_ROOT"
 
 # Atualiza o sistema
 sudo apt-get update && sudo apt-get upgrade -y
@@ -12,10 +17,10 @@ source venv/bin/activate
 
 # Instala as dependências do bot
 pip install --upgrade pip
-pip install -r apps/telegram-bot/requirements.txt
+pip install -r apps/telegram_bot/requirements.txt
 
 echo "------------------------------------------------"
 echo "✅ Setup concluído!"
-echo "Agora você precisa configurar o arquivo .env em apps/telegram-bot/"
-echo "E rodar o bot com: source venv/bin/activate && python apps/telegram-bot/super_bot.py"
+echo "Agora você precisa configurar o arquivo .env em apps/telegram_bot/"
+echo "E rodar o bot com: source venv/bin/activate && python apps/telegram_bot/super_bot.py"
 echo "------------------------------------------------"

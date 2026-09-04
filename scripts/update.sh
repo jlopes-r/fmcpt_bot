@@ -2,14 +2,14 @@
 # ==============================================
 # Script de Atualização - VM
 # ==============================================
-# Uso: cd ~/fmcpt_bot && ./scripts/update.sh
+# Uso: cd ~/bot && ./scripts/update.sh
 #
 # Faz git pull, detecta mudanças, gera changelog
 # e reinicia os bots automaticamente.
 # ==============================================
 
-# Configuração - ajuste conforme necessário
-REPO_DIR="/home/juanl/fmcpt_bot"
+# Configuração - pode ser sobrescrita por REPO_DIR no ambiente.
+REPO_DIR="${REPO_DIR:-/home/juanl/bot}"
 SUPERBOT_SERVICE="superbot.service"
 COMANDOS_SERVICE="comandosbot.service"
 
@@ -30,7 +30,7 @@ fi
 
 # Faz o pull
 echo "📥 Executando git pull..."
-git pull
+git pull --ff-only
 # Instala/atualiza as dependencias do bot no venv
 # (usa python -m pip por causa do shebang quebrado de bin/pip)
 echo "📦 Instalando dependencias do bot (pip install)..."

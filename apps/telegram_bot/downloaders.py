@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import time
+from collections.abc import Callable
 from functools import partial
 
 import aiohttp
@@ -160,6 +161,7 @@ async def baixar_url_limitado(
     limite_bytes: int,
     timeout: float = 120,
     headers: dict | None = None,
+    on_response: Callable[[aiohttp.ClientResponse], None] | None = None,
 ) -> str:
     """Baixa uma URL para um arquivo em streaming, abortando se exceder o limite.
 
@@ -173,6 +175,8 @@ async def baixar_url_limitado(
     try:
         async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=timeout)) as resp:
             resp.raise_for_status()
+            if on_response:
+                on_response(resp)
             content_length = resp.content_length
             if content_length and content_length > limite_bytes:
                 raise Exception(

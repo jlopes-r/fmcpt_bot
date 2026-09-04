@@ -2,6 +2,7 @@ import os
 import sys
 import re
 import json
+import copy
 import logging
 from pathlib import Path
 from datetime import datetime
@@ -22,6 +23,12 @@ from packages.config import (
     load_environment,
     mini_app_url,
     parse_chat_ids,
+)
+from packages.json_store import (
+    load_json as _load_json_safe,
+    merge_mapping_changes,
+    save_json as _save_json_safe,
+    update_json as _update_json_safe,
 )
 from packages.private_access import guard_authorized_group_chat, guard_private_chat_access
 from packages.pyrogram_file_id_compat import patch_pyrogram_file_id
@@ -113,26 +120,26 @@ def admin_only(func):
 
 # Carrega comandos salvos
 def carregar_comandos():
-    if COMANDOS_FILE.exists():
-        with open(COMANDOS_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    return {}
+    return _load_json_safe(COMANDOS_FILE, {})
 
 def salvar_comandos(comandos):
-    COMANDOS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with open(COMANDOS_FILE, 'w', encoding='utf-8') as f:
-        json.dump(comandos, f, ensure_ascii=False, indent=2)
+    """Mescla alteracoes locais sem descartar comandos salvos por outro servico."""
+    global comandos_personalizados_snapshot, comandos_personalizados_mtime
+    local = copy.deepcopy(comandos)
+    snapshot = copy.deepcopy(globals().get("comandos_personalizados_snapshot", {}))
+    merged = _update_json_safe(
+        COMANDOS_FILE,
+        {},
+        lambda comandos_salvos: merge_mapping_changes(comandos_salvos, snapshot, local),
+    )
+    comandos.clear()
+    comandos.update(merged)
+    comandos_personalizados_snapshot = copy.deepcopy(merged)
+    comandos_personalizados_mtime = COMANDOS_FILE.stat().st_mtime_ns if COMANDOS_FILE.exists() else 0
 
 def carregar_categorias_personalizadas():
-    if CUSTOM_CATEGORIES_FILE.exists():
-        try:
-            with open(CUSTOM_CATEGORIES_FILE, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                if isinstance(data, list):
-                    return [str(item).strip() for item in data if str(item).strip()]
-        except (json.JSONDecodeError, Exception) as e:
-            log.error(f"Erro ao carregar categorias personalizadas: {e}")
-    return []
+    data = _load_json_safe(CUSTOM_CATEGORIES_FILE, [])
+    return [str(item).strip() for item in data if str(item).strip()]
 
 def salvar_categorias_personalizadas(categorias):
     CUSTOM_CATEGORIES_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -141,8 +148,7 @@ def salvar_categorias_personalizadas(categorias):
         categoria = str(categoria).strip()
         if categoria and categoria.lower() not in [c.lower() for c in categorias_unicas]:
             categorias_unicas.append(categoria)
-    with open(CUSTOM_CATEGORIES_FILE, 'w', encoding='utf-8') as f:
-        json.dump(categorias_unicas, f, ensure_ascii=False, indent=2)
+    _save_json_safe(CUSTOM_CATEGORIES_FILE, categorias_unicas)
 
 def categoria_personalizada_padrao():
     return "Comandos personalizados"
@@ -160,18 +166,10 @@ def eh_chat_de_grupo(message) -> bool:
 
 # Carrega e salva backlog de sugestões
 def carregar_backlog():
-    if BACKLOG_FILE.exists():
-        try:
-            with open(BACKLOG_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except (json.JSONDecodeError, Exception) as e:
-            log.error(f"Erro ao carregar backlog: {e}")
-    return []
+    return _load_json_safe(BACKLOG_FILE, [])
 
 def salvar_backlog(backlog):
-    BACKLOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with open(BACKLOG_FILE, 'w', encoding='utf-8') as f:
-        json.dump(backlog, f, ensure_ascii=False, indent=2)
+    _save_json_safe(BACKLOG_FILE, backlog)
 
 def dividir_texto_longo(texto: str, limite: int = 4096) -> list[str]:
     """Divide texto longo em múltiplas mensagens respeitando o limite do Telegram."""
@@ -192,18 +190,10 @@ def dividir_texto_longo(texto: str, limite: int = 4096) -> list[str]:
     return partes
 
 def carregar_merda():
-    if MERDA_FILE.exists():
-        try:
-            with open(MERDA_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except (json.JSONDecodeError, Exception) as e:
-            log.error(f"Erro ao carregar sugestões de merda: {e}")
-    return []
+    return _load_json_safe(MERDA_FILE, [])
 
 def salvar_merda(merda):
-    MERDA_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with open(MERDA_FILE, 'w', encoding='utf-8') as f:
-        json.dump(merda, f, ensure_ascii=False, indent=2)
+    _save_json_safe(MERDA_FILE, merda)
 
 def carregar_gifs(filepath):
     """Carrega uma lista de GIFs de um arquivo JSON."""
@@ -211,12 +201,10 @@ def carregar_gifs(filepath):
     try:
         if filepath.exists():
             log.info(f"Arquivo encontrado. Lendo o conteúdo...")
-            with open(filepath, 'r', encoding='utf-8') as f:
-                gifs = json.load(f)
-                log.info(f"Sucesso! {len(gifs)} GIFs carregados de {filepath}.")
-                return gifs
-        else:
-            log.warning(f"O arquivo de GIFs não foi encontrado em: {filepath}")
+            gifs = _load_json_safe(filepath, [])
+            log.info(f"Sucesso! {len(gifs)} GIFs carregados de {filepath}.")
+            return gifs
+        log.warning(f"O arquivo de GIFs não foi encontrado em: {filepath}")
     except json.JSONDecodeError as e:
         log.error(f"Erro de sintaxe no JSON em {filepath}: {e}")
     except Exception as e:
@@ -226,9 +214,7 @@ def carregar_gifs(filepath):
 def salvar_gifs(filepath, gifs_list):
     """Salva a lista de GIFs em um arquivo JSON."""
     try:
-        filepath.parent.mkdir(parents=True, exist_ok=True)
-        with open(filepath, 'w', encoding='utf-8') as f:
-            json.dump(gifs_list, f, ensure_ascii=False, indent=4)
+        _save_json_safe(filepath, gifs_list)
         return True
     except Exception as e:
         log.error(f"Erro ao salvar GIFs em {filepath}: {e}")
@@ -282,15 +268,17 @@ async def sair_de_grupo_nao_autorizado(client, message):
 # Comandos personalizados carregados
 comandos_personalizados = carregar_comandos()
 categorias_personalizadas = carregar_categorias_personalizadas()
-comandos_personalizados_mtime = COMANDOS_FILE.stat().st_mtime if COMANDOS_FILE.exists() else 0
+comandos_personalizados_snapshot = copy.deepcopy(comandos_personalizados)
+comandos_personalizados_mtime = COMANDOS_FILE.stat().st_mtime_ns if COMANDOS_FILE.exists() else 0
 
 def recarregar_comandos_se_necessario():
     """Atualiza comandos criados pelo mini app sem reiniciar o bot."""
-    global comandos_personalizados, comandos_personalizados_mtime
-    mtime = COMANDOS_FILE.stat().st_mtime if COMANDOS_FILE.exists() else 0
+    global comandos_personalizados, comandos_personalizados_snapshot, comandos_personalizados_mtime
+    mtime = COMANDOS_FILE.stat().st_mtime_ns if COMANDOS_FILE.exists() else 0
     if mtime == comandos_personalizados_mtime:
         return
     comandos_personalizados = carregar_comandos()
+    comandos_personalizados_snapshot = copy.deepcopy(comandos_personalizados)
     comandos_personalizados_mtime = mtime
 
 

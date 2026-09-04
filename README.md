@@ -57,6 +57,21 @@ MINI_APP_URL=https://sua-url-do-mini-app
 
 3. (Opcional) Configure cookies do Instagram seguindo `COOKIES_SETUP.md`
 
+### Limites opcionais
+
+```env
+# Limita concorrencia e uso de disco/RAM nos downloads do Instagram.
+MAX_DOWNLOADS=3
+IG_MEDIA_DOWNLOAD_CONCURRENCY=3
+IG_MAX_CAROUSEL_ITEMS=20
+MAX_MEDIA_BYTES=2000000000
+PROFILE_PICTURE_MAX_BYTES=10485760
+
+# So habilite se o Mini App estiver atras de um proxy que controla X-Forwarded-For.
+MINI_APP_TRUST_PROXY_HEADERS=1
+MINI_APP_MEMBERSHIP_CACHE_TTL=120
+```
+
 ## 🏃 Execução
 
 ```bash
@@ -124,6 +139,15 @@ python scripts/renew_ig_cookies.py
 ```powershell
 .\scripts\deploy.ps1
 ```
+
+### Testes
+```powershell
+python -m pip install -r requirements-dev.txt
+python -m unittest discover -s tests -v
+```
+
+O deploy busca o branch `main` pela VM configurada no script. Cookies e `.env`
+permanecem apenas no servidor.
 
 ## 📄 Licença
 
