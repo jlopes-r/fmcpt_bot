@@ -372,6 +372,24 @@ def _converter_para_jpg(data: bytes, ext: str) -> tuple[bytes, str]:
     return buf.getvalue(), 'jpg'
 
 
+async def _enviar_album_com_progresso(client, message, lote, msg_espera):
+    """Envia um send_media_group com indicador de progresso no msg_espera.
+
+    O send_media_group() do Pyrogram 2.0.x nao aceita o callback 'progress'
+    (diferente de send_photo/send_video). Para nao ficar sem feedback, mostramos
+    o status de envio do album na propria mensagem de espera.
+    """
+    try:
+        await msg_espera.edit_text(f"📤 Enviando álbum com {len(lote)} {'item' if len(lote) == 1 else 'itens'}...")
+    except Exception:
+        pass
+    await client.send_media_group(message.chat.id, lote, reply_to_message_id=message.id)
+    try:
+        await msg_espera.edit_text("✅ Álbum enviado!")
+    except Exception:
+        pass
+
+
 async def extrair_e_enviar_midia(client, message, url, usuario, msg_espera, force_long=False):
     """Motor de download genérico. Retorna True se obteve sucesso."""
     global DOWNLOAD_COUNT, _fila_espera
@@ -484,7 +502,7 @@ async def extrair_e_enviar_midia(client, message, url, usuario, msg_espera, forc
                 else:
                     for i in range(0, len(lista_telegram), 10):
                         lote = lista_telegram[i:i+10]
-                        await client.send_media_group(message.chat.id, lote, reply_to_message_id=message.id)
+                        await _enviar_album_com_progresso(client, message, lote, msg_espera)
                         if len(lista_telegram) > 10:
                             await asyncio.sleep(2)
 
@@ -660,7 +678,7 @@ async def processar_instagram(client, message, url, usuario, msg_espera, link_du
                 else:
                     for i in range(0, len(lista_telegram), 10):
                         lote = lista_telegram[i:i+10]
-                        await client.send_media_group(message.chat.id, lote, reply_to_message_id=message.id)
+                        await _enviar_album_com_progresso(client, message, lote, msg_espera)
                         if len(lista_telegram) > 10:
                             await asyncio.sleep(2)
 
