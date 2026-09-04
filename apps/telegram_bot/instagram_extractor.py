@@ -56,6 +56,37 @@ _cookies_bad_since: float = 0.0
 _cookies_bad_reason: str = ""
 _COOKIES_BAD_RESET_SECONDS = 1800  # 30 min — depois tenta de novo
 
+# ─── Rate-limit (429) do Instagram ───────────────────────────────────────────
+# Quando o Instagram devolve 429 (throttle por IP), disparar varias requisicoes
+# em rajada so piora. Guardamos quando o ultimo 429 aconteceu e damos um
+# cooldown para dar espaco entre tentativas.
+_ig_429_since: float = 0.0
+_IG_429_COOLDOWN = 90.0          # segundos de respeito apos um 429
+_IG_PROFILE_PACING = 1.2         # espaco entre API -> HTML -> oembed
+
+
+def _mark_ig_429() -> None:
+    """Registra o momento do ultimo 429 para cooldown global."""
+    global _ig_429_since
+    _ig_429_since = time.time()
+
+
+async def _ig_429_backoff() -> None:
+    """Se um 429 aconteceu ha pouco, espera o cooldown restante (max curto)."""
+    global _ig_429_since
+    if not _ig_429_since:
+        return
+    restante = _IG_429_COOLDOWN - (time.time() - _ig_429_since)
+    if restante > 0:
+        log.info("⏳ Instagram em rate-limit (429) — aguardando %.0fs...", restante)
+        await asyncio.sleep(min(restante, _IG_429_COOLDOWN))
+        _ig_429_since = 0.0
+
+
+def _ig_429_recente() -> bool:
+    """True se houve 429 nos ultimos segundos (para nem tentar rajada)."""
+    return bool(_ig_429_since) and (time.time() - _ig_429_since) < _IG_429_COOLDOWN
+
 
 def cookies_are_valid() -> bool:
     """Verifica se os cookies estão marcados como válidos.
@@ -365,6 +396,7 @@ async def validate_cookie_health(cookie_path: str) -> dict:
                 return {"valid": False, "reason": f"Instagram rejeitou a sessão (status {resp.status_code})"}
 
             # 429 = rate-limit transitório — não marca cookies como ruins
+            _mark_ig_429()
             return {"valid": False, "reason": f"Instagram limitou requisições (status {resp.status_code}) — tente de novo em instantes"}
     except Exception as e:
         log.info("❌ Validação real falhou: %s", str(e)[:150])
@@ -450,16 +482,24 @@ async def fetch_instagram_profile(url: str, cookie_path: str = '') -> dict | Non
 
     try:
         async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+            # Se houve 429 recente, espera o cooldown antes de tentar de novo
+            await _ig_429_backoff()
+
             resp = await client.get(api_url, headers=headers)
             log.info("👤 Instagram perfil API @%s status=%d", username, resp.status_code)
+            if resp.status_code == 429:
+                _mark_ig_429()
             if resp.status_code == 200:
                 user = resp.json().get('data', {}).get('user')
                 result = _parse_profile_user(user)
                 if result and result.get('username'):
                     return result
 
+            await asyncio.sleep(_IG_PROFILE_PACING)
             resp = await client.get(page_url, headers=headers)
             log.info("👤 Instagram perfil HTML @%s status=%d", username, resp.status_code)
+            if resp.status_code == 429:
+                _mark_ig_429()
             if resp.status_code == 200:
                 html_result = _parse_profile_from_html(resp.text)
                 if html_result and html_result.get('username'):
@@ -467,6 +507,7 @@ async def fetch_instagram_profile(url: str, cookie_path: str = '') -> dict | Non
 
             # Fallback final: oembed — leve, bem menos propenso a 429, e devolve
             # ao menos o nome/autor/pf do perfil para o card/resposta nao falhar.
+            await asyncio.sleep(_IG_PROFILE_PACING)
             oembed_result = await _fetch_profile_via_oembed(client, username)
             if oembed_result and oembed_result.get('username'):
                 return oembed_result
@@ -487,6 +528,8 @@ async def _fetch_profile_via_oembed(client: httpx.AsyncClient, username: str) ->
     try:
         resp = await client.get(oembed_url)
         log.info("👤 Instagram perfil oembed @%s status=%d", username, resp.status_code)
+        if resp.status_code == 429:
+            _mark_ig_429()
         if resp.status_code != 200:
             return None
         data = resp.json()
@@ -529,8 +572,11 @@ async def detect_profile_privado(url: str, cookie_path: str = '') -> bool | None
 
     page_url = f'https://www.instagram.com/{urllib.parse.quote(username)}/'
     try:
+        await _ig_429_backoff()
         async with httpx.AsyncClient(timeout=12.0, follow_redirects=True) as client:
             resp = await client.get(page_url, headers=headers)
+            if resp.status_code == 429:
+                _mark_ig_429()
             if _is_challenge_response(resp):
                 return None
             if resp.status_code == 200:
