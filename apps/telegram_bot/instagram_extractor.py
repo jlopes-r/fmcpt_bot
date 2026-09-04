@@ -28,6 +28,7 @@ log = logging.getLogger("SuperBot")
 # ─── Regex ────────────────────────────────────────────────────────────────────
 SHORTCODE_REGEX = re.compile(r'/(?:p|reel|reels|ad|tv)/([A-Za-z0-9_-]+)')
 STORIES_REGEX = re.compile(r'/stories/([^/]+)/([0-9]+)')
+HIGHLIGHTS_REGEX = re.compile(r'/stories/highlights/([0-9]+)')
 
 # ─── Headers que imitam um navegador real ─────────────────────────────────────
 BROWSER_HEADERS = {
@@ -126,8 +127,21 @@ def _get_shortcode(url: str) -> str | None:
 
 
 def _is_story(url: str) -> bool:
-    """Verifica se a URL é de um story do Instagram."""
+    """Verifica se a URL é de um story do Instagram (não destaque)."""
+    if HIGHLIGHTS_REGEX.search(url):
+        return False
     return bool(STORIES_REGEX.search(url))
+
+
+def _is_highlight(url: str) -> bool:
+    """Verifica se a URL é de um destaque (highlights) do Instagram."""
+    return bool(HIGHLIGHTS_REGEX.search(url))
+
+
+def _get_highlight_id(url: str) -> str | None:
+    """Extrai o ID numérico de um destaque do Instagram."""
+    match = HIGHLIGHTS_REGEX.search(url)
+    return match.group(1) if match else None
 
 
 def _is_reel(url: str) -> bool:
@@ -364,15 +378,32 @@ def _build_cookie_header(cookies: dict) -> str:
 def _parse_profile_user(user: dict) -> dict | None:
     if not user:
         return None
+    full_name = _sanitize_caption(user.get('full_name') or '')
+    bio = _sanitize_caption(user.get('biography') or '')
+    category = user.get('category_name') or user.get('category') or ''
+    # Bio muitas vezes vem com ponteiro de linha e hashtags/jargão — usa o bruto
+    # mas remove o tradutor de linha duplicado.
+    if not category and user.get('bio_links'):
+        category = ''
     return {
         'username': user.get('username') or '',
-        'full_name': _sanitize_caption(user.get('full_name') or ''),
-        'biography': _sanitize_caption(user.get('biography') or ''),
+        'full_name': full_name,
+        'biography': bio,
         'followers': user.get('edge_followed_by', {}).get('count'),
         'following': user.get('edge_follow', {}).get('count'),
         'posts': user.get('edge_owner_to_timeline_media', {}).get('count'),
+        'reels': (
+            user.get('clip_metadata_count')
+            or user.get('edge_felix_video_timeline', {}).get('count')
+            or None
+        ),
         'is_private': bool(user.get('is_private')),
         'is_verified': bool(user.get('is_verified')),
+        'is_business': bool(
+            user.get('is_business_account')
+            or user.get('is_professional_account')
+        ),
+        'category': category,
         'profile_pic_url': user.get('profile_pic_url_hd') or user.get('profile_pic_url') or '',
         'external_url': user.get('external_url') or '',
     }
@@ -434,6 +465,56 @@ async def fetch_instagram_profile(url: str, cookie_path: str = '') -> dict | Non
         log.info("❌ Falha ao buscar perfil Instagram @%s: %s", username, str(e)[:150])
 
     return None
+
+
+async def detect_profile_privado(url: str, cookie_path: str = '') -> bool | None:
+    """Detecta se um perfil do Instagram é privado.
+
+    Retorna True se privado, False se público, e None se não der pra determinar
+    (ex.: sem rede, conta inexistente, challenge bloqueando).
+    """
+    username = get_profile_username(url)
+    if not username:
+        return None
+
+    cookies = _load_cookies_from_file(cookie_path)
+    headers = {
+        **BROWSER_HEADERS,
+        **IG_APP_HEADERS,
+        'X-Requested-With': 'XMLHttpRequest',
+    }
+    if cookies:
+        headers['Cookie'] = _build_cookie_header(cookies)
+
+    page_url = f'https://www.instagram.com/{urllib.parse.quote(username)}/'
+    try:
+        async with httpx.AsyncClient(timeout=12.0, follow_redirects=True) as client:
+            resp = await client.get(page_url, headers=headers)
+            if _is_challenge_response(resp):
+                return None
+            if resp.status_code == 200:
+                html = resp.text
+            else:
+                return None
+    except Exception as e:
+        log.info("⚠️ Falha ao detectar privacidade de @%s: %s", username, str(e)[:120])
+        return None
+
+    localizado = None
+    # Busca em função encadeada (payload JSON) e no HTML cru
+    for padrao in [
+        r'"is_private"\s*:\s*true',
+        r"'is_private'%3Atrue",
+    ]:
+        if re.search(padrao, html):
+            localizado = True
+            break
+    if localizado is None and re.search(r'"is_private"\s*:\s*false', html):
+        return False
+    # Marcadores claros de conta inexistente ou login obrigatório (indeterminado)
+    if 'Page Not Found' in html or 'the page you requested could not be found' in html.lower():
+        return None
+    return localizado
 
 
 def _auto_login_and_save_cookies(cookie_path: str) -> dict:
@@ -892,6 +973,8 @@ async def _extract_via_ytdlp(url: str, cookie_path: str, out_dir: str) -> dict |
         'extract_flat': False,
         'socket_timeout': 30,
         'retries': 2,
+        'merge_output_format': 'mp4',
+        'format': 'bestvideo[ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
         'http_headers': {
             'User-Agent': BROWSER_HEADERS['User-Agent'],
         },
@@ -949,6 +1032,82 @@ async def _extract_via_ytdlp(url: str, cookie_path: str, out_dir: str) -> dict |
 #  Orquestrador Principal
 # ═══════════════════════════════════════════════════════════════════════════════
 
+async def _extract_via_highlights_api(highlight_id: str, cookies: dict = None) -> dict | None:
+    """Busca o conteúdo de um destaque do Instagram via API interna.
+
+    Endpoint: i.instagram.com/api/v1/feed/reels_media/?reel_ids=highlight:<id>
+    Retorna o mesmo formato padrão (urls/type/title/uploader) para reuso no caller.
+    Requer cookies válidos (destaques são conteúdo do dono; público exige sessão).
+    """
+    log.info("🔗 Camada Highlights API: destaque %s", highlight_id)
+    if not cookies:
+        log.info("   ⏭️ Sem cookies — não dá pra abrir destaque (conteúdo do dono)")
+        return None
+
+    csrf = cookies.get('csrftoken', '')
+    headers = {**BROWSER_HEADERS, **IG_APP_HEADERS}
+    if csrf:
+        headers['X-CSRFToken'] = csrf
+    headers['Cookie'] = _build_cookie_header(cookies)
+
+    api_url = (
+        'https://i.instagram.com/api/v1/feed/reels_media/'
+        f'?reel_ids=highlight%3A{highlight_id}&reel_flag=1'
+    )
+    try:
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+            resp = await client.get(api_url, headers=headers)
+            log.info("   Highlights API status: %d", resp.status_code)
+            if _is_challenge_response(resp):
+                log.warning("   🍪 Highlight API redirecionou para challenge")
+                _mark_cookies_bad("Highlights API retornou challenge")
+                return None
+            if resp.status_code != 200:
+                log.info("   Highlights API retornou %d", resp.status_code)
+                return None
+            try:
+                data = resp.json()
+            except (json.JSONDecodeError, ValueError):
+                log.warning("   🍪 Highlights API body não é JSON")
+                _mark_cookies_bad("Highlights API retornou HTML")
+                return None
+
+        reels = data.get('reels', {})
+        if not reels:
+            log.info("   Highlights API vazia (destaque inexistente/privado?)")
+            return None
+
+        urls = []
+        titulo = ""
+        uploader = "Autor"
+        for reel in reels.values():
+            for item in reel.get('items', []):
+                parsed = _parse_api_item(item)
+                if not parsed:
+                    continue
+                urls.extend(parsed['urls'])
+                if not titulo:
+                    titulo = (item.get('caption') or {}).get('text', '') or parsed['title']
+                if uploader == "Autor":
+                    uploader = parsed['uploader']
+
+        if not urls:
+            return None
+
+        reset_cookies_bad()  # sessão funcionou
+        return {
+            'urls': urls,
+            'type': 'carousel' if len(urls) > 1 else (
+                'video' if any(u.endswith(('.mp4', '.mov')) for u in urls) else 'photo'
+            ),
+            'title': _sanitize_caption(titulo),
+            'uploader': uploader or 'Autor',
+        }
+    except Exception as e:
+        log.info("   ❌ Highlights API falhou: %s", str(e)[:200])
+        return None
+
+
 async def download_instagram(
     url: str,
     cookie_path: str,
@@ -987,6 +1146,18 @@ async def download_instagram(
             "⚠️ Cookies marcados como inválidos antes (%s) — tentando camadas 1-3 mesmo assim",
             get_cookie_failure_reason(),
         )
+
+    # Destaques (highlights): só API interna com cookies; sem fallback produtivo
+    if _is_highlight(url):
+        highlight_id = _get_highlight_id(url)
+        log.info("⭐ Destaque detectado: id=%s", highlight_id)
+        result = await _extract_via_highlights_api(highlight_id, cookies)
+        if result:
+            log.info("✅ Destaque via Highlights API: %d URLs", len(result['urls']))
+            reset_cookies_bad()
+            return result
+        log.warning("❌ Todas as tentativas falharam para Destaque: %s", url)
+        return None
 
     # Stories: tenta API primeiro (story_id = media_id), depois yt-dlp
     if _is_story(url):

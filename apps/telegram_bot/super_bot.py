@@ -10,14 +10,13 @@ import logging
 import subprocess
 import psutil
 from datetime import datetime, timedelta
-from functools import partial
 from urllib.parse import urlparse, urlunparse
 from collections import defaultdict
 from logging.handlers import RotatingFileHandler
 import yt_dlp
 import aiohttp
 
-from pyrogram import Client, filters, raw
+from pyrogram import Client, filters, idle, raw
 from pyrogram.types import InputMediaPhoto, InputMediaVideo, InlineKeyboardMarkup, InlineKeyboardButton
 try:
     from pyrogram.file_id import FileId, FileType
@@ -83,12 +82,18 @@ from packages.telegram_ui import (
     set_bot_commands_menu_button_via_bot_api,
 )
 from packages.url_utils import normalizar_url
-from apps.telegram_bot.downloaders import limite_duracao_filter, processar_com_ytdlp as _processar_com_ytdlp
+from apps.telegram_bot.downloaders import (
+    limite_duracao_filter,
+    FORMATO_MP4_H264 as _FORMATO_MP4_H264,
+    baixar_com_ytdlp as _baixar_com_ytdlp,
+    baixar_url_limitado as _baixar_url_limitado,
+)
 from apps.telegram_bot.duplicates import normalizar_link_social
 from apps.telegram_bot.instagram import (
     download_instagram,
     fetch_instagram_profile,
     get_profile_username,
+    detect_profile_privado as _detect_profile_privado,
     cookies_known_bad,
     get_cookie_failure_reason,
     _auto_login_and_save_cookies,
@@ -96,10 +101,11 @@ from apps.telegram_bot.instagram import (
     validate_cookie_health,
     reset_cookies_bad,
 )
+from apps.telegram_bot.instagram_profile_card import gerar_card as _gerar_card_perfil
 from apps.telegram_bot.media_utils import detectar_extensao as _detectar_extensao, progresso_upload as _progresso_upload
 from apps.telegram_bot.text_utils import dividir_texto_longo, limpar_texto, montar_legenda
 from apps.telegram_bot.translator import nome_idioma, traduzir_com_detalhes, traduzir_se_necessario
-from apps.telegram_bot.twitter import build_vxtwitter_url, build_fxtwitter_url, match_tweet_url
+from apps.telegram_bot.twitter import build_vxtwitter_url, build_fxtwitter_url, match_tweet_url, match_profile_url, build_profile_url, build_follow_info_url
 
 load_environment()
 ensure_runtime_dirs()
@@ -389,7 +395,7 @@ async def extrair_e_enviar_midia(client, message, url, usuario, msg_espera, forc
                     await asyncio.sleep(2)
 
                 ydl_opts = {
-                    'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+                    'format': _FORMATO_MP4_H264,
                     'outtmpl': '%(id)s.%(ext)s',
                     'paths': {'home': str(PASTA_DOWNLOADS)},
                     'quiet': True,
@@ -410,8 +416,7 @@ async def extrair_e_enviar_midia(client, message, url, usuario, msg_espera, forc
                         'Accept-Language': 'en-US,en;q=0.9',
                     }
 
-                loop = asyncio.get_running_loop()
-                info = await loop.run_in_executor(None, partial(_processar_com_ytdlp, url, ydl_opts))
+                info = await _baixar_com_ytdlp(url, ydl_opts, msg_espera=msg_espera)
 
                 midias = info.get('entries', [info])
                 lista_telegram = []
@@ -473,13 +478,13 @@ async def extrair_e_enviar_midia(client, message, url, usuario, msg_espera, forc
                 if len(lista_telegram) == 1:
                     midia = lista_telegram[0]
                     if isinstance(midia, InputMediaPhoto):
-                        await client.send_photo(message.chat.id, midia.media, caption=midia.caption, reply_to_message_id=message.id)
+                        await client.send_photo(message.chat.id, midia.media, caption=midia.caption, reply_to_message_id=message.id, progress=_progresso_upload(msg_espera))
                     else:
                         await client.send_video(message.chat.id, midia.media, caption=midia.caption, supports_streaming=True, reply_to_message_id=message.id, progress=_progresso_upload(msg_espera))
                 else:
                     for i in range(0, len(lista_telegram), 10):
                         lote = lista_telegram[i:i+10]
-                        await client.send_media_group(message.chat.id, lote, reply_to_message_id=message.id)
+                        await client.send_media_group(message.chat.id, lote, reply_to_message_id=message.id, progress=_progresso_upload(msg_espera))
                         if len(lista_telegram) > 10:
                             await asyncio.sleep(2)
 
@@ -602,7 +607,16 @@ async def processar_instagram(client, message, url, usuario, msg_espera, link_du
                                 return None
                             content_type = response.headers.get('Content-Type', '')
                             ext = _detectar_extensao(m_url, content_type)
-                            data = await response.read()
+                            # Stream com limite de tamanho (aborta se passar de 2GB)
+                            if response.content_length and response.content_length > LIMITE_TAMANHO:
+                                log.warning(f"Mídia IG muito grande ({response.content_length} bytes): {m_url[:100]}")
+                                return None
+                            dados_pendentes = bytearray()
+                            async for chunk in response.content.iter_chunked(1024 * 1024):
+                                dados_pendentes.extend(chunk)
+                                if len(dados_pendentes) > LIMITE_TAMANHO:
+                                    raise Exception(f"Mídia IG muito grande (> {LIMITE_TAMANHO} bytes)")
+                            data = bytes(dados_pendentes)
 
                             # Converte webp/heic → jpg (Telegram rejeita esses formatos como foto)
                             if ext in ('webp', 'heic', 'heif'):
@@ -640,13 +654,13 @@ async def processar_instagram(client, message, url, usuario, msg_espera, link_du
                 if len(lista_telegram) == 1:
                     midia = lista_telegram[0]
                     if isinstance(midia, InputMediaPhoto):
-                        await client.send_photo(message.chat.id, midia.media, caption=midia.caption, reply_to_message_id=message.id)
+                        await client.send_photo(message.chat.id, midia.media, caption=midia.caption, reply_to_message_id=message.id, progress=_progresso_upload(msg_espera))
                     else:
                         await client.send_video(message.chat.id, midia.media, caption=midia.caption, supports_streaming=True, reply_to_message_id=message.id, progress=_progresso_upload(msg_espera))
                 else:
                     for i in range(0, len(lista_telegram), 10):
                         lote = lista_telegram[i:i+10]
-                        await client.send_media_group(message.chat.id, lote, reply_to_message_id=message.id)
+                        await client.send_media_group(message.chat.id, lote, reply_to_message_id=message.id, progress=_progresso_upload(msg_espera))
                         if len(lista_telegram) > 10:
                             await asyncio.sleep(2)
 
@@ -742,18 +756,229 @@ def montar_resposta_perfil_instagram(profile):
 async def responder_perfil_instagram(client, message, url):
     profile = await fetch_instagram_profile(url, COOKIE_PATH)
     if not profile:
-        await message.reply_text("❌ Não consegui carregar os dados desse perfil do Instagram.")
+        privado = await _detect_profile_privado(url, COOKIE_PATH)
+        if privado:
+            await message.reply_text(
+                "🔒 **Perfil privado** — não consigo puxar as informações e a foto de um "
+                "perfil privado do Instagram (pede login). Peça ao dono para tornar o "
+                "perfil público ou compartilhe um post/story dele."
+            )
+        else:
+            await message.reply_text("❌ Não consegui carregar os dados desse perfil do Instagram.")
         return
 
-    caption = montar_resposta_perfil_instagram(profile)
-    foto = profile.get("profile_pic_url")
-    if foto:
+    is_privado = profile.get("is_private", False)
+
+    # Baixa a foto do perfil (com limite de tamanho) para montar o card
+    foto_bytes = None
+    photo_url = profile.get("profile_pic_url") or ""
+    if photo_url:
         try:
-            await client.send_photo(message.chat.id, foto, caption=caption, reply_to_message_id=message.id)
+            dl_session = await get_http_session()
+            async with dl_session.get(
+                photo_url, timeout=aiohttp.ClientTimeout(total=20)
+            ) as resp:
+                if resp.status == 200 and (not resp.content_length or resp.content_length <= LIMITE_TAMANHO):
+                    foto_bytes = await resp.read()
+        except Exception as e:
+            log.warning("Falha ao baixar foto do perfil Instagram: %s", str(e)[:150])
+
+    # Monta o card estilizado (roda em thread para não travar o loop)
+    try:
+        card_bytes = await asyncio.to_thread(_gerar_card_perfil, profile, foto_bytes)
+        card_path = PASTA_DOWNLOADS / f"card_insta_{message.id}.png"
+        with open(card_path, "wb") as f:
+            f.write(card_bytes)
+        try:
+            await client.send_photo(
+                message.chat.id,
+                str(card_path),
+                reply_to_message_id=message.id,
+            )
+            try:
+                os.remove(card_path)
+            except OSError:
+                pass
+            if is_privado:
+                await message.reply_text("🔒 **Perfil privado** — as informações abaixo podem estar incompletas, pois visualizações de conteúdo exigem login.")
             return
         except Exception as e:
-            log.warning("Falha ao enviar foto do perfil Instagram: %s", str(e)[:150])
+            log.warning("Falha ao enviar card do Instagram: %s", str(e)[:150])
+            os.remove(card_path)
+    except Exception as e:
+        log.warning("Falha ao gerar card do Instagram: %s", str(e)[:150])
+
+    # Fallback: envia a foto do perfil pura
+    if foto_bytes:
+        try:
+            await client.send_photo(message.chat.id, photo_url, caption=montar_resposta_perfil_instagram(profile), reply_to_message_id=message.id)
+            return
+        except Exception as e:
+            log.warning("Fallback foto do perfil Instagram: %s", str(e)[:150])
+
+    caption = montar_resposta_perfil_instagram(profile)
+    if is_privado:
+        caption = "🔒 **Perfil privado** — as informações podem estar incompletas.\n\n" + caption
     await message.reply_text(caption)
+
+
+async def detect_x_private(username: str) -> dict | None:
+    """Busca dados de um perfil do X/Twitter e informa se é protegido (privado).
+
+    Usa a API do vxtwitter para perfis (sem /status), que retorna `protected`.
+    Retorna um dict com os dados do perfil, ou None se não der pra determinar
+    (conta inexistente/deletada/erro de rede).
+    """
+    # 1) vxtwitter (retorna protected + dados ricos)
+    try:
+        session = await get_http_session()
+        async with session.get(build_profile_url(username), timeout=aiohttp.ClientTimeout(total=20)) as resp:
+            if resp.status == 200:
+                dados = await resp.json()
+                if isinstance(dados, dict) and "screen_name" in dados:
+                    profile = {
+                        "username": dados.get("screen_name") or username,
+                        "name": dados.get("name") or "",
+                        "description": dados.get("description") or "",
+                        "protected": bool(dados.get("protected")),
+                        "followers": dados.get("followers_count"),
+                        "following": dados.get("following_count"),
+                        "posts": dados.get("tweet_count"),
+                        "location": dados.get("location") or "",
+                        "verified": bool(dados.get("verified")),
+                        "id": dados.get("id"),
+                        "profile_image_url": dados.get("profile_image_url") or "",
+                        "created_at": dados.get("created_at") or "",
+                    }
+                    return profile
+            elif resp.status in (404, 400):
+                log.info("vxtwitter perfil @%s → %d (conta inexistente?)", username, resp.status)
+                return None
+    except Exception as e:
+        log.info("⚠️ vxtwitter perfil @%s falhou: %s", username, str(e)[:120])
+
+    # 2) Fallback: endpoint público de follow-button
+    try:
+        session = await get_http_session()
+        async with session.get(build_follow_info_url(username), timeout=aiohttp.ClientTimeout(total=15)) as r2:
+            if r2.status == 200:
+                dados = await r2.json(content_type=None)
+                if isinstance(dados, list) and dados:
+                    first = dados[0]
+                    if isinstance(first, dict) and "protected" in first:
+                        return {
+                            "username": first.get("screen_name") or username,
+                            "name": first.get("name") or "",
+                            "description": "",
+                            "protected": bool(first.get("protected")),
+                            "followers": None, "following": None, "posts": None,
+                            "location": "", "verified": bool(first.get("verified")),
+                            "id": first.get("id"), "profile_image_url": "", "created_at": "",
+                        }
+                elif isinstance(dados, dict) and "protected" in dados:
+                    return {
+                        "username": username, "name": "", "description": "",
+                        "protected": bool(dados.get("protected")),
+                        "followers": None, "following": None, "posts": None,
+                        "location": "", "verified": False, "id": None,
+                        "profile_image_url": "", "created_at": "",
+                    }
+    except Exception as e:
+        log.info("⚠️ Follow-button @%s falhou: %s", username, str(e)[:120])
+
+    return None
+
+
+def _extrair_ano_criacao(created_at: str) -> int | None:
+    """Extrai o ano de criação da conta de uma data do Twitter (ex: 2007)."""
+    if not created_at:
+        return None
+    match = re.search(r'\b(19|20)\d{2}\b', created_at)
+    return int(match.group(0)) if match else None
+
+
+def montar_resposta_perfil_x(profile: dict) -> str:
+    """Monta o texto-resumo de um perfil público do X."""
+    nome = profile.get("name") or profile.get("username") or "Perfil"
+    username = profile.get("username") or ""
+    verificado = " ✔️ Verificado" if profile.get("verified") else ""
+    bio = profile.get("description") or "Sem bio."
+    linhas = [
+        f"**X/Twitter: {nome}**",
+        f"@{username}{verificado}",
+        "",
+        bio,
+        "",
+        f"📊 **{_formatar_numero_perfil(profile.get('posts'))}** posts",
+        f"👥 **{_formatar_numero_perfil(profile.get('followers'))}** seguidores",
+        f"↗️ **{_formatar_numero_perfil(profile.get('following'))}** seguindo",
+    ]
+
+    # Razão seguidores/seguindo como dica de engajamento
+    seguindo = profile.get("following")
+    seguidores = profile.get("followers")
+    if isinstance(seguindo, int) and isinstance(seguidores, int) and seguindo > 0:
+        razao = seguidores / seguindo
+        if 2 <= razao <= 500:
+            linhas.append(f"📈 Forte engajamento (≈{int(razao)}× seguidores/seguindo)")
+
+    ano = _extrair_ano_criacao(profile.get("created_at"))
+    if ano:
+        corrente = datetime.now().year
+        idade = max(1, corrente - ano)
+        linhas.append(f"🕰️ No X desde {ano} ({idade} {'ano' if idade == 1 else 'anos'})")
+    if profile.get("location"):
+        linhas.append(f"📍 {profile['location']}")
+    return "\n".join(linhas)[:1024]
+
+
+async def responder_perfil_x(client, message, url):
+    """Responde a um link de perfil do X/Twitter: detecta privado ou monta resumo."""
+    match = match_profile_url(url)
+    username = match.group(1) if match else None
+    if not username:
+        await message.reply_text("❌ Não consegui identificar o perfil do X.")
+        return
+
+    status_msg = await message.reply_text(f"🔍 Verificando perfil @{username}...")
+    profile = await detect_x_private(username)
+
+    if not profile:
+        await status_msg.edit_text(
+            f"❌ Não consegui verificar o perfil @{username} do X.\n"
+            "Pode ser conta inexistente, deletada, suspensa, ou um bloqueio da API."
+        )
+        return
+
+    if profile.get("protected"):
+        await status_msg.edit_text(
+            f"🔒 **@{username}** é um perfil **privado** (conta protegida) no X.\n\n"
+            "**O que isso significa?**\n"
+            f"• As postagens de @{username} **só aparecem para quem ele segue**.\n"
+            "• Todo o conteúdo (tweets, fotos, vídeos e reels) fica **escondido** do público.\n"
+            "• Não existe API pública para puxar esse conteúdo — o X bloqueia devidamente.\n\n"
+            "**Como resolver?**\n"
+            "1. Peça pra ele criar um **link de um post** (x.com/<user>/status/<id>) — mesmo privado, "
+            "quando você está logado no perfil que o segue, dá pra baixar.\n"
+            "2. Ou peça pra ele **tornar o perfil público** temporariamente.\n\n"
+            "Enquanto isso, não consigo trazer tweets, fotos nem vídeos desse perfil. 🔒"
+        )
+        return
+
+    caption = montar_resposta_perfil_x(profile)
+    foto = profile.get("profile_image_url") or ""
+    if foto:
+        try:
+            await client.send_photo(
+                message.chat.id, foto, caption=caption,
+                reply_to_message_id=message.id,
+            )
+            await status_msg.delete()
+            return
+        except Exception as e:
+            log.warning("Falha ao enviar foto do perfil X: %s", str(e)[:150])
+    await status_msg.edit_text(caption)
+
 
 # -----------------------------------------
 # COMANDOS DE RANKING (SQLite)
@@ -1307,7 +1532,7 @@ async def enviar_midia_quote(client, message, qrt_info, match, msg_espera, usuar
             video_url = m['url']
             log.info(f"X quote: baixando video ({int(duracao_s)}s) via yt-dlp...")
             ydl_opts = {
-                'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+                'format': _FORMATO_MP4_H264,
                 'outtmpl': f"quote_{match.group(2)}_%(index)s.%(ext)s",
                 'paths': {'home': str(PASTA_DOWNLOADS)},
                 'quiet': True,
@@ -1317,8 +1542,7 @@ async def enviar_midia_quote(client, message, qrt_info, match, msg_espera, usuar
                 'max_filesize': LIMITE_TAMANHO,
             }
             try:
-                loop = asyncio.get_running_loop()
-                info = await loop.run_in_executor(None, partial(_processar_com_ytdlp, video_url, ydl_opts))
+                info = await _baixar_com_ytdlp(video_url, ydl_opts, msg_espera=msg_espera)
                 item = info.get('entries', [info])[0]
                 path = None
                 if 'requested_downloads' in item:
@@ -1339,15 +1563,12 @@ async def enviar_midia_quote(client, message, qrt_info, match, msg_espera, usuar
                 try:
                     video_path = str(PASTA_DOWNLOADS / f"x_quote_{match.group(2)}_{int(time.time())}.mp4")
                     dl_session = await get_http_session()
-                    async with dl_session.get(video_url, timeout=aiohttp.ClientTimeout(total=60)) as dl_resp:
-                        if dl_resp.status == 200:
-                            with open(video_path, 'wb') as vf:
-                                vf.write(await dl_resp.read())
-                            arquivos_quote.append(video_path)
-                            caption_video = legenda_quote if not lista_quote else ""
-                            lista_quote.append(InputMediaVideo(video_path, caption=caption_video, supports_streaming=True))
-                        else:
-                            raise Exception("Download direto falhou")
+                    await _baixar_url_limitado(
+                        dl_session, video_url, video_path, LIMITE_TAMANHO,
+                    )
+                    arquivos_quote.append(video_path)
+                    caption_video = legenda_quote if not lista_quote else ""
+                    lista_quote.append(InputMediaVideo(video_path, caption=caption_video, supports_streaming=True))
                 except Exception as e2:
                     log.error(f"X quote direct download erro: {e2}")
 
@@ -1495,6 +1716,14 @@ async def processar_links(client, message):
         arquivos_x = []
         try:
             match = match_tweet_url(url_raw)
+            # Link de perfil (x.com/username) — sem /status/
+            if not match and match_profile_url(url_raw):
+                try:
+                    await msg_espera.delete()
+                except Exception:
+                    pass
+                await responder_perfil_x(client, message, url_raw)
+                return
             if match:
                 username = match.group(1)
                 status_id = match.group(2)
@@ -1601,7 +1830,7 @@ async def processar_links(client, message):
 
                             log.info(f"X: baixando video ({int(duracao_s)}s) via yt-dlp...")
                             ydl_opts = {
-                                'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+                                'format': _FORMATO_MP4_H264,
                                 'outtmpl': f"{match.group(2)}_%(index)s.%(ext)s",
                                 'paths': {'home': str(PASTA_DOWNLOADS)},
                                 'quiet': True,
@@ -1611,8 +1840,7 @@ async def processar_links(client, message):
                                 'max_filesize': LIMITE_TAMANHO,
                             }
                             try:
-                                loop = asyncio.get_running_loop()
-                                info = await loop.run_in_executor(None, partial(_processar_com_ytdlp, url_raw, ydl_opts))
+                                info = await _baixar_com_ytdlp(url_raw, ydl_opts, msg_espera=msg_espera)
 
                                 item = info.get('entries', [info])[0]
                                 path = None
@@ -1637,13 +1865,12 @@ async def processar_links(client, message):
                                 try:
                                     video_path = str(PASTA_DOWNLOADS / f"x_{match.group(2)}_{int(time.time())}.mp4")
                                     dl_session = await get_http_session()
-                                    async with dl_session.get(video_url, timeout=aiohttp.ClientTimeout(total=60)) as dl_resp:
-                                        if dl_resp.status == 200:
-                                            with open(video_path, 'wb') as vf: vf.write(await dl_resp.read())
-                                            arquivos_x.append(video_path)
-                                            caption_video = legenda if not lista_telegram else ""
-                                            lista_telegram.append(InputMediaVideo(video_path, caption=caption_video, supports_streaming=True))
-                                        else: raise Exception("Download direto falhou")
+                                    await _baixar_url_limitado(
+                                        dl_session, video_url, video_path, LIMITE_TAMANHO,
+                                    )
+                                    arquivos_x.append(video_path)
+                                    caption_video = legenda if not lista_telegram else ""
+                                    lista_telegram.append(InputMediaVideo(video_path, caption=caption_video, supports_streaming=True))
                                 except Exception as e2:
                                     log.error(f"X direct download erro: {e2}")
                                     raise
@@ -1886,11 +2113,47 @@ if __name__ == "__main__":
         log.info(f"Grupos permitidos: {GRUPOS_AUTORIZADOS}")
 
     log.info("Super Bot iniciado!")
-    asyncio.get_event_loop().create_task(limpeza_periodica())
-    asyncio.get_event_loop().create_task(limpeza_update_ytdlp_periodica())
-    asyncio.get_event_loop().create_task(notificar_atualizacao())
+
+    # --- Canário de conectividade ---
+    # O Pyrogram às vezes perde o socket MTProto (ex: o DC poda a conexão ou a
+    # rede cai) e fica preso apenas mandando keepalives que falham
+    # ("socket.send() raised exception"), sem se recuperar sozinho. Este canário
+    # faz um Ping real ao DC em background: se falhar N vezes seguidas, forçamos
+    # o encerramento do processo para o supervisor/systemd recriá-lo de forma limpa.
+    CANARIO_INTERVALO = 15     # segundos entre pings
+    CANARIO_FALHAS = 4         # falhas consecutivas antes de reiniciar
+    _falhas_ping = [0]
+
+    async def _canario_conectividade():
+        while True:
+            await asyncio.sleep(CANARIO_INTERVALO)
+            try:
+                await app.invoke(
+                    raw.functions.Ping(ping_id=random.randint(1, pow(2, 31) - 1))
+                )
+                _falhas_ping[0] = 0
+            except Exception as e:
+                _falhas_ping[0] += 1
+                log.warning(f"Canário: ping ao DC falhou ({_falhas_ping[0]}/{CANARIO_FALHAS}): {e}")
+                if _falhas_ping[0] >= CANARIO_FALHAS:
+                    log.error("Canário: conexão com o Telegram caiu. Reiniciando o bot...")
+                    os._exit(1)
+
+    async def _rodar_with_canario():
+        await app.start()
+        asyncio.get_event_loop().create_task(_canario_conectividade())
+        try:
+            await idle()
+        finally:
+            await app.stop()
+
     try:
-        app.run()
+        asyncio.get_event_loop().run_until_complete(_rodar_with_canario())
+    except KeyboardInterrupt:
+        pass
+    except Exception as e:
+        log.error(f"Erro fatal na execução do bot: {e}", exc_info=True)
+        os._exit(1)
     finally:
         try:
             asyncio.get_event_loop().run_until_complete(close_http_session())
