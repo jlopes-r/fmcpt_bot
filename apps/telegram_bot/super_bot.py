@@ -1814,14 +1814,13 @@ async def processar_links(client, message):
                         texto_base += f"\n\n🔁 [Quote de {qrt_info.get('user_name', 'Autor')} logo abaixo 👇]"
                     
                 # Tradução automática do texto do tweet (e quote) para PT, se não estiver em português.
-                # Se traduzir, inclui o texto original + aviso do idioma de origem.
+                # Se traduzir, envia só a tradução + aviso do idioma de origem (sem o texto original).
                 detalhes_trad = await asyncio.to_thread(traduzir_com_detalhes, texto_base)
                 if detalhes_trad["foi_traduzido"]:
                     cap_limpa = (
                         f"{detalhes_trad['traduzido']}\n\n"
                         f"---\n"
-                        f"🔎 Traduzido do {nome_idioma(detalhes_trad['idioma_origem'])}:\n\n"
-                        f"{limpar_texto(detalhes_trad['original'])}"
+                        f"🔎 Traduzido do {nome_idioma(detalhes_trad['idioma_origem'])}"
                     )
                 else:
                     cap_limpa = limpar_texto(detalhes_trad["original"])
@@ -2160,6 +2159,7 @@ if __name__ == "__main__":
     async def _rodar_with_canario():
         await app.start()
         asyncio.get_event_loop().create_task(_canario_conectividade())
+        asyncio.get_event_loop().create_task(notificar_atualizacao())
         try:
             await idle()
         finally:
