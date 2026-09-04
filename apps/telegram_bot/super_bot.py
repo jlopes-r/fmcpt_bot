@@ -484,7 +484,7 @@ async def extrair_e_enviar_midia(client, message, url, usuario, msg_espera, forc
                 else:
                     for i in range(0, len(lista_telegram), 10):
                         lote = lista_telegram[i:i+10]
-                        await client.send_media_group(message.chat.id, lote, reply_to_message_id=message.id, progress=_progresso_upload(msg_espera))
+                        await client.send_media_group(message.chat.id, lote, reply_to_message_id=message.id)
                         if len(lista_telegram) > 10:
                             await asyncio.sleep(2)
 
@@ -660,7 +660,7 @@ async def processar_instagram(client, message, url, usuario, msg_espera, link_du
                 else:
                     for i in range(0, len(lista_telegram), 10):
                         lote = lista_telegram[i:i+10]
-                        await client.send_media_group(message.chat.id, lote, reply_to_message_id=message.id, progress=_progresso_upload(msg_espera))
+                        await client.send_media_group(message.chat.id, lote, reply_to_message_id=message.id)
                         if len(lista_telegram) > 10:
                             await asyncio.sleep(2)
 
