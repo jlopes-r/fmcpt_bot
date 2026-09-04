@@ -461,11 +461,51 @@ async def fetch_instagram_profile(url: str, cookie_path: str = '') -> dict | Non
             resp = await client.get(page_url, headers=headers)
             log.info("👤 Instagram perfil HTML @%s status=%d", username, resp.status_code)
             if resp.status_code == 200:
-                return _parse_profile_from_html(resp.text)
+                html_result = _parse_profile_from_html(resp.text)
+                if html_result and html_result.get('username'):
+                    return html_result
+
+            # Fallback final: oembed — leve, bem menos propenso a 429, e devolve
+            # ao menos o nome/autor/pf do perfil para o card/resposta nao falhar.
+            oembed_result = await _fetch_profile_via_oembed(client, username)
+            if oembed_result and oembed_result.get('username'):
+                return oembed_result
     except Exception as e:
         log.info("❌ Falha ao buscar perfil Instagram @%s: %s", username, str(e)[:150])
 
     return None
+
+
+async def _fetch_profile_via_oembed(client: httpx.AsyncClient, username: str) -> dict | None:
+    """Tenta enriquecer/perfil via oembed publico (api.instagram.com/oembed).
+
+    Devolve um perfil 'degradado' (sem contagens de posts/seguidores) quando a
+    API pesada (web_profile_info) ou a page HTML estao bloqueadas/429 — assim o
+    card do perfil ainda responde em vez de falhar com None.
+    """
+    oembed_url = f'https://api.instagram.com/oembed/?url=https://www.instagram.com/{urllib.parse.quote(username)}/'
+    try:
+        resp = await client.get(oembed_url)
+        log.info("👤 Instagram perfil oembed @%s status=%d", username, resp.status_code)
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        nome = data.get('author_name') or data.get('title') or username
+        return {
+            'username': username,
+            'full_name': _sanitize_caption(nome),
+            'biography': data.get('title') or '',
+            'followers': None,
+            'following': None,
+            'posts': data.get('media_count'),
+            'is_private': False,
+            'is_verified': False,
+            'profile_pic_url': data.get('thumbnail_url'),
+            'external_url': '',
+        }
+    except Exception as e:
+        log.info("❌ oembed @%s falhou: %s", username, str(e)[:120])
+        return None
 
 
 async def detect_profile_privado(url: str, cookie_path: str = '') -> bool | None:
