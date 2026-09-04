@@ -372,23 +372,71 @@ def _converter_para_jpg(data: bytes, ext: str) -> tuple[bytes, str]:
     return buf.getvalue(), 'jpg'
 
 
+def _probe_video_attrs(video_path, timeout=10):
+    """Lê duracao/largura/altura de um video via ffprobe.
+
+    O send_media_group do Pyrogram monta o DocumentAttributeVideo com os
+    valores de InputMediaVideo.width/height/duration. Se ficarem vazios o
+    Telegram rejeita a media com [400 MEDIA_EMPTY]. Aqui preenchemos esses
+    campos com dados reais do arquivo. Retorna (width, height, duration) ou
+    (0, 0, 0) se o ffprobe falhar.
+    """
+    try:
+        cmd = [
+            "ffprobe",
+            "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=width,height",
+            "-show_entries", "format=duration",
+            "-of", "json",
+            str(video_path),
+        ]
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout).stdout
+        data = json.loads(out) if out.strip() else {}
+        stream = (data.get("streams") or [{}])[0]
+        fmt = data.get("format") or {}
+        try:
+            width = int(stream.get("width") or 0)
+            height = int(stream.get("height") or 0)
+        except (TypeError, ValueError):
+            width = height = 0
+        try:
+            duration = int(float(fmt.get("duration") or stream.get("duration") or 0))
+        except (TypeError, ValueError):
+            duration = 0
+        return width, height, duration
+    except Exception:
+        return 0, 0, 0
+
+
+def _com_video_attrs(v):
+    """Devolve o InputMediaVideo com width/height/duration medidos por ffprobe."""
+    if v.width and v.height and v.duration:
+        return v
+    w, h, d = _probe_video_attrs(v.media)
+    return InputMediaVideo(
+        v.media, caption=v.caption,
+        width=w, height=h, duration=d,
+        supports_streaming=v.supports_streaming,
+    )
+
+
 async def _enviar_album_com_progresso(client, message, lote, msg_espera):
     """Envia itens de mídia com indicador de progresso no msg_espera.
 
     - Fotos: usam send_media_group (album) — funciona bem.
-    - Videos: send_media_group com InputMediaVideo nao faz probe de
-      duracao/largura/altura e o Telegram rejeita com [400 MEDIA_EMPTY].
-      Entao videos sao enviados um-a-um via send_video (que faz o probe).
+    - Videos: recebem width/height/duration via ffprobe para que o
+      send_media_group nao seja rejeitado com [400 MEDIA_EMPTY].
     """
     fotos = [m for m in lote if isinstance(m, InputMediaPhoto)]
-    videos = [m for m in lote if isinstance(m, InputMediaVideo)]
+    videos = [_com_video_attrs(m) for m in lote if isinstance(m, InputMediaVideo)]
     try:
         if fotos:
             await msg_espera.edit_text(f"📤 Enviando álbum com {len(fotos)} {'foto' if len(fotos) == 1 else 'fotos'}...")
             await client.send_media_group(message.chat.id, fotos, reply_to_message_id=message.id)
-        for v in videos:
-            await msg_espera.edit_text("📤 Enviando vídeo...")
-            await client.send_video(message.chat.id, v.media, caption=v.caption, supports_streaming=True, reply_to_message_id=message.id, progress=_progresso_upload(msg_espera))
+        if videos:
+            await msg_espera.edit_text(f"📤 Enviando álbum com {len(videos)} {'vídeo' if len(videos) == 1 else 'vídeos'}...")
+            await client.send_media_group(message.chat.id, videos, reply_to_message_id=message.id)
     finally:
         try:
             await msg_espera.edit_text("✅ Enviado!")
@@ -1613,17 +1661,18 @@ async def enviar_midia_quote(client, message, qrt_info, match, msg_espera, usuar
                 else:
                     await client.send_video(message.chat.id, midia.media, caption=midia.caption, supports_streaming=True, reply_to_message_id=message.id, progress=_progresso_upload(msg_espera))
         else:
-            # Telegram NÃO aceita álbum misto nem video em send_media_group
-            # (video sem probe => MEDIA_EMPTY). Fotos em album; videos um-a-um.
+            # Fotos em album; videos recebem width/height/duration via ffprobe
+            # para o send_media_group nao ser rejeitado com [400 MEDIA_EMPTY].
             fotos_q = [m for m in lista_quote if isinstance(m, InputMediaPhoto)]
-            videos_q = [m for m in lista_quote if isinstance(m, InputMediaVideo)]
+            videos_q = [_com_video_attrs(m) for m in lista_quote if isinstance(m, InputMediaVideo)]
             for i in range(0, len(fotos_q), 10):
                 await client.send_media_group(message.chat.id, fotos_q[i:i+10], reply_to_message_id=message.id)
                 if len(fotos_q) > 10:
                     await asyncio.sleep(2)
-            for v in videos_q:
-                await client.send_video(message.chat.id, v.media, caption=v.caption, supports_streaming=True, reply_to_message_id=message.id, progress=_progresso_upload(msg_espera))
-                await asyncio.sleep(0.5)
+            for i in range(0, len(videos_q), 10):
+                await client.send_media_group(message.chat.id, videos_q[i:i+10], reply_to_message_id=message.id)
+                if len(videos_q) > 10:
+                    await asyncio.sleep(2)
 
         for p in arquivos_quote:
             if os.path.exists(p):
