@@ -810,7 +810,10 @@ def montar_resposta_perfil_instagram(profile):
     nome = profile.get("full_name") or profile.get("username") or "Perfil"
     username = profile.get("username") or ""
     verificado = " • verificado" if profile.get("is_verified") else ""
-    privacidade = "Privado" if profile.get("is_private") else "Publico"
+    if profile.get("is_private") is None:
+        privacidade = "Nao informado"
+    else:
+        privacidade = "Privado" if profile.get("is_private") else "Publico"
     bio = profile.get("biography") or "Sem bio."
 
     linhas = [

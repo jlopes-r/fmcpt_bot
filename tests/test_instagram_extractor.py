@@ -56,6 +56,39 @@ class FakeAsyncClient:
         return FakeProfileResponse()
 
 
+class FakeRateLimitedResponse:
+    status_code = 429
+    text = ''
+
+
+class FakeHtmlProfileResponse:
+    status_code = 200
+    text = '''
+        <meta property="og:title" content="Ada Lovelace (@ada) - Instagram">
+        <meta property="og:description" content="1.2K Followers, 34 Following, 56 Posts">
+        <meta property="og:image" content="https://example.com/ada.jpg">
+    '''
+
+
+class FakeRateLimitedProfileClient:
+    def __init__(self, *args, **kwargs):
+        self.requests = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def get(self, url, headers=None):
+        self.requests.append((url, headers))
+        if '/api/v1/' in url:
+            return FakeRateLimitedResponse()
+        if '/oembed/' in url:
+            raise AssertionError('oEmbed must not be called after a 429')
+        return FakeHtmlProfileResponse()
+
+
 class FakeNewsResponse:
     status_code = 200
     url = "https://www.instagram.com/api/v1/news/inbox/"
@@ -123,6 +156,23 @@ class InstagramExtractorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(profile["followers"], 1000)
         self.assertTrue(profile["is_verified"])
         self.assertEqual(profile["profile_pic_url"], "https://example.com/openai.jpg")
+
+    async def test_profile_429_uses_public_html_card_without_waiting_or_oembed(self):
+        ig._ig_429_since = 0.0
+        self.addCleanup(setattr, ig, "_ig_429_since", 0.0)
+        with (
+            patch.object(ig, "_load_cookies_from_file", return_value={}),
+            patch.object(ig.httpx, "AsyncClient", FakeRateLimitedProfileClient),
+            patch.object(ig.asyncio, "sleep", new=AsyncMock()) as sleep,
+        ):
+            profile = await ig.fetch_instagram_profile("https://www.instagram.com/ada/", "")
+
+        self.assertTrue(profile["partial"])
+        self.assertEqual(profile["username"], "ada")
+        self.assertEqual(profile["full_name"], "Ada Lovelace")
+        self.assertEqual(profile["followers"], "1.2K")
+        self.assertEqual(profile["profile_pic_url"], "https://example.com/ada.jpg")
+        sleep.assert_not_awaited()
 
     async def test_validate_cookie_health_confirms_real_session(self):
         with (

@@ -18,6 +18,7 @@ import logging
 import urllib.parse
 import http.cookiejar
 import tempfile
+from html import unescape as html_unescape
 from datetime import datetime
 from functools import partial
 
@@ -166,18 +167,6 @@ def _mark_ig_429() -> None:
     """Registra o momento do ultimo 429 para cooldown global."""
     global _ig_429_since
     _ig_429_since = time.time()
-
-
-async def _ig_429_backoff() -> None:
-    """Se um 429 aconteceu ha pouco, espera o cooldown restante (max curto)."""
-    global _ig_429_since
-    if not _ig_429_since:
-        return
-    restante = _IG_429_COOLDOWN - (time.time() - _ig_429_since)
-    if restante > 0:
-        log.info("⏳ Instagram em rate-limit (429) — aguardando %.0fs...", restante)
-        await asyncio.sleep(min(restante, _IG_429_COOLDOWN))
-        _ig_429_since = 0.0
 
 
 def _ig_429_recente() -> bool:
@@ -559,11 +548,55 @@ def _parse_profile_from_html(html: str) -> dict | None:
     return None
 
 
+def _parse_profile_meta(html: str, username: str) -> dict | None:
+    """Monta um perfil parcial a partir das meta tags de uma pagina publica."""
+    meta = {}
+    for tag in re.findall(r'<meta\b[^>]*>', html, flags=re.IGNORECASE):
+        attrs = {
+            key.lower(): html_unescape(value1 or value2 or value3 or '')
+            for key, value1, value2, value3 in re.findall(
+                r'''([:\w-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))''', tag
+            )
+        }
+        key = (attrs.get('property') or attrs.get('name') or '').lower()
+        if key in {'og:title', 'og:description', 'og:image'}:
+            meta[key] = attrs.get('content', '')
+
+    if not meta:
+        return None
+
+    title = meta.get('og:title', '')
+    title = re.sub(r'\s*\(@[^)]*\)', '', title)
+    title = re.sub(r'\s*[|\u2022-]\s*Instagram.*$', '', title, flags=re.IGNORECASE)
+    title = _sanitize_caption(title.strip())
+    description = meta.get('og:description', '')
+
+    def stat(label: str) -> str | None:
+        match = re.search(rf'([\d.,KMBkmb]+)\s+{label}', description, re.IGNORECASE)
+        return match.group(1) if match else None
+
+    return {
+        'username': username,
+        'full_name': title or username,
+        'biography': '',
+        'followers': stat('followers'),
+        'following': stat('following'),
+        'posts': stat('posts'),
+        'is_private': None,
+        'is_verified': False,
+        'is_business': False,
+        'category': '',
+        'profile_pic_url': meta.get('og:image', ''),
+        'external_url': '',
+        'partial': True,
+    }
+
+
 async def fetch_instagram_profile(url: str, cookie_path: str = '') -> dict | None:
     """Busca dados públicos de um perfil do Instagram, com cache de 1h.
 
     Usa cache em memoria/disco primeiro (chave = username). Só bate na API do
-    Instagram (web_profile_info / HTML / oembed) se o cache expirou. Isso evita
+    Instagram (web_profile_info / HTML) se o cache expirou. Isso evita
     o 429 de rate-limit que aparecia ao re-buscar o mesmo perfil a cada mensagem.
     Se a chamada de rede falhar ou levar 429 e houver cache, devolve o cache.
     """
@@ -592,29 +625,35 @@ async def fetch_instagram_profile(url: str, cookie_path: str = '') -> dict | Non
     result = None
     try:
         async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
-            # Se houve 429 recente, espera o cooldown antes de tentar de novo
-            await _ig_429_backoff()
-
-            resp = await client.get(api_url, headers=headers)
-            log.info("👤 Instagram perfil API @%s status=%d", username, resp.status_code)
-            if resp.status_code == 429:
-                _mark_ig_429()
-            if resp.status_code == 200:
-                user = resp.json().get('data', {}).get('user')
-                result = _parse_profile_user(user)
+            rate_limited = _ig_429_recente()
+            if rate_limited:
+                log.info("👤 Instagram perfil @%s: API ignorada durante cooldown de 429", username)
+            else:
+                resp = await client.get(api_url, headers=headers)
+                log.info("👤 Instagram perfil API @%s status=%d", username, resp.status_code)
+                if resp.status_code == 429:
+                    _mark_ig_429()
+                    rate_limited = True
+                elif resp.status_code == 200:
+                    user = resp.json().get('data', {}).get('user')
+                    result = _parse_profile_user(user)
 
             if not result or not result.get('username'):
-                await asyncio.sleep(_IG_PROFILE_PACING)
+                if not rate_limited:
+                    await asyncio.sleep(_IG_PROFILE_PACING)
                 resp = await client.get(page_url, headers=headers)
                 log.info("👤 Instagram perfil HTML @%s status=%d", username, resp.status_code)
                 if resp.status_code == 429:
                     _mark_ig_429()
+                    rate_limited = True
                 if resp.status_code == 200:
                     result = _parse_profile_from_html(resp.text)
+                    if not result:
+                        result = _parse_profile_meta(resp.text, username)
 
-            if not result or not result.get('username'):
-                # Fallback final: oembed — leve, menos propenso a 429, devolve ao
-                # menos nome/autor/pf para o card/resposta nao falhar.
+            if (not result or not result.get('username')) and not rate_limited:
+                # oEmbed so vale uma tentativa quando as outras rotas nao foram
+                # limitadas. Depois de 429 ele redireciona para login e agrava o bloqueio.
                 await asyncio.sleep(_IG_PROFILE_PACING)
                 result = await _fetch_profile_via_oembed(client, username)
     except Exception as e:
@@ -622,8 +661,11 @@ async def fetch_instagram_profile(url: str, cookie_path: str = '') -> dict | Non
 
     # 3) Sucesso -> atualiza cache. Falha -> reutiliza cache antigo se houver.
     if result and result.get('username'):
-        _profile_cache_store(username, result)
-        _profile_cache_save()
+        # Metadados OG sao apenas um cartao de contingencia; nao os mantemos por
+        # uma hora para que uma proxima tentativa possa recuperar os dados completos.
+        if not result.get('partial'):
+            _profile_cache_store(username, result)
+            _profile_cache_save()
         return result
 
     fallback = _profile_cache_get(username)
@@ -693,7 +735,8 @@ async def detect_profile_privado(url: str, cookie_path: str = '') -> bool | None
 
     page_url = f'https://www.instagram.com/{urllib.parse.quote(username)}/'
     try:
-        await _ig_429_backoff()
+        if _ig_429_recente():
+            return None
         async with httpx.AsyncClient(timeout=12.0, follow_redirects=True) as client:
             resp = await client.get(page_url, headers=headers)
             if resp.status_code == 429:
