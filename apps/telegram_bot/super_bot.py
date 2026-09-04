@@ -500,11 +500,17 @@ async def extrair_e_enviar_midia(client, message, url, usuario, msg_espera, forc
                     else:
                         await client.send_video(message.chat.id, midia.media, caption=midia.caption, supports_streaming=True, reply_to_message_id=message.id, progress=_progresso_upload(msg_espera))
                 else:
-                    for i in range(0, len(lista_telegram), 10):
-                        lote = lista_telegram[i:i+10]
-                        await _enviar_album_com_progresso(client, message, lote, msg_espera)
-                        if len(lista_telegram) > 10:
-                            await asyncio.sleep(2)
+                    # Telegram NÃO aceita álbum misto (foto + vídeo) num mesmo
+                    # send_media_group (dá MEDIA_EMPTY). Separa fotos e vídeos
+                    # em envios distintos.
+                    fotos = [m for m in lista_telegram if isinstance(m, InputMediaPhoto)]
+                    videos = [m for m in lista_telegram if isinstance(m, InputMediaVideo)]
+                    for grupo in (fotos, videos):
+                        for i in range(0, len(grupo), 10):
+                            lote = grupo[i:i+10]
+                            await _enviar_album_com_progresso(client, message, lote, msg_espera)
+                            if len(grupo) > 10:
+                                await asyncio.sleep(2)
 
                 async with DOWNLOAD_COUNT_LOCK:
                     DOWNLOAD_COUNT += 1
@@ -676,11 +682,17 @@ async def processar_instagram(client, message, url, usuario, msg_espera, link_du
                     else:
                         await client.send_video(message.chat.id, midia.media, caption=midia.caption, supports_streaming=True, reply_to_message_id=message.id, progress=_progresso_upload(msg_espera))
                 else:
-                    for i in range(0, len(lista_telegram), 10):
-                        lote = lista_telegram[i:i+10]
-                        await _enviar_album_com_progresso(client, message, lote, msg_espera)
-                        if len(lista_telegram) > 10:
-                            await asyncio.sleep(2)
+                    # Telegram NÃO aceita álbum misto (foto + vídeo) num mesmo
+                    # send_media_group (dá MEDIA_EMPTY). Separa fotos e vídeos
+                    # em envios distintos.
+                    fotos = [m for m in lista_telegram if isinstance(m, InputMediaPhoto)]
+                    videos = [m for m in lista_telegram if isinstance(m, InputMediaVideo)]
+                    for grupo in (fotos, videos):
+                        for i in range(0, len(grupo), 10):
+                            lote = grupo[i:i+10]
+                            await _enviar_album_com_progresso(client, message, lote, msg_espera)
+                            if len(grupo) > 10:
+                                await asyncio.sleep(2)
 
                 async with DOWNLOAD_COUNT_LOCK:
                     DOWNLOAD_COUNT += 1
@@ -1603,11 +1615,16 @@ async def enviar_midia_quote(client, message, qrt_info, match, msg_espera, usuar
                 else:
                     await client.send_video(message.chat.id, midia.media, caption=midia.caption, supports_streaming=True, reply_to_message_id=message.id, progress=_progresso_upload(msg_espera))
         else:
-            for i in range(0, len(lista_quote), 10):
-                lote = lista_quote[i:i+10]
-                await client.send_media_group(message.chat.id, lote, reply_to_message_id=message.id)
-                if len(lista_quote) > 10:
-                    await asyncio.sleep(2)
+            # Telegram NÃO aceita álbum misto (foto + vídeo) num mesmo
+            # send_media_group (dá MEDIA_EMPTY). Separa fotos e vídeos.
+            fotos_q = [m for m in lista_quote if isinstance(m, InputMediaPhoto)]
+            videos_q = [m for m in lista_quote if isinstance(m, InputMediaVideo)]
+            for grupo_q in (fotos_q, videos_q):
+                for i in range(0, len(grupo_q), 10):
+                    lote = grupo_q[i:i+10]
+                    await client.send_media_group(message.chat.id, lote, reply_to_message_id=message.id)
+                    if len(grupo_q) > 10:
+                        await asyncio.sleep(2)
 
         for p in arquivos_quote:
             if os.path.exists(p):
@@ -1905,11 +1922,17 @@ async def processar_links(client, message):
                                 else:
                                     await client.send_video(message.chat.id, midia.media, caption=midia.caption, supports_streaming=True, reply_to_message_id=message.id, progress=_progresso_upload(msg_espera))
                         else:
-                            for i in range(0, len(lista_telegram), 10):
-                                lote = lista_telegram[i:i+10]
-                                await client.send_media_group(message.chat.id, lote, reply_to_message_id=message.id)
-                                if len(lista_telegram) > 10:
-                                    await asyncio.sleep(2)
+                            # Telegram NÃO aceita álbum misto (foto + vídeo) num mesmo
+                            # send_media_group (dá MEDIA_EMPTY). Separa fotos e vídeos
+                            # em envios distintos.
+                            fotos = [m for m in lista_telegram if isinstance(m, InputMediaPhoto)]
+                            videos = [m for m in lista_telegram if isinstance(m, InputMediaVideo)]
+                            for grupo in (fotos, videos):
+                                for i in range(0, len(grupo), 10):
+                                    lote = grupo[i:i+10]
+                                    await _enviar_album_com_progresso(client, message, lote, msg_espera)
+                                    if len(grupo) > 10:
+                                        await asyncio.sleep(2)
 
                         async with DOWNLOAD_COUNT_LOCK:
                             DOWNLOAD_COUNT += 1
