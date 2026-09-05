@@ -18,7 +18,7 @@ import logging
 import urllib.parse
 import http.cookiejar
 import tempfile
-from html import unescape as html_unescape
+from html.parser import HTMLParser
 from datetime import datetime
 from functools import partial
 
@@ -141,7 +141,7 @@ def _profile_cache_upsert_privacy(username: str, is_private: bool) -> None:
     existing = _profile_cache.get(username)
     if existing and isinstance(existing, dict) and existing.get('is_private') is not None:
         return
-    profile = dict(existing) if isinstance(existing, dict) else {'username': username}
+    profile = dict(existing) if isinstance(existing, dict) else {'username': username, 'partial': True}
     profile['is_private'] = is_private
     _profile_cache_store(username, profile)
 
@@ -285,6 +285,10 @@ def get_profile_username(url: str) -> str | None:
     """Extrai username quando a URL aponta para um perfil do Instagram."""
     try:
         parsed = urllib.parse.urlparse(url)
+        if parsed.scheme not in {'http', 'https'} or (parsed.hostname or '').lower() not in {
+            'instagram.com', 'www.instagram.com', 'm.instagram.com',
+        }:
+            return None
         path_parts = [part for part in parsed.path.strip('/').split('/') if part]
     except Exception:
         return None
@@ -293,7 +297,7 @@ def get_profile_username(url: str) -> str | None:
         return None
 
     username = path_parts[0]
-    if username in {'p', 'reel', 'reels', 'tv', 'ad', 'stories', 'explore', 'accounts'}:
+    if username.lower() in {'p', 'reel', 'reels', 'tv', 'ad', 'stories', 'explore', 'accounts'}:
         return None
     if not re.fullmatch(r'[A-Za-z0-9._]{1,30}', username):
         return None
@@ -494,99 +498,204 @@ def _build_cookie_header(cookies: dict) -> str:
     return '; '.join(f'{k}={v}' for k, v in cookies.items())
 
 
-def _parse_profile_user(user: dict) -> dict | None:
-    if not user:
+def _profile_is_complete(profile: dict | None) -> bool:
+    """Somente dados conhecidos podem encerrar a busca e usar o cache de 1h."""
+    return bool(
+        profile and profile.get('username') and profile.get('profile_pic_url')
+        and all(profile.get(key) is not None for key in (
+            'biography', 'followers', 'following', 'posts', 'is_private',
+        ))
+    )
+
+
+def _merge_profiles(primary: dict | None, extra: dict | None) -> dict | None:
+    """Completa lacunas sem trocar o perfil ou apagar valores conhecidos (0/False/bio vazia)."""
+    if not primary:
+        return dict(extra) if extra else None
+    result = dict(primary)
+    if not extra or str(extra.get('username', '')).lower() != str(primary.get('username', '')).lower():
+        return result
+    for key, value in extra.items():
+        missing = key not in result or result[key] is None
+        if key not in {'biography', 'partial'}:
+            missing = missing or result.get(key) == ''
+        if key != 'partial' and missing and value is not None:
+            result[key] = value
+    pictures = []
+    for profile in (primary, extra):
+        for candidate in [profile.get('profile_pic_url'), *(profile.get('profile_pic_urls') or [])]:
+            if isinstance(candidate, str) and candidate and candidate not in pictures:
+                pictures.append(candidate)
+    result['profile_pic_urls'] = pictures
+    result['partial'] = not _profile_is_complete(result)
+    return result
+
+
+def _parse_profile_user(user: dict, username: str | None = None) -> dict | None:
+    if not isinstance(user, dict) or not isinstance(user.get('username'), str):
         return None
-    full_name = _sanitize_caption(user.get('full_name') or '')
-    bio = _sanitize_caption(user.get('biography') or '')
-    category = user.get('category_name') or user.get('category') or ''
-    # Bio muitas vezes vem com ponteiro de linha e hashtags/jargão — usa o bruto
-    # mas remove o tradutor de linha duplicado.
-    if not category and user.get('bio_links'):
-        category = ''
-    return {
-        'username': user.get('username') or '',
-        'full_name': full_name,
-        'biography': bio,
-        'followers': user.get('edge_followed_by', {}).get('count'),
-        'following': user.get('edge_follow', {}).get('count'),
-        'posts': user.get('edge_owner_to_timeline_media', {}).get('count'),
-        'reels': (
-            user.get('clip_metadata_count')
-            or user.get('edge_felix_video_timeline', {}).get('count')
-            or None
-        ),
-        'is_private': bool(user.get('is_private')),
-        'is_verified': bool(user.get('is_verified')),
-        'is_business': bool(
-            user.get('is_business_account')
-            or user.get('is_professional_account')
-        ),
-        'category': category,
-        'profile_pic_url': user.get('profile_pic_url_hd') or user.get('profile_pic_url') or '',
+    if not re.fullmatch(r'[A-Za-z0-9._]{1,30}', user['username']):
+        return None
+    if username and user['username'].lower() != username.lower():
+        return None
+
+    def count(edge: str, field: str):
+        nested = user.get(edge)
+        value = nested.get('count') if isinstance(nested, dict) else None
+        return user.get(field) if value is None else value
+
+    bio = user.get('biography')
+    if bio is None and isinstance(user.get('biography_with_entities'), dict):
+        bio = user['biography_with_entities'].get('raw_text')
+    pictures = [user.get('profile_pic_url_hd')]
+    hd_info = user.get('hd_profile_pic_url_info')
+    if isinstance(hd_info, dict):
+        pictures.append(hd_info.get('url'))
+    pictures.append(user.get('profile_pic_url'))
+    pictures = list(dict.fromkeys(p for p in pictures if isinstance(p, str) and p))
+    business_flags = [user.get('is_business_account'), user.get('is_professional_account')]
+    result = {
+        'username': user['username'],
+        'full_name': _sanitize_caption(user.get('full_name') or ''),
+        'biography': _sanitize_caption(bio) if isinstance(bio, str) else None,
+        'followers': count('edge_followed_by', 'follower_count'),
+        'following': count('edge_follow', 'following_count'),
+        'posts': count('edge_owner_to_timeline_media', 'media_count'),
+        'reels': count('edge_felix_video_timeline', 'clip_metadata_count'),
+        'is_private': user.get('is_private'),
+        'is_verified': user.get('is_verified'),
+        'is_business': any(business_flags) if any(v is not None for v in business_flags) else None,
+        'category': user.get('category_name') or user.get('category') or '',
+        'profile_pic_url': pictures[0] if pictures else '',
+        'profile_pic_urls': pictures,
         'external_url': user.get('external_url') or '',
     }
+    result['partial'] = not _profile_is_complete(result)
+    return result
 
 
-def _parse_profile_from_html(html: str) -> dict | None:
-    patterns = [
-        r'"user"\s*:\s*({.+?})\s*,\s*"logging_page_id"',
-        r'"ProfilePage"\s*,\s*\[\s*({.+?})\s*\]',
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, html, re.DOTALL)
-        if not match:
-            continue
-        try:
-            data = json.loads(match.group(1))
-        except Exception:
-            continue
-        user = data.get('graphql', {}).get('user') if isinstance(data, dict) else None
-        result = _parse_profile_user(user or data)
-        if result and result.get('username'):
-            return result
-    return None
+class _ProfileHTMLParser(HTMLParser):
+    """Lê metadados e scripts como dados; nenhum JavaScript é executado."""
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.meta = {}
+        self.scripts = []
+        self._script = None
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if tag == 'meta':
+            key = (attrs.get('property') or attrs.get('name') or '').lower()
+            self.meta[key] = attrs.get('content') or ''
+        elif tag == 'script':
+            self._script = []
+
+    def handle_data(self, data):
+        if self._script is not None:
+            self._script.append(data)
+
+    def handle_endtag(self, tag):
+        if tag == 'script' and self._script is not None:
+            self.scripts.append(''.join(self._script))
+            self._script = None
+
+
+def _parse_profile_from_html(html: str, username: str | None = None) -> dict | None:
+    """Suporta JSON de hydration/Relay e payloads antigos, com identidade conferida."""
+    parser = _ProfileHTMLParser()
+    parser.feed(html)
+    decoder = json.JSONDecoder()
+    candidates = []
+    for script in parser.scripts:
+        # JSON puro, window._sharedData, __additionalDataLoaded e requireLazy.
+        # raw_decode respeita chaves aninhadas e aspas dentro da bio.
+        starts = [m.start() for m in re.finditer(r'[\[{]', script)]
+        consumed = -1
+        for start in starts:
+            if start < consumed:
+                continue
+            try:
+                payload, consumed = decoder.raw_decode(script, start)
+            except (ValueError, RecursionError):
+                continue
+            pending = [(payload, 0)]
+            while pending:
+                node, depth = pending.pop()
+                if isinstance(node, dict):
+                    result = _parse_profile_user(node, username)
+                    if result:
+                        candidates.append(result)
+                    pending.extend((value, depth) for value in node.values() if isinstance(value, (dict, list)))
+                    # Alguns blocos de Relay transportam o JSON serializado em __bbox.result.data.
+                    pending.extend((value, depth + 1) for value in node.values()
+                                   if isinstance(value, str) and depth < 2 and value.lstrip().startswith(('{', '[')))
+                elif isinstance(node, list):
+                    pending.extend((value, depth) for value in node)
+                elif isinstance(node, str) and depth <= 2:
+                    try:
+                        pending.append((json.loads(node), depth))
+                    except (ValueError, RecursionError):
+                        pass
+    candidates.sort(key=lambda item: sum(item.get(key) is not None and item.get(key) != '' for key in (
+        'biography', 'profile_pic_url', 'followers', 'following', 'posts', 'is_private',
+    )), reverse=True)
+    result = None
+    for candidate in candidates:
+        result = _merge_profiles(result, candidate)
+    return result
 
 
 def _parse_profile_meta(html: str, username: str) -> dict | None:
-    """Monta um perfil parcial a partir das meta tags de uma pagina publica."""
-    meta = {}
-    for tag in re.findall(r'<meta\b[^>]*>', html, flags=re.IGNORECASE):
-        attrs = {
-            key.lower(): html_unescape(value1 or value2 or value3 or '')
-            for key, value1, value2, value3 in re.findall(
-                r'''([:\w-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))''', tag
-            )
-        }
-        key = (attrs.get('property') or attrs.get('name') or '').lower()
-        if key in {'og:title', 'og:description', 'og:image'}:
-            meta[key] = attrs.get('content', '')
-
-    if not meta:
+    """Recupera a bio de OG sem confundir descrição de login/contadores com bio."""
+    parser = _ProfileHTMLParser()
+    parser.feed(html)
+    meta = parser.meta
+    title = meta.get('og:title') or meta.get('twitter:title') or ''
+    description = meta.get('og:description') or meta.get('description') or ''
+    handles = re.findall(r'\(@([A-Za-z0-9._]+)\)', title)
+    if not handles:
+        handles = re.findall(r'\(@([A-Za-z0-9._]+)\)\s+(?:on|no)\s+Instagram', description, re.IGNORECASE)
+    canonical = meta.get('og:url')
+    if canonical:
+        canonical_username = get_profile_username(canonical)
+        if not canonical_username or canonical_username.lower() != username.lower():
+            return None
+    if handles and any(handle.lower() != username.lower() for handle in handles):
         return None
+    if not handles and not canonical:
+        return None  # Instagram/login genérico não identifica o perfil pedido.
 
-    title = meta.get('og:title', '')
-    title = re.sub(r'\s*\(@[^)]*\)', '', title)
-    title = re.sub(r'\s*[|\u2022-]\s*Instagram.*$', '', title, flags=re.IGNORECASE)
-    title = _sanitize_caption(title.strip())
-    description = meta.get('og:description', '')
+    title = re.sub(r'\s*\(@[^)]*\).*$', '', title)
+    title = re.sub(r'\s*[|\u2022\u2023-]\s*Instagram.*$', '', title, flags=re.IGNORECASE)
+    if title.strip().lower() == 'instagram':
+        title = ''
+    bio_match = re.search(r'\(@' + re.escape(username) + r'\)\s+(?:on|no)\s+Instagram\s*:\s*(.*)$',
+                          description, re.IGNORECASE | re.DOTALL)
+    bio = None
+    if bio_match:
+        bio = bio_match.group(1).strip()
+        if len(bio) >= 2 and (bio[0], bio[-1]) in {('"', '"'), ('“', '”'), ("'", "'")}:
+            bio = bio[1:-1]
+        bio = _sanitize_caption(bio)
 
     def stat(label: str) -> str | None:
-        match = re.search(rf'([\d.,KMBkmb]+)\s+{label}', description, re.IGNORECASE)
+        match = re.search(rf'([\d][\d.,]*(?:\s*(?:mil|[KMB]))?)\s+(?:{label})\b', description, re.IGNORECASE)
         return match.group(1) if match else None
 
+    picture = meta.get('og:image') or meta.get('twitter:image') or ''
     return {
         'username': username,
-        'full_name': title or username,
-        'biography': '',
-        'followers': stat('followers'),
-        'following': stat('following'),
-        'posts': stat('posts'),
+        'full_name': _sanitize_caption(title.strip()) or username,
+        'biography': bio,
+        'followers': stat('followers|seguidores'),
+        'following': stat('following|seguindo'),
+        'posts': stat('posts|publicações|publicacoes'),
         'is_private': None,
-        'is_verified': False,
-        'is_business': False,
+        'is_verified': None,
+        'is_business': None,
         'category': '',
-        'profile_pic_url': meta.get('og:image', ''),
+        'profile_pic_url': picture,
+        'profile_pic_urls': [picture] if picture else [],
         'external_url': '',
         'partial': True,
     }
@@ -603,10 +712,11 @@ async def fetch_instagram_profile(url: str, cookie_path: str = '') -> dict | Non
     username = get_profile_username(url)
     if not username:
         return None
+    username = username.lower()
 
     # 1) Cache valido? responde na hora, sem tocar no Instagram.
     cached = _profile_cache_get(username)
-    if cached:
+    if cached and _profile_is_complete(cached) and str(cached.get('username', '')).lower() == username:
         log.info("👤 Instagram perfil @%s (cache)", username)
         return cached
 
@@ -629,33 +739,39 @@ async def fetch_instagram_profile(url: str, cookie_path: str = '') -> dict | Non
             if rate_limited:
                 log.info("👤 Instagram perfil @%s: API ignorada durante cooldown de 429", username)
             else:
-                resp = await client.get(api_url, headers=headers)
-                log.info("👤 Instagram perfil API @%s status=%d", username, resp.status_code)
-                if resp.status_code == 429:
-                    _mark_ig_429()
-                    rate_limited = True
-                elif resp.status_code == 200:
-                    user = resp.json().get('data', {}).get('user')
-                    result = _parse_profile_user(user)
+                try:
+                    resp = await client.get(api_url, headers=headers)
+                    log.info("👤 Instagram perfil API @%s status=%d", username, resp.status_code)
+                    if resp.status_code == 429:
+                        _mark_ig_429()
+                        rate_limited = True
+                    elif resp.status_code == 200:
+                        payload = resp.json()
+                        data = (payload.get('data') or {}) if isinstance(payload, dict) else {}
+                        result = _parse_profile_user(data.get('user'), username) if isinstance(data, dict) else None
+                except Exception as e:
+                    log.info("👤 Instagram perfil API @%s indisponível: %s", username, type(e).__name__)
 
-            if not result or not result.get('username'):
+            if not _profile_is_complete(result):
                 if not rate_limited:
                     await asyncio.sleep(_IG_PROFILE_PACING)
-                resp = await client.get(page_url, headers=headers)
-                log.info("👤 Instagram perfil HTML @%s status=%d", username, resp.status_code)
-                if resp.status_code == 429:
-                    _mark_ig_429()
-                    rate_limited = True
-                if resp.status_code == 200:
-                    result = _parse_profile_from_html(resp.text)
-                    if not result:
-                        result = _parse_profile_meta(resp.text, username)
+                try:
+                    resp = await client.get(page_url, headers=headers)
+                    log.info("👤 Instagram perfil HTML @%s status=%d", username, resp.status_code)
+                    if resp.status_code == 429:
+                        _mark_ig_429()
+                        rate_limited = True
+                    if resp.status_code == 200:
+                        result = _merge_profiles(result, _parse_profile_from_html(resp.text, username))
+                        result = _merge_profiles(result, _parse_profile_meta(resp.text, username))
+                except Exception as e:
+                    log.info("👤 Instagram perfil HTML @%s indisponível: %s", username, type(e).__name__)
 
-            if (not result or not result.get('username')) and not rate_limited:
+            if (not result or not result.get('profile_pic_url')) and not rate_limited:
                 # oEmbed so vale uma tentativa quando as outras rotas nao foram
                 # limitadas. Depois de 429 ele redireciona para login e agrava o bloqueio.
                 await asyncio.sleep(_IG_PROFILE_PACING)
-                result = await _fetch_profile_via_oembed(client, username)
+                result = _merge_profiles(result, await _fetch_profile_via_oembed(client, username))
     except Exception as e:
         log.info("❌ Falha ao buscar perfil Instagram @%s: %s", username, str(e)[:150])
 
@@ -663,13 +779,16 @@ async def fetch_instagram_profile(url: str, cookie_path: str = '') -> dict | Non
     if result and result.get('username'):
         # Metadados OG sao apenas um cartao de contingencia; nao os mantemos por
         # uma hora para que uma proxima tentativa possa recuperar os dados completos.
-        if not result.get('partial'):
+        result['partial'] = not _profile_is_complete(result)
+        if not result['partial']:
             _profile_cache_store(username, result)
             _profile_cache_save()
         return result
 
     fallback = _profile_cache_get(username)
-    if fallback:
+    if (fallback and str(fallback.get('username', '')).lower() == username
+            and any(fallback.get(key) is not None for key in ('followers', 'posts', 'biography'))):
+        fallback = dict(fallback, partial=not _profile_is_complete(fallback))
         log.info("👤 Instagram perfil @%s (cache apos falha/429)", username)
         return fallback
     return None
@@ -691,18 +810,27 @@ async def _fetch_profile_via_oembed(client: httpx.AsyncClient, username: str) ->
         if resp.status_code != 200:
             return None
         data = resp.json()
-        nome = data.get('author_name') or data.get('title') or username
+        if not isinstance(data, dict):
+            return None
+        author_username = get_profile_username(data.get('author_url') or '')
+        if not author_username or author_username.lower() != username.lower():
+            return None
+        nome = data.get('author_name') or username
+        # thumbnail_url/title de oEmbed descrevem uma publicação, não a foto/bio do autor.
+        picture = data.get('author_thumbnail_url') or ''
         return {
             'username': username,
             'full_name': _sanitize_caption(nome),
-            'biography': data.get('title') or '',
+            'biography': None,
             'followers': None,
             'following': None,
-            'posts': data.get('media_count'),
-            'is_private': False,
-            'is_verified': False,
-            'profile_pic_url': data.get('thumbnail_url'),
+            'posts': None,
+            'is_private': None,
+            'is_verified': None,
+            'profile_pic_url': picture,
+            'profile_pic_urls': [picture] if picture else [],
             'external_url': '',
+            'partial': True,
         }
     except Exception as e:
         log.info("❌ oembed @%s falhou: %s", username, str(e)[:120])
@@ -718,6 +846,7 @@ async def detect_profile_privado(url: str, cookie_path: str = '') -> bool | None
     username = get_profile_username(url)
     if not username:
         return None
+    username = username.lower()
 
     # Reaproveita o cache de perfil (evita segunda chamada ao Instagram).
     cached = _profile_cache_get(username)
@@ -751,24 +880,14 @@ async def detect_profile_privado(url: str, cookie_path: str = '') -> bool | None
         log.info("⚠️ Falha ao detectar privacidade de @%s: %s", username, str(e)[:120])
         return None
 
-    localizado = None
-    # Busca em função encadeada (payload JSON) e no HTML cru
-    for padrao in [
-        r'"is_private"\s*:\s*true',
-        r"'is_private'%3Atrue",
-    ]:
-        if re.search(padrao, html):
-            localizado = True
-            break
-    if localizado is None and re.search(r'"is_private"\s*:\s*false', html):
-        _profile_cache_upsert_privacy(username, False)
-        return False
-    # Marcadores claros de conta inexistente ou login obrigatório (indeterminado)
-    if 'Page Not Found' in html or 'the page you requested could not be found' in html.lower():
-        return None
-    if localizado is True:
-        _profile_cache_upsert_privacy(username, True)
-    return localizado
+    # A página pode conter o usuário logado, autores e perfis sugeridos.
+    # Uma flag is_private fora do objeto do perfil pedido não prova sua privacidade.
+    profile = _parse_profile_from_html(html, username)
+    privado = profile.get('is_private') if profile else None
+    if isinstance(privado, bool):
+        _profile_cache_upsert_privacy(username, privado)
+        return privado
+    return None
 
 
 def _auto_login_and_save_cookies(cookie_path: str) -> dict:

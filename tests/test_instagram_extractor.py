@@ -1,6 +1,9 @@
 import unittest
 import time
+import json
 from unittest.mock import AsyncMock, patch
+
+import httpx
 
 from apps.telegram_bot import instagram_extractor as ig
 
@@ -137,12 +140,24 @@ class FakeLoginRequiredClient:
 
 
 class InstagramExtractorTest(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        # Testes de rede simulada não devem ler/gravar o cache real do bot.
+        for name, value in (('_profile_cache', {}), ('_profile_cache_ttl', {}), ('_ig_429_since', 0.0)):
+            patcher = patch.object(ig, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        cache_save = patch.object(ig, '_profile_cache_save')
+        self.cache_save = cache_save.start()
+        self.addCleanup(cache_save.stop)
+
     def test_get_profile_username_only_accepts_profile_url(self):
         self.assertEqual(ig.get_profile_username("https://www.instagram.com/openai/"), "openai")
         self.assertEqual(ig.get_profile_username("https://instagram.com/user.name_123?igsh=x"), "user.name_123")
         self.assertIsNone(ig.get_profile_username("https://www.instagram.com/reel/DNBCJoiOp9J/"))
         self.assertIsNone(ig.get_profile_username("https://www.instagram.com/p/ABC123/"))
         self.assertIsNone(ig.get_profile_username("https://www.instagram.com/explore/"))
+        self.assertIsNone(ig.get_profile_username("https://example.com/openai/"))
+        self.assertIsNone(ig.get_profile_username("https://instagram.com.example.com/openai/"))
 
     async def test_fetch_instagram_profile_uses_web_profile_info(self):
         with (
@@ -172,7 +187,175 @@ class InstagramExtractorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(profile["full_name"], "Ada Lovelace")
         self.assertEqual(profile["followers"], "1.2K")
         self.assertEqual(profile["profile_pic_url"], "https://example.com/ada.jpg")
+        self.assertIsNone(profile['biography'])
         sleep.assert_not_awaited()
+
+    def test_mobile_profile_fields_preserve_zero_and_explicit_empty_bio(self):
+        profile = ig._parse_profile_user({
+            'username': 'ada', 'biography': '', 'edge_followed_by': None,
+            'follower_count': 0, 'following_count': 0, 'media_count': 0,
+            'clip_metadata_count': 0, 'is_private': False,
+            'hd_profile_pic_url_info': {'url': 'https://example.com/hd.jpg'},
+            'profile_pic_url': 'https://example.com/small.jpg',
+        }, 'ADA')
+        self.assertEqual(profile['biography'], '')
+        self.assertEqual(profile['followers'], 0)
+        self.assertEqual(profile['posts'], 0)
+        self.assertEqual(profile['reels'], 0)
+        self.assertFalse(profile['partial'])
+        self.assertEqual(profile['profile_pic_urls'], [
+            'https://example.com/hd.jpg', 'https://example.com/small.jpg',
+        ])
+        unknown = ig._parse_profile_user({'username': 'ada'})
+        self.assertIsNone(unknown['biography'])
+        self.assertIsNone(unknown['is_private'])
+        self.assertTrue(unknown['partial'])
+
+    def test_modern_html_selects_requested_account_and_decodes_nested_bio(self):
+        target = {
+            'username': 'lclightbox', 'full_name': 'LCsign Tony',
+            'biography_with_entities': {'raw_text': 'Custom {signs} "made here"\nContact us'},
+            'profile_pic_url': 'https://example.com/tony.jpg',
+            'follower_count': 3000000, 'following_count': 8, 'media_count': 1481,
+            'is_private': False,
+        }
+        payload = {'viewer': {'username': 'someone_else', 'biography': 'Wrong user'},
+                   'require': [['RelayPrefetchedStreamCache', {'__bbox': {'result': {
+                       'data': {'xdt_api__v1__users__web_profile_info': {'user': target}},
+                   }}}]]}
+        html = '<script type="application/json">' + json.dumps(payload) + '</script>'
+        profile = ig._parse_profile_from_html(html, 'lclightbox')
+        self.assertEqual(profile['biography'], 'Custom {signs} "made here"\nContact us')
+        self.assertEqual(profile['username'], 'lclightbox')
+        self.assertFalse(profile['partial'])
+        self.assertIsNone(ig._parse_profile_from_html(html, 'not_in_page'))
+
+    def test_legacy_and_serialized_html_payloads_are_supported(self):
+        user = {'username': 'ada', 'biography': 'Quotes " and {braces}', 'is_private': False}
+        scripts = [
+            'window._sharedData = ' + json.dumps({'entry_data': {'ProfilePage': [{'graphql': {'user': user}}]}}) + ';',
+            'window.__additionalDataLoaded("/ada/",' + json.dumps({'graphql': {'user': user}}) + ');',
+            json.dumps({'payload': json.dumps({'user': user})}),
+        ]
+        for script in scripts:
+            with self.subTest(script=script):
+                profile = ig._parse_profile_from_html('<script>' + script + '</script>', 'ada')
+                self.assertEqual(profile['biography'], user['biography'])
+
+    def test_meta_extracts_bio_from_real_description_shape(self):
+        html = '''<meta property="og:title" content="LCsign Tony (@lclightbox) • Instagram photos and videos">
+        <meta property="og:description" content="3M Followers, 8 Following, 1,481 Posts - LCsign Tony (@lclightbox) on Instagram: &quot;Custom signs &amp; lighting&#10;Contact: hello@example.com&quot;">
+        <meta content="https://example.com/tony.jpg?a=1&amp;b=2" property="og:image">'''
+        profile = ig._parse_profile_meta(html, 'lclightbox')
+        self.assertEqual(profile['full_name'], 'LCsign Tony')
+        self.assertEqual(profile['biography'], 'Custom signs & lighting\nContact: hello@example.com')
+        self.assertEqual(profile['posts'], '1,481')
+        self.assertEqual(profile['followers'], '3M')
+        self.assertEqual(profile['profile_pic_url'], 'https://example.com/tony.jpg?a=1&b=2')
+        self.assertTrue(profile['partial'])
+
+    def test_meta_rejects_wrong_account_and_generic_login(self):
+        pages = [
+            '<meta property="og:title" content="Instagram"><meta property="og:image" content="logo.png">',
+            '<meta property="og:title" content="Another (@another) • Instagram">',
+            '<meta property="og:title" content="Ada (@ada)"><meta property="og:url" content="https://www.instagram.com/another/">',
+        ]
+        for html in pages:
+            with self.subTest(html=html):
+                self.assertIsNone(ig._parse_profile_meta(html, 'ada'))
+
+    def test_merging_does_not_replace_known_empty_bio_or_false_flags(self):
+        primary = ig._parse_profile_user({'username': 'ada', 'biography': '', 'is_private': False})
+        extra = {'username': 'ADA', 'biography': 'Unreliable preview', 'is_private': True,
+                 'profile_pic_url': 'https://example.com/ada.jpg'}
+        merged = ig._merge_profiles(primary, extra)
+        self.assertEqual(merged['biography'], '')
+        self.assertFalse(merged['is_private'])
+        self.assertEqual(merged['profile_pic_url'], 'https://example.com/ada.jpg')
+        self.assertEqual(ig._merge_profiles(primary, dict(extra, username='another')), primary)
+
+    async def _fetch_with_responses(self, responses, username='ada'):
+        client = AsyncMock()
+        client.__aenter__.return_value = client
+        client.get.side_effect = responses
+        with (
+            patch.object(ig, '_load_cookies_from_file', return_value={}),
+            patch.object(ig.httpx, 'AsyncClient', return_value=client),
+            patch.object(ig.asyncio, 'sleep', new=AsyncMock()),
+        ):
+            profile = await ig.fetch_instagram_profile(f'https://www.instagram.com/{username}/', '')
+        return profile, client
+
+    async def test_api_invalid_json_does_not_prevent_public_html_fallback(self):
+        profile, client = await self._fetch_with_responses([
+            httpx.Response(200, text='<html>Login</html>'), FakeHtmlProfileResponse(),
+        ])
+        self.assertEqual(profile['username'], 'ada')
+        self.assertEqual(profile['profile_pic_url'], 'https://example.com/ada.jpg')
+        self.assertEqual(client.get.await_count, 2)
+
+    async def test_api_timeout_does_not_prevent_public_html_fallback(self):
+        profile, client = await self._fetch_with_responses([
+            httpx.ReadTimeout('API timeout'), FakeHtmlProfileResponse(),
+        ])
+        self.assertEqual(profile['username'], 'ada')
+        self.assertEqual(client.get.await_count, 2)
+
+    async def test_partial_api_merges_html_bio_and_meta_picture(self):
+        partial_user = {'username': 'ada', 'full_name': 'Ada Lovelace',
+                        'follower_count': 1234, 'following_count': 34, 'media_count': 56,
+                        'is_private': False}
+        html = FakeHtmlProfileResponse.text + '<script type="application/json">' + json.dumps({
+            'user': {'username': 'ada', 'biography': 'Computing pioneer'},
+        }) + '</script>'
+        profile, client = await self._fetch_with_responses([
+            httpx.Response(200, json={'data': {'user': partial_user}}), httpx.Response(200, text=html),
+        ])
+        self.assertEqual(profile['biography'], 'Computing pioneer')
+        self.assertEqual(profile['followers'], 1234)
+        self.assertEqual(profile['profile_pic_url'], 'https://example.com/ada.jpg')
+        self.assertFalse(profile['partial'])
+        self.assertEqual(client.get.await_count, 2)
+        self.cache_save.assert_called_once()
+
+    async def test_privacy_only_cache_does_not_suppress_profile_fetch(self):
+        ig._profile_cache_upsert_privacy('openai', False)
+        profile, client = await self._fetch_with_responses([FakeProfileResponse()], 'openai')
+        self.assertEqual(profile['full_name'], 'OpenAI')
+        self.assertEqual(client.get.await_count, 1)
+
+    async def test_wrong_api_user_does_not_leak_into_requested_profile(self):
+        profile, client = await self._fetch_with_responses([FakeProfileResponse(), FakeHtmlProfileResponse()])
+        self.assertEqual(profile['username'], 'ada')
+        self.assertEqual(profile['full_name'], 'Ada Lovelace')
+        self.assertEqual(profile['followers'], '1.2K')
+        self.assertEqual(client.get.await_count, 2)
+        self.cache_save.assert_not_called()
+
+    async def test_oembed_post_title_and_thumbnail_are_not_profile_bio_and_avatar(self):
+        client = AsyncMock()
+        client.get.return_value = httpx.Response(200, json={
+            'author_name': 'Ada', 'author_url': 'https://www.instagram.com/ada/',
+            'title': 'A post caption', 'thumbnail_url': 'https://example.com/post.jpg',
+        })
+        profile = await ig._fetch_profile_via_oembed(client, 'ada')
+        self.assertIsNone(profile['biography'])
+        self.assertFalse(profile['profile_pic_url'])
+        self.assertTrue(profile['partial'])
+        self.assertIsNone(await ig._fetch_profile_via_oembed(client, 'another'))
+
+    async def test_privacy_is_taken_only_from_requested_profile(self):
+        html = '<script>' + json.dumps({'viewer': {'username': 'private_viewer', 'is_private': True},
+                                       'user': {'username': 'ada', 'is_private': False}}) + '</script>'
+        client = AsyncMock()
+        client.__aenter__.return_value = client
+        client.get.return_value = httpx.Response(200, text=html, request=httpx.Request('GET', 'https://www.instagram.com/ada/'))
+        with (
+            patch.object(ig, '_load_cookies_from_file', return_value={}),
+            patch.object(ig.httpx, 'AsyncClient', return_value=client),
+        ):
+            self.assertFalse(await ig.detect_profile_privado('https://www.instagram.com/ada/'))
+            self.assertIsNone(await ig.detect_profile_privado('https://www.instagram.com/unknown/'))
 
     async def test_validate_cookie_health_confirms_real_session(self):
         with (

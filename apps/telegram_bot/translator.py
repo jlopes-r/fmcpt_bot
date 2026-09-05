@@ -1,8 +1,9 @@
 import re
 import time
 import logging
+from collections import Counter
 
-from langdetect import detect, DetectorFactory, LangDetectException
+from langdetect import detect_langs, DetectorFactory
 
 try:
     from deep_translator import GoogleTranslator
@@ -30,11 +31,12 @@ _PADRAO_ERRO_TRADUCAO = re.compile(
 MAX_TENTATIVAS_TRADUCAO = 3
 DELAY_BASE_TRADUCAO = 2.0
 
-# Regra de "ruído" (risadas tipo "hahahahah", "lkkkkkkkk", "ahahhah").
-# Se o texto tiver poucas letras distintas do alfabeto (é basicamente letra
-# repetida) e for longo o bastante, não traduzimos: o tradutor desvirtua isso.
-RUIDO_MAX_LETRAS_DISTINTAS = 5   # cobre até 5 letras do alfabeto distintas
-RUIDO_MIN_TAMANHO = 6            # tamanho mínimo para encarar como ruído longo
+# Scores do langdetect são evidência, não garantia de acerto. Textos curtos
+# também precisam de conteúdo suficiente, mesmo quando o score é alto.
+CONFIANCA_MINIMA = 0.95
+MARGEM_MINIMA = 0.25
+MIN_LETRAS_LATINAS = 20
+MIN_PALAVRAS_LATINAS = 4
 
 # Placeholder para entidades que NÃO devem ser traduzidas (@usuarios e emojis).
 # Antes de traduzir, trocamos essas entidades pelo placeholder; traduzimos só o
@@ -97,14 +99,43 @@ def nome_idioma(codigo: str | None) -> str:
     return codigo
 
 
-def _detectar_idioma(texto: str) -> str | None:
-    """Detecta o idioma do texto. Retorna None se não for possível."""
-    if not texto or not texto.strip():
+def _normalizar_idioma(codigo: str | None) -> str | None:
+    if not isinstance(codigo, str) or not codigo.strip():
         return None
+    codigo = codigo.strip().lower().replace("_", "-")
+    return codigo.split("-")[0]
+
+
+def _detectar_idioma(texto: str) -> str | None:
+    """Detecta apenas linguagem natural com evidência suficiente; abstém na dúvida."""
+    texto = _texto_para_deteccao(texto)
+    letras = [c for c in texto if c.isalpha()]
+    if not letras:
+        return None
+    # Não contar bytes/ASCII: japonês, chinês etc. também têm letras e não
+    # necessariamente usam espaços entre palavras.
+    tem_escrita_nao_latina = any(ord(c) > 0x024F for c in letras)
+    if tem_escrita_nao_latina:
+        if len(letras) < 6:
+            return None
+    elif len(letras) < MIN_LETRAS_LATINAS or len(texto.split()) < MIN_PALAVRAS_LATINAS:
+        return None
+
     try:
-        return detect(texto)
-    except (LangDetectException, Exception) as e:
-        log.debug(f"Falha ao detectar idioma: {e}")
+        # Caixa alta é frequente em tweets em PT; não é evidência de alemão.
+        candidatos = sorted(detect_langs(texto.casefold()), key=lambda item: item.prob, reverse=True)
+        if not candidatos:
+            return None
+        melhor = candidatos[0]
+        segundo = candidatos[1].prob if len(candidatos) > 1 else 0.0
+        if melhor.prob < CONFIANCA_MINIMA or melhor.prob - segundo < MARGEM_MINIMA:
+            return None
+        # Uma alternativa plausível em PT/EN deve preservar o original.
+        if any(c.lang in IDIOMAS_SEM_TRADUCAO and c.prob >= 0.05 for c in candidatos[1:]):
+            return None
+        return melhor.lang
+    except Exception as e:
+        log.debug("Falha ao detectar idioma: %s", e)
         return None
 
 
@@ -120,45 +151,39 @@ def _parece_erro_traducao(traducao: str) -> bool:
     return bool(_PADRAO_ERRO_TRADUCAO.search(traducao))
 
 
-# Regex unificada que captura qualquer entidade a ser preservada na tradução:
-# @usuários (com ponto e underscore) ou emojis/pictogramas/símbolos.
+_RISO_PATTERN = (
+    r"(?<!\w)(?:l?k{3,}|(?:ha|he|hi|hu){3,}|(?:ah){3,}|"
+    r"(?:ja){3,}|(?:rs){2,})(?!\w)"
+)
+_EMOJI_BASE = "[\u2600-\u27BF\U0001F000-\U0001FAFF]"
+_EMOJI_PARTE = _EMOJI_BASE + "[\ufe0e\ufe0f]?[\U0001F3FB-\U0001F3FF]?"
 _ENTIDADE_RE = re.compile(
-    r"(@[\w._]+)|(?:"
-    "["
-    "\U00002700-\U000027BF"
-    "\U0001F000-\U0001F6FF"
-    "\U0001F780-\U0001F7FF"
-    "\U0001F900-\U0001F9FF"
-    "\U0001FA00-\U0001FAFF"
-    "\U00002600-\U000026FF"
-    "\U0001F1E6-\U0001F1FF"
-    "]+)",
-    re.UNICODE,
+    r"https?://[^\s<>]+|www\.[^\s<>]+|[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}|"
+    r"@[\w._]+|#[\w]+|" + _RISO_PATTERN + "|"
+    r"[0-9#*]\ufe0f?\u20e3|" + _EMOJI_PARTE + "(?:\u200d" + _EMOJI_PARTE + ")*",
+    re.UNICODE | re.IGNORECASE,
 )
 
 
-def _eh_ruido_laughing(texto: str) -> bool:
-    """True se o texto for "ruído" (risadas/repetições) e não deva ser traduzido.
+def _texto_para_deteccao(texto: str) -> str:
+    """Remove entidades, sem inserir códigos artificiais no detector."""
+    texto = _ENTIDADE_RE.sub(" ", texto or "")
+    return " ".join(re.findall(r"[^\W\d_]+", texto, re.UNICODE))
 
-    Um texto é considerado ruído quando tem poucas letras distintas do alfabeto
-    (ex: "hahahahah", "lkkkkkkkk") e comprimento suficiente. Nesse caso o
-    tradutor inventa uma tradução errada, então mantemos o original.
-    """
+
+def _eh_ruido_laughing(texto: str) -> bool:
+    """Ignora risadas/símbolos sem descartar frases de alfabetos não latinos."""
     if not texto:
         return False
-    letras = re.sub(r"[^A-Za-zÀ-ÖØ-öø-ÿ]", "", texto)
+    letras = "".join(c for c in _texto_para_deteccao(texto) if c.isalpha())
     if not letras:
         # Sem nenhuma letra (só símbolos/emojis) -> nada a traduzir de fato.
         return True
-    distintas = set(letras.lower())
-    return (
-        len(texto) >= RUIDO_MIN_TAMANHO
-        and len(distintas) <= RUIDO_MAX_LETRAS_DISTINTAS
-    )
+    return len(letras) >= 4 and len(set(letras.casefold())) == 1
 
 
 def _isolar_entidades(texto: str) -> tuple[str, dict]:
-    """Substitui @usuarios e emojis por placeholders, guardando os originais.
+    """Protege links, hashtags, menções, risadas e emojis durante a tradução.
 
     Retorna (texto_com_placeholders, {idx: original}). O texto retornado tem
     todo o conteúdo traduzível preservado; as entidades são trocadas por
@@ -188,7 +213,9 @@ def _restaurar_entidades(texto: str, originais: dict) -> str:
     return _PLACEHOLDER_RE.sub(_repl, texto)
 
 
-def traduzir_com_detalhes(texto: str, alvo: str = "pt") -> dict:
+def traduzir_com_detalhes(
+    texto: str, alvo: str = "pt", *, idioma_informado: str | None = None,
+) -> dict:
     """Traduz o texto para o idioma alvo se ele não estiver em português.
 
     Retorna um dict:
@@ -202,6 +229,9 @@ def traduzir_com_detalhes(texto: str, alvo: str = "pt") -> dict:
       - O texto estiver em inglês (mantém o original);
       - A detecção falhar ou for incerta;
       - A tradução falhar ou retornar uma página de erro da API.
+
+    O idioma informado pela fonte protege PT/EN e precisa concordar com o
+    detector para outros idiomas. "und"/"zxx" não autorizam uma tradução.
     """
     resultado = {
         "original": texto,
@@ -215,6 +245,9 @@ def traduzir_com_detalhes(texto: str, alvo: str = "pt") -> dict:
         return resultado
 
     texto_limpo = texto.strip()
+    idioma_fonte = _normalizar_idioma(idioma_informado)
+    if idioma_fonte in (*IDIOMAS_SEM_TRADUCAO, "und", "zxx", _normalizar_idioma(alvo)):
+        return resultado
 
     # Regra de ruído: risadas/repetições (hahahah, lkkkkkk) não devem ser
     # traduzidas -- o tradutor inventa um significado errado.
@@ -222,20 +255,26 @@ def traduzir_com_detalhes(texto: str, alvo: str = "pt") -> dict:
         log.debug(f"Tradução ignorada: texto parece ruído ({texto_limpo[:50]}...)")
         return resultado
 
-    # Isola @usuarios e emojis para traduzir só o texto real; depois de traduzir
-    # reinserimos as entidades nos seus devidos lugares.
-    texto_isolado, entidades = _isolar_entidades(texto_limpo)
-
-    idioma = _detectar_idioma(texto_isolado)
+    idioma = _detectar_idioma(_texto_para_deteccao(texto_limpo))
     if not idioma:
         # Detecção incerta -> não arrisca traduzir conteúdo já em PT.
         return resultado
-    if idioma.startswith(IDIOMAS_SEM_TRADUCAO):
+    if _normalizar_idioma(idioma) in (*IDIOMAS_SEM_TRADUCAO, _normalizar_idioma(alvo)):
         # PT (já é o alvo) e EN (usuário quer manter original) não são traduzidos.
         return resultado
+    if idioma_fonte and idioma_fonte != _normalizar_idioma(idioma):
+        return resultado
+
+    # Só a requisição de tradução recebe placeholders; o detector nunca os vê.
+    # Evita colisão caso o usuário tenha escrito um desses códigos literalmente.
+    if _PLACEHOLDER_RE.search(texto_limpo):
+        return resultado
+    texto_isolado, entidades = _isolar_entidades(texto_limpo)
+    tokens_esperados = Counter(_PLACEHOLDER_RE.findall(texto_isolado))
 
     try:
-        tradutor = GoogleTranslator(source="auto", target=alvo)
+        origem_tradutor = {"zh-cn": "zh-CN", "zh-tw": "zh-TW", "he": "iw"}.get(idioma, idioma)
+        tradutor = GoogleTranslator(source=origem_tradutor, target=alvo)
         for tentativa in range(1, MAX_TENTATIVAS_TRADUCAO + 1):
             try:
                 traducao = tradutor.translate(texto_isolado)
@@ -244,10 +283,15 @@ def traduzir_com_detalhes(texto: str, alvo: str = "pt") -> dict:
                 traducao = None
 
             if traducao and not _parece_erro_traducao(traducao):
-                resultado["traduzido"] = _restaurar_entidades(traducao, entidades)
-                resultado["idioma_origem"] = idioma
-                resultado["foi_traduzido"] = True
-                break
+                if Counter(_PLACEHOLDER_RE.findall(traducao)) == tokens_esperados:
+                    restaurado = _restaurar_entidades(traducao, entidades)
+                    if restaurado.strip() == texto_limpo:
+                        return resultado
+                    resultado["traduzido"] = restaurado
+                    resultado["idioma_origem"] = idioma
+                    resultado["foi_traduzido"] = True
+                    break
+                log.debug("Tradução descartada: entidades protegidas foram alteradas")
             if tentativa < MAX_TENTATIVAS_TRADUCAO:
                 # Backoff exponencial: 2s, 4s ...
                 espera = DELAY_BASE_TRADUCAO * (2 ** (tentativa - 1))
@@ -258,9 +302,11 @@ def traduzir_com_detalhes(texto: str, alvo: str = "pt") -> dict:
     return resultado
 
 
-def traduzir_se_necessario(texto: str, alvo: str = "pt") -> str:
+def traduzir_se_necessario(
+    texto: str, alvo: str = "pt", *, idioma_informado: str | None = None,
+) -> str:
     """Versão simplificada: retorna apenas o texto traduzido (ou o original)."""
-    detalhes = traduzir_com_detalhes(texto, alvo=alvo)
+    detalhes = traduzir_com_detalhes(texto, alvo=alvo, idioma_informado=idioma_informado)
     if detalhes["foi_traduzido"]:
         return detalhes["traduzido"]
     return texto

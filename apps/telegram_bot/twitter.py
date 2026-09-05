@@ -1,8 +1,24 @@
 import re
 
+from apps.telegram_bot.translator import nome_idioma, traduzir_com_detalhes
+
 
 TWEET_URL_RE = re.compile(r"(?:x|twitter)\.com/([^/]+)/status/(\d+)")
 PROFILE_URL_RE = re.compile(r"(?:x|twitter)\.com/([^/]+)/?$")
+
+
+def traduzir_texto_tweet(tweet: dict) -> str:
+    """Traduz só o texto deste tweet, respeitando o idioma da própria fonte."""
+    detalhes = traduzir_com_detalhes(
+        tweet.get("text") or "",
+        idioma_informado=tweet.get("lang") or tweet.get("language"),
+    )
+    if detalhes["foi_traduzido"]:
+        return (
+            f"{detalhes['traduzido']}\n\n---\n"
+            f"🔎 Traduzido do {nome_idioma(detalhes['idioma_origem'])}"
+        )
+    return detalhes["original"]
 
 
 def match_tweet_url(url: str):

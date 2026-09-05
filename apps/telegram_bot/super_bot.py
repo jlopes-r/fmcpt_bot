@@ -105,8 +105,8 @@ from apps.telegram_bot.instagram import (
 from apps.telegram_bot.instagram_profile_card import gerar_card as _gerar_card_perfil
 from apps.telegram_bot.media_utils import detectar_extensao as _detectar_extensao, progresso_upload as _progresso_upload
 from apps.telegram_bot.text_utils import dividir_texto_longo, limpar_texto, montar_legenda
-from apps.telegram_bot.translator import nome_idioma, traduzir_com_detalhes, traduzir_se_necessario
-from apps.telegram_bot.twitter import build_vxtwitter_url, build_fxtwitter_url, match_tweet_url, match_profile_url, build_profile_url, build_follow_info_url
+from apps.telegram_bot.translator import traduzir_se_necessario
+from apps.telegram_bot.twitter import build_vxtwitter_url, build_fxtwitter_url, match_tweet_url, match_profile_url, build_profile_url, build_follow_info_url, traduzir_texto_tweet
 
 load_environment()
 ensure_runtime_dirs()
@@ -841,7 +841,8 @@ def montar_resposta_perfil_instagram(profile):
         privacidade = "Nao informado"
     else:
         privacidade = "Privado" if profile.get("is_private") else "Publico"
-    bio = profile.get("biography") or "Sem bio."
+    bio = profile.get("biography")
+    bio = "Bio indisponível." if bio is None else (bio.strip() or "Sem bio.")
 
     linhas = [
         f"**Instagram: {nome}**",
@@ -892,15 +893,23 @@ async def responder_perfil_instagram(client, message, url):
 
     # Baixa a foto do perfil (com limite de tamanho) para montar o card
     foto_bytes = None
-    photo_url = profile.get("profile_pic_url") or ""
-    if photo_url:
+    photo_url = ""
+    photo_urls = dict.fromkeys([
+        profile.get("profile_pic_url"), *(profile.get("profile_pic_urls") or []),
+    ])
+    for candidata in photo_urls:
+        if not candidata:
+            continue
         try:
             dl_session = await get_http_session()
             foto_bytes = await _baixar_bytes_limitados(
                 dl_session,
-                photo_url,
+                candidata,
                 PROFILE_PICTURE_MAX_BYTES,
             )
+            if foto_bytes:
+                photo_url = candidata
+                break
         except Exception as e:
             log.warning("Falha ao baixar foto do perfil Instagram: %s", str(e)[:150])
 
@@ -1633,7 +1642,7 @@ async def enviar_midia_quote(client, message, qrt_info, match, msg_espera, usuar
         return
 
     quote_user = qrt_info.get('user_name', 'Autor')
-    quote_text = limpar_texto(qrt_info.get('text', ''))
+    quote_text = await asyncio.to_thread(traduzir_texto_tweet, qrt_info)
     legenda_quote = f"📎 Mídia do quote de **{quote_user}**"
     if quote_text:
         legenda_quote += f":\n{quote_text}"
@@ -1886,7 +1895,7 @@ async def processar_links(client, message):
                 if not res:
                     raise Exception("Falha ao puxar dados do X (ambas as APIs falharam)")
 
-                texto_base = res.get('text', '')
+                texto_base = await asyncio.to_thread(traduzir_texto_tweet, res)
                 
                 # --- BUSCA DE QUOTE ANTECIPADA ---
                 qrt_info = None
@@ -1916,6 +1925,9 @@ async def processar_links(client, message):
                                     qrt_info['media_extended'] = qrt_data['media_extended']
                                 if 'text' in qrt_data and not qrt_info.get('text'):
                                     qrt_info['text'] = qrt_data['text']
+                                for campo_idioma in ('lang', 'language'):
+                                    if qrt_data.get(campo_idioma) and not qrt_info.get(campo_idioma):
+                                        qrt_info[campo_idioma] = qrt_data[campo_idioma]
                         except Exception as e:
                             log.error(f"Erro ao buscar quote antecipado: {e}")
 
@@ -1923,22 +1935,13 @@ async def processar_links(client, message):
                 
                 if qrt_info:
                     if not tem_midia_no_quote and 'text' in qrt_info:
-                        texto_base += f"\n\n🔁 [Quote - {qrt_info.get('user_name', 'Autor')}]:\n{qrt_info['text']}"
+                        texto_quote = await asyncio.to_thread(traduzir_texto_tweet, qrt_info)
+                        texto_base += f"\n\n🔁 [Quote - {qrt_info.get('user_name', 'Autor')}]:\n{texto_quote}"
                     elif tem_midia_no_quote:
                         texto_base += f"\n\n🔁 [Quote de {qrt_info.get('user_name', 'Autor')} logo abaixo 👇]"
                     
-                # Tradução automática do texto do tweet (e quote) para PT, se não estiver em português.
-                # Se traduzir, envia só a tradução + aviso do idioma de origem (sem o texto original).
-                detalhes_trad = await asyncio.to_thread(traduzir_com_detalhes, texto_base)
-                if detalhes_trad["foi_traduzido"]:
-                    cap_limpa = (
-                        f"{detalhes_trad['traduzido']}\n\n"
-                        f"---\n"
-                        f"🔎 Traduzido do {nome_idioma(detalhes_trad['idioma_origem'])}"
-                    )
-                else:
-                    cap_limpa = limpar_texto(detalhes_trad["original"])
-                legenda = montar_legenda(cap_limpa, res.get('user_name', 'Autor'), usuario, emoji="📸")
+                # Os labels e nomes entram depois da detecção de cada texto.
+                legenda = montar_legenda(texto_base, res.get('user_name', 'Autor'), usuario, emoji="📸")
 
                 if 'media_extended' in res and len(res['media_extended']) > 0:
                     tem_video = any(m['type'] in ['video', 'gif'] for m in res['media_extended'])

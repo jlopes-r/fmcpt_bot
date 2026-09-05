@@ -12,6 +12,24 @@ Bot multiplataforma para download de mídias do Telegram com suporte a Twitter/X
 - **Estatísticas** de uso em tempo real
 - **Ranking de vacilos** (links repetidos)
 
+### Tradução automática e perfis
+
+A tradução continua usando `deep-translator` e a detecção local com `langdetect`,
+sem chave de API ou serviço pago adicional. Textos em português e inglês são
+preservados. No X, o bot considera o idioma informado pela fonte e analisa tweet
+e citação separadamente. Sem informação suficiente, mantém o original: a
+detecção exige pelo menos 20 letras e 4 palavras em textos latinos, confiança
+de 95% e concordância com o idioma da fonte quando disponível. Isso reduz
+traduções indevidas, mas também deixa algumas frases estrangeiras curtas sem
+tradução. Links, menções, hashtags e emojis são preservados. O serviço de tradução
+continua dependendo de disponibilidade externa; se falhar, o original é mantido.
+
+Os cards do Instagram usam fontes escaláveis, avatar circular e altura ajustada
+ao conteúdo. A coleta complementa dados parciais com os métodos disponíveis;
+campos que o Instagram não disponibilizou aparecem como indisponíveis, sem
+confundir falha de coleta com bio vazia. A disponibilidade de foto e dados ainda
+depende das respostas do Instagram e dos cookies configurados.
+
 ## 📋 Pré-requisitos
 
 - Python 3.10+
