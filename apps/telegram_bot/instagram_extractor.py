@@ -767,10 +767,14 @@ async def fetch_instagram_profile(url: str, cookie_path: str = '') -> dict | Non
                 except Exception as e:
                     log.info("👤 Instagram perfil HTML @%s indisponível: %s", username, type(e).__name__)
 
-            if (not result or not result.get('profile_pic_url')) and not rate_limited:
-                # oEmbed so vale uma tentativa quando as outras rotas nao foram
-                # limitadas. Depois de 429 ele redireciona para login e agrava o bloqueio.
-                await asyncio.sleep(_IG_PROFILE_PACING)
+            if not result or not result.get('profile_pic_url'):
+                # oEmbed e o ultimo recurso para o card responder. Quando o www cai
+                # em 429 e o HTML redireciona para a pagina de login, ele nao
+                # produz nenhum dado — sem o oEmbed o card nao sairia. O host
+                # api.instagram.com e separado e menos propenso ao mesmo throttle,
+                # entao vale tentar mesmo sob cooldown (uma unica requisição).
+                if not rate_limited:
+                    await asyncio.sleep(_IG_PROFILE_PACING)
                 result = _merge_profiles(result, await _fetch_profile_via_oembed(client, username))
     except Exception as e:
         log.info("❌ Falha ao buscar perfil Instagram @%s: %s", username, str(e)[:150])
@@ -834,6 +838,37 @@ async def _fetch_profile_via_oembed(client: httpx.AsyncClient, username: str) ->
         }
     except Exception as e:
         log.info("❌ oembed @%s falhou: %s", username, str(e)[:120])
+        return None
+
+
+async def _fetch_post_meta_via_oembed(shortcode: str, embed_path: str = 'p') -> dict | None:
+    """Busca caption/autor de um post publico via oEmbed oficial.
+
+    api.instagram.com/oembed responde sem login; o campo 'title' traz a
+    descricao do post e 'author_name' o autor. Serve para enriquecer o
+    resultado do yt-dlp, que no caminho de fallback muitas vezes nao expoe
+    a legenda (vem vazio).
+    """
+    post_url = f'https://www.instagram.com/{embed_path}/{shortcode}/'
+    oembed_url = f'https://api.instagram.com/oembed/?url={urllib.parse.quote(post_url, safe="")}'
+    try:
+        async with httpx.AsyncClient(timeout=12.0, follow_redirects=True) as client:
+            resp = await client.get(oembed_url)
+            log.info("   oEmbed post status=%d", resp.status_code)
+            if resp.status_code == 429:
+                _mark_ig_429()
+            if resp.status_code != 200:
+                return None
+            data = resp.json()
+            if not isinstance(data, dict):
+                return None
+            title = data.get('title') or ''
+            return {
+                'title': _sanitize_caption(title),
+                'uploader': _sanitize_caption(data.get('author_name') or ''),
+            }
+    except Exception as e:
+        log.info("   ❌ oEmbed post falhou: %s", str(e)[:120])
         return None
 
 
@@ -1642,6 +1677,12 @@ async def download_instagram(
     # ── Camada Final: yt-dlp (força bruta) ──
     result = await _extract_via_ytdlp(url, cookie_path, out_dir)
     if result:
+        if not result.get('title'):
+            post_meta = await _fetch_post_meta_via_oembed(shortcode, _get_embed_path(url))
+            if post_meta and post_meta.get('title'):
+                result['title'] = post_meta['title']
+                if post_meta.get('uploader') and (not result.get('uploader') or result.get('uploader') == 'Autor'):
+                    result['uploader'] = post_meta['uploader']
         log.info("✅ Instagram download via yt-dlp: %s", url)
         return result
 

@@ -88,8 +88,48 @@ class FakeRateLimitedProfileClient:
         if '/api/v1/' in url:
             return FakeRateLimitedResponse()
         if '/oembed/' in url:
-            raise AssertionError('oEmbed must not be called after a 429')
+            raise AssertionError('oEmbed must not be called after a 429 when HTML already gave a card')
         return FakeHtmlProfileResponse()
+
+
+class FakeOEmbedProfileResponse:
+    status_code = 200
+
+    def json(self):
+        return {
+            'version': '1.0',
+            'author_name': 'Ada Lovelace',
+            'author_url': 'https://www.instagram.com/ada/',
+            'author_thumbnail_url': 'https://example.com/ada_thumb.jpg',
+            'title': 'Some post',
+            'thumbnail_url': 'https://example.com/post.jpg',
+        }
+
+
+class FakeLoginPageResponse:
+    status_code = 200
+    text = '<html><body>Log in to Instagram</body></html>'
+
+
+class FakeRateLimitedLoginProfileClient:
+    """API 429 + pagina do perfil redirecionada para login (throttle real)."""
+
+    def __init__(self, *args, **kwargs):
+        self.requests = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def get(self, url, headers=None):
+        self.requests.append((url, headers))
+        if '/api/v1/' in url:
+            return FakeRateLimitedResponse()
+        if '/oembed/' in url:
+            return FakeOEmbedProfileResponse()
+        return FakeLoginPageResponse()
 
 
 class FakeNewsResponse:
@@ -188,6 +228,22 @@ class InstagramExtractorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(profile["followers"], "1.2K")
         self.assertEqual(profile["profile_pic_url"], "https://example.com/ada.jpg")
         self.assertIsNone(profile['biography'])
+        sleep.assert_not_awaited()
+
+    async def test_profile_429_with_login_html_still_sends_card_via_oembed(self):
+        ig._ig_429_since = 0.0
+        self.addCleanup(setattr, ig, "_ig_429_since", 0.0)
+        with (
+            patch.object(ig, "_load_cookies_from_file", return_value={}),
+            patch.object(ig.httpx, "AsyncClient", FakeRateLimitedLoginProfileClient),
+            patch.object(ig.asyncio, "sleep", new=AsyncMock()) as sleep,
+        ):
+            profile = await ig.fetch_instagram_profile("https://www.instagram.com/ada/", "")
+
+        self.assertTrue(profile["partial"])
+        self.assertEqual(profile["username"], "ada")
+        self.assertEqual(profile["full_name"], "Ada Lovelace")
+        self.assertEqual(profile["profile_pic_url"], "https://example.com/ada_thumb.jpg")
         sleep.assert_not_awaited()
 
     def test_mobile_profile_fields_preserve_zero_and_explicit_empty_bio(self):
@@ -456,6 +512,56 @@ class InstagramExtractorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, video_result)
         ytdlp.assert_not_awaited()
         self.assertFalse(ig._cookies_known_bad)
+
+    async def test_reel_ytdlp_empty_caption_is_enriched_via_oembed(self):
+        reel_url = "https://www.instagram.com/reel/DNBCJoiOp9J/"
+        video_result = {
+            "files": ["C:/tmp/reel.mp4"],
+            "type": "video",
+            "title": "",
+            "uploader": "Autor",
+        }
+
+        with (
+            patch.object(ig, "_load_cookies_from_file", return_value={}),
+            patch.object(ig, "_extract_via_api", new=AsyncMock(return_value=None)),
+            patch.object(ig, "_extract_via_graphql", new=AsyncMock(return_value=None)),
+            patch.object(ig, "_extract_via_embed", new=AsyncMock(return_value=None)),
+            patch.object(ig, "_extract_via_ytdlp", new=AsyncMock(return_value=video_result)) as ytdlp,
+            patch.object(ig, "_fetch_post_meta_via_oembed", new=AsyncMock(return_value={
+                'title': '🐺 lobo na rua',
+                'uploader': 'gustramontini',
+            })) as oembed,
+        ):
+            result = await ig.download_instagram(reel_url, "", "C:/tmp")
+
+        self.assertEqual(result["title"], '🐺 lobo na rua')
+        self.assertEqual(result["uploader"], "gustramontini")
+        self.assertEqual(result["files"], ["C:/tmp/reel.mp4"])
+        ytdlp.assert_awaited_once_with(reel_url, "", "C:/tmp")
+        oembed.assert_awaited_once_with("DNBCJoiOp9J", "reel")
+
+    async def test_reel_with_caption_does_not_call_oembed(self):
+        reel_url = "https://www.instagram.com/reel/DNBCJoiOp9J/"
+        video_result = {
+            "files": ["C:/tmp/reel.mp4"],
+            "type": "video",
+            "title": "Legenda ja presente",
+            "uploader": "Autor",
+        }
+
+        with (
+            patch.object(ig, "_load_cookies_from_file", return_value={}),
+            patch.object(ig, "_extract_via_api", new=AsyncMock(return_value=None)),
+            patch.object(ig, "_extract_via_graphql", new=AsyncMock(return_value=None)),
+            patch.object(ig, "_extract_via_embed", new=AsyncMock(return_value=None)),
+            patch.object(ig, "_extract_via_ytdlp", new=AsyncMock(return_value=video_result)),
+            patch.object(ig, "_fetch_post_meta_via_oembed", new=AsyncMock()) as oembed,
+        ):
+            result = await ig.download_instagram(reel_url, "", "C:/tmp")
+
+        self.assertEqual(result["title"], "Legenda ja presente")
+        oembed.assert_not_awaited()
 
 
 if __name__ == "__main__":
