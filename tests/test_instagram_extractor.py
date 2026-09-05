@@ -74,45 +74,10 @@ class FakeHtmlProfileResponse:
 
 
 class FakeRateLimitedProfileClient:
-    def __init__(self, *args, **kwargs):
-        self.requests = []
+    """API 429 seguido de cooldown: rotas web do www sao ignoradas.
 
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, exc_type, exc, tb):
-        return False
-
-    async def get(self, url, headers=None):
-        self.requests.append((url, headers))
-        if '/api/v1/' in url:
-            return FakeRateLimitedResponse()
-        if '/oembed/' in url:
-            raise AssertionError('oEmbed must not be called after a 429 when HTML already gave a card')
-        return FakeHtmlProfileResponse()
-
-
-class FakeOEmbedProfileResponse:
-    status_code = 200
-
-    def json(self):
-        return {
-            'version': '1.0',
-            'author_name': 'Ada Lovelace',
-            'author_url': 'https://www.instagram.com/ada/',
-            'author_thumbnail_url': 'https://example.com/ada_thumb.jpg',
-            'title': 'Some post',
-            'thumbnail_url': 'https://example.com/post.jpg',
-        }
-
-
-class FakeLoginPageResponse:
-    status_code = 200
-    text = '<html><body>Log in to Instagram</body></html>'
-
-
-class FakeRateLimitedLoginProfileClient:
-    """API 429 + pagina do perfil redirecionada para login (throttle real)."""
+    O unico recurso permitido apos o 429 e o oEmbed (host separado).
+    """
 
     def __init__(self, *args, **kwargs):
         self.requests = []
@@ -129,7 +94,21 @@ class FakeRateLimitedLoginProfileClient:
             return FakeRateLimitedResponse()
         if '/oembed/' in url:
             return FakeOEmbedProfileResponse()
-        return FakeLoginPageResponse()
+        raise AssertionError('HTML must not be fetched after a 429: ' + url)
+
+
+class FakeOEmbedProfileResponse:
+    status_code = 200
+
+    def json(self):
+        return {
+            'version': '1.0',
+            'author_name': 'Ada Lovelace',
+            'author_url': 'https://www.instagram.com/ada/',
+            'author_thumbnail_url': 'https://example.com/ada_thumb.jpg',
+            'title': 'Some post',
+            'thumbnail_url': 'https://example.com/post.jpg',
+        }
 
 
 class FakeNewsResponse:
@@ -182,7 +161,10 @@ class FakeLoginRequiredClient:
 class InstagramExtractorTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         # Testes de rede simulada não devem ler/gravar o cache real do bot.
-        for name, value in (('_profile_cache', {}), ('_profile_cache_ttl', {}), ('_ig_429_since', 0.0)):
+        for name, value in (
+            ('_profile_cache', {}), ('_profile_cache_ttl', {}),
+            ('_ig_429_since', 0.0), ('_ig_last_request_at', 0.0),
+        ):
             patcher = patch.object(ig, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -212,31 +194,13 @@ class InstagramExtractorTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(profile["is_verified"])
         self.assertEqual(profile["profile_pic_url"], "https://example.com/openai.jpg")
 
-    async def test_profile_429_uses_public_html_card_without_waiting_or_oembed(self):
+    async def test_profile_429_skips_web_layers_and_uses_oembed_card(self):
         ig._ig_429_since = 0.0
         self.addCleanup(setattr, ig, "_ig_429_since", 0.0)
         with (
             patch.object(ig, "_load_cookies_from_file", return_value={}),
             patch.object(ig.httpx, "AsyncClient", FakeRateLimitedProfileClient),
-            patch.object(ig.asyncio, "sleep", new=AsyncMock()) as sleep,
-        ):
-            profile = await ig.fetch_instagram_profile("https://www.instagram.com/ada/", "")
-
-        self.assertTrue(profile["partial"])
-        self.assertEqual(profile["username"], "ada")
-        self.assertEqual(profile["full_name"], "Ada Lovelace")
-        self.assertEqual(profile["followers"], "1.2K")
-        self.assertEqual(profile["profile_pic_url"], "https://example.com/ada.jpg")
-        self.assertIsNone(profile['biography'])
-        sleep.assert_not_awaited()
-
-    async def test_profile_429_with_login_html_still_sends_card_via_oembed(self):
-        ig._ig_429_since = 0.0
-        self.addCleanup(setattr, ig, "_ig_429_since", 0.0)
-        with (
-            patch.object(ig, "_load_cookies_from_file", return_value={}),
-            patch.object(ig.httpx, "AsyncClient", FakeRateLimitedLoginProfileClient),
-            patch.object(ig.asyncio, "sleep", new=AsyncMock()) as sleep,
+            patch.object(ig.asyncio, "sleep", new=AsyncMock()),
         ):
             profile = await ig.fetch_instagram_profile("https://www.instagram.com/ada/", "")
 
@@ -244,7 +208,21 @@ class InstagramExtractorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(profile["username"], "ada")
         self.assertEqual(profile["full_name"], "Ada Lovelace")
         self.assertEqual(profile["profile_pic_url"], "https://example.com/ada_thumb.jpg")
-        sleep.assert_not_awaited()
+
+    async def test_profile_cooldown_skips_all_web_calls_and_only_uses_oembed(self):
+        ig._ig_429_since = 9999999999.0
+        self.addCleanup(setattr, ig, "_ig_429_since", 0.0)
+        with (
+            patch.object(ig, "_load_cookies_from_file", return_value={}),
+            patch.object(ig.httpx, "AsyncClient", FakeRateLimitedProfileClient),
+            patch.object(ig.asyncio, "sleep", new=AsyncMock()),
+        ):
+            profile = await ig.fetch_instagram_profile("https://www.instagram.com/ada/", "")
+
+        self.assertTrue(profile["partial"])
+        self.assertEqual(profile["username"], "ada")
+        self.assertEqual(profile["full_name"], "Ada Lovelace")
+        self.assertEqual(profile["profile_pic_url"], "https://example.com/ada_thumb.jpg")
 
     def test_mobile_profile_fields_preserve_zero_and_explicit_empty_bio(self):
         profile = ig._parse_profile_user({

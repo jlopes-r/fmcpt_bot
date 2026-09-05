@@ -9,6 +9,8 @@ from apps.telegram_bot.instagram_extractor import (
     inspect_cookie_health,
     validate_cookie_health,
     reset_cookies_bad,
+    aguardar_cooldown_429,
+    ig_429_cooldown_remaining,
 )
 
 
@@ -23,4 +25,6 @@ __all__ = [
     "inspect_cookie_health",
     "validate_cookie_health",
     "reset_cookies_bad",
+    "aguardar_cooldown_429",
+    "ig_429_cooldown_remaining",
 ]

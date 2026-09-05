@@ -65,6 +65,48 @@ _ig_429_since: float = 0.0
 _IG_429_COOLDOWN = 120.0         # segundos de respeito apos um 429
 _IG_PROFILE_PACING = 2.0         # espaco entre API -> HTML -> oembed
 
+# ─── Pacing global de requisicoes web ao Instagram ─────────────────────────
+# Rajadas de dezenas de requests por segundo para www/i.instagram.com sao o
+# principal sinal de "automacao" e derrubam a conta em challenge/checkpoint.
+# Espacamos as chamadas web num ritmo proximo do humano e serializamos as
+# concorrentes para o bot nunca disparar em rajada.
+_IG_MIN_REQUEST_INTERVAL = 1.3   # segundos minimos entre dois requests web do IG
+_ig_last_request_at: float = 0.0
+
+
+async def _ig_wait_pacing() -> None:
+    """Garante um gap minimo global entre requisicoes web ao Instagram.
+
+    Reserva um slot futuro imediatamente, entao chamadas concorrentes se
+    espaçam entre si sem rajada. Um unico sleep (sem loop) — seguro mesmo
+    quando asyncio.sleep esta mockado em testes.
+    """
+    global _ig_last_request_at
+    now = time.time()
+    target = max(_ig_last_request_at + _IG_MIN_REQUEST_INTERVAL, now)
+    _ig_last_request_at = target + _IG_MIN_REQUEST_INTERVAL
+    delay = target - now
+    if delay > 0:
+        await asyncio.sleep(delay)
+
+
+def ig_429_cooldown_remaining() -> float:
+    """Segundos restantes do cooldown global de 429 (0.0 se inativo)."""
+    if not _ig_429_recente():
+        return 0.0
+    return max(0.0, _ig_429_since + _IG_429_COOLDOWN - time.time())
+
+
+async def aguardar_cooldown_429(max_wait: float = 45.0) -> float:
+    """Dorme o necessario para sair do cooldown de 429 (limitado a max_wait).
+
+    Retorna quantos segundos foram aguardados (0.0 se nao havia cooldown).
+    """
+    restante = ig_429_cooldown_remaining()
+    if restante > 0:
+        await asyncio.sleep(min(restante, max_wait))
+    return restante
+
 # ─── Cache de perfil ──────────────────────────────────────────────────────────
 # Buscar o perfil no Instagram toda hora (web_profile_info) enche o rate-limit
 # (429). Guardamos o ultimo perfil valido buscado por N minutos em memoria e em
@@ -444,6 +486,7 @@ async def validate_cookie_health(cookie_path: str) -> dict:
     if not cookies or 'sessionid' not in cookies:
         return {"valid": False, "reason": "Arquivo de cookies sem `sessionid`"}
 
+    await _ig_wait_pacing()
     headers = {
         **BROWSER_HEADERS,
         **IG_APP_HEADERS,
@@ -737,8 +780,9 @@ async def fetch_instagram_profile(url: str, cookie_path: str = '') -> dict | Non
         async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
             rate_limited = _ig_429_recente()
             if rate_limited:
-                log.info("👤 Instagram perfil @%s: API ignorada durante cooldown de 429", username)
+                log.info("👤 Instagram perfil @%s: cooldown de 429 ativo — rotas web ignoradas", username)
             else:
+                await _ig_wait_pacing()
                 try:
                     resp = await client.get(api_url, headers=headers)
                     log.info("👤 Instagram perfil API @%s status=%d", username, resp.status_code)
@@ -752,27 +796,25 @@ async def fetch_instagram_profile(url: str, cookie_path: str = '') -> dict | Non
                 except Exception as e:
                     log.info("👤 Instagram perfil API @%s indisponível: %s", username, type(e).__name__)
 
-            if not _profile_is_complete(result):
-                if not rate_limited:
+                # So busca o HTML se a API falhou sem ser por throttling.
+                # Martelar o www depois de um 429 so reforca o sinal de automacao.
+                if not _profile_is_complete(result) and not rate_limited:
                     await asyncio.sleep(_IG_PROFILE_PACING)
-                try:
-                    resp = await client.get(page_url, headers=headers)
-                    log.info("👤 Instagram perfil HTML @%s status=%d", username, resp.status_code)
-                    if resp.status_code == 429:
-                        _mark_ig_429()
-                        rate_limited = True
-                    if resp.status_code == 200:
-                        result = _merge_profiles(result, _parse_profile_from_html(resp.text, username))
-                        result = _merge_profiles(result, _parse_profile_meta(resp.text, username))
-                except Exception as e:
-                    log.info("👤 Instagram perfil HTML @%s indisponível: %s", username, type(e).__name__)
+                    try:
+                        resp = await client.get(page_url, headers=headers)
+                        log.info("👤 Instagram perfil HTML @%s status=%d", username, resp.status_code)
+                        if resp.status_code == 429:
+                            _mark_ig_429()
+                            rate_limited = True
+                        if resp.status_code == 200:
+                            result = _merge_profiles(result, _parse_profile_from_html(resp.text, username))
+                            result = _merge_profiles(result, _parse_profile_meta(resp.text, username))
+                    except Exception as e:
+                        log.info("👤 Instagram perfil HTML @%s indisponível: %s", username, type(e).__name__)
 
             if not result or not result.get('profile_pic_url'):
-                # oEmbed e o ultimo recurso para o card responder. Quando o www cai
-                # em 429 e o HTML redireciona para a pagina de login, ele nao
-                # produz nenhum dado — sem o oEmbed o card nao sairia. O host
-                # api.instagram.com e separado e menos propenso ao mesmo throttle,
-                # entao vale tentar mesmo sob cooldown (uma unica requisição).
+                # oEmbed e o ultimo recurso para o card responder (api.instagram.com
+                # e host separado do www; vale tentar mesmo sob cooldown).
                 if not rate_limited:
                     await asyncio.sleep(_IG_PROFILE_PACING)
                 result = _merge_profiles(result, await _fetch_profile_via_oembed(client, username))
@@ -806,6 +848,7 @@ async def _fetch_profile_via_oembed(client: httpx.AsyncClient, username: str) ->
     card do perfil ainda responde em vez de falhar com None.
     """
     oembed_url = f'https://api.instagram.com/oembed/?url=https://www.instagram.com/{urllib.parse.quote(username)}/'
+    await _ig_wait_pacing()
     try:
         resp = await client.get(oembed_url)
         log.info("👤 Instagram perfil oembed @%s status=%d", username, resp.status_code)
@@ -851,6 +894,7 @@ async def _fetch_post_meta_via_oembed(shortcode: str, embed_path: str = 'p') -> 
     """
     post_url = f'https://www.instagram.com/{embed_path}/{shortcode}/'
     oembed_url = f'https://api.instagram.com/oembed/?url={urllib.parse.quote(post_url, safe="")}'
+    await _ig_wait_pacing()
     try:
         async with httpx.AsyncClient(timeout=12.0, follow_redirects=True) as client:
             resp = await client.get(oembed_url)
@@ -901,6 +945,7 @@ async def detect_profile_privado(url: str, cookie_path: str = '') -> bool | None
     try:
         if _ig_429_recente():
             return None
+        await _ig_wait_pacing()
         async with httpx.AsyncClient(timeout=12.0, follow_redirects=True) as client:
             resp = await client.get(page_url, headers=headers)
             if resp.status_code == 429:
@@ -1083,6 +1128,7 @@ async def _extract_via_api(shortcode: str, cookies: dict = None) -> dict | None:
     cookies = cookies or {}
     media_id = _shortcode_to_media_id(shortcode)
     log.info("🔌 Camada 1 (API Interna): shortcode=%s → media_id=%s", shortcode, media_id)
+    await _ig_wait_pacing()
 
     api_urls = [
         f'https://www.instagram.com/api/v1/media/{media_id}/info/',
@@ -1155,6 +1201,7 @@ async def _extract_via_graphql(shortcode: str, cookies: dict = None) -> dict | N
     """
     cookies = cookies or {}
     log.info("🔌 Camada 2 (GraphQL): shortcode=%s", shortcode)
+    await _ig_wait_pacing()
 
     variables = json.dumps({
         'shortcode': shortcode,
@@ -1232,6 +1279,7 @@ async def _extract_via_embed(shortcode: str, cookies: dict = None, embed_path: s
     Procura por __additionalDataLoaded, _sharedData, ou tags meta OG.
     """
     log.info("🔌 Camada 3 (Embed Scraping): shortcode=%s", shortcode)
+    await _ig_wait_pacing()
     embed_url = f'https://www.instagram.com/{embed_path}/{shortcode}/embed/'
 
     cookies = cookies or {}
@@ -1472,6 +1520,7 @@ async def _extract_via_highlights_api(highlight_id: str, cookies: dict = None) -
         log.info("   ⏭️ Sem cookies — não dá pra abrir destaque (conteúdo do dono)")
         return None
 
+    await _ig_wait_pacing()
     csrf = cookies.get('csrftoken', '')
     headers = {**BROWSER_HEADERS, **IG_APP_HEADERS}
     if csrf:
@@ -1597,6 +1646,7 @@ async def download_instagram(
             # Camada 1: API Interna (funciona para stories com cookies válidos)
             if cookies:
                 try:
+                    await _ig_wait_pacing()
                     async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
                         csrf = cookies.get('csrftoken', '')
                         api_url = f'https://i.instagram.com/api/v1/media/{story_media_id}/info/'
@@ -1655,9 +1705,11 @@ async def download_instagram(
         reset_cookies_bad()  # as camadas funcionaram — cookies estão OK
         return result
 
-    # ── Se challenge foi detectado nas camadas acima, não tenta auto-login ──
-    if _cookies_known_bad:
-        log.info("⏩ Challenge detectado — pulando auto-login, direto para yt-dlp")
+    # ── Se challenge/cooldown foi detectado, não tenta auto-login ──
+    # Auto-login durante cooldown de 429 tambem pega o bloqueio e ainda marca
+    # a conta com sinal de automacao. So tentamos renovar fora do cooldown.
+    if _cookies_known_bad or _ig_429_recente():
+        log.info("⏩ Challenge/429 detectado — pulando auto-login, direto para yt-dlp")
     elif os.getenv('IG_USERNAME') and os.getenv('IG_PASSWORD'):
         # ── Tentativa 2: auto-login para gerar cookies frescos ──
         log.info("🔄 Cookies falharam. Tentando auto-login para gerar cookies frescos...")
@@ -1702,6 +1754,15 @@ def _is_acceptable_result_for_url(result: dict | None, url: str) -> bool:
 
 async def _try_all_layers(shortcode: str, cookies: dict, url: str) -> dict | None:
     """Tenta as 3 camadas de extração (API, GraphQL, Embed) com os cookies fornecidos."""
+
+    # Se o IP ainda esta em cooldown de 429, martelar API/GraphQL/Embed de novo
+    # so devolve 302->login/429 e reforca o sinal de automacao. Vai direto pro
+    # yt-dlp (CDN), que continua funcionando mesmo nessa condicao.
+    if _ig_429_recente():
+        log.info("⏭️ Cooldown de 429 ativo — pulando camadas 1-3, direto para yt-dlp")
+        return None
+
+    # Cada camada ja aplica o pacing global antes de bater no Instagram.
 
     # ── Camada 1: API Interna ──
     result = await _extract_via_api(shortcode, cookies)

@@ -101,6 +101,7 @@ from apps.telegram_bot.instagram import (
     inspect_cookie_health,
     validate_cookie_health,
     reset_cookies_bad,
+    aguardar_cooldown_429,
 )
 from apps.telegram_bot.instagram_profile_card import gerar_card as _gerar_card_perfil
 from apps.telegram_bot.media_utils import detectar_extensao as _detectar_extensao, progresso_upload as _progresso_upload
@@ -629,6 +630,8 @@ async def processar_instagram(client, message, url, usuario, msg_espera, link_du
             if tentativa > 1:
                 await msg_espera.edit_text(f"🔄 Instagram: Tentativa {tentativa}/{MAX_RETRIES}...")
                 await asyncio.sleep(2)
+                # Se o IP esta em cooldown de 429, espera sair antes de re-tentar.
+                await aguardar_cooldown_429()
 
             result = await download_instagram(url, COOKIE_PATH, str(PASTA_DOWNLOADS))
 
