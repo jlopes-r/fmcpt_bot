@@ -62,6 +62,18 @@ class TranslatorTest(unittest.TestCase):
 
 
 class TraduzirComDetalhesTest(unittest.TestCase):
+    @patch("apps.telegram_bot.translator._detectar_idioma", return_value=None)
+    @patch("apps.telegram_bot.translator.GoogleTranslator")
+    def test_idioma_da_fonte_traduz_texto_curto_quando_detector_se_abstem(self, mock_gt, mock_detect):
+        mock_gt.return_value.translate.return_value = "Olá, mundo"
+
+        r = traduzir_com_detalhes("Hola mundo", idioma_informado="es")
+
+        self.assertTrue(r["foi_traduzido"])
+        self.assertEqual(r["traduzido"], "Olá, mundo")
+        self.assertEqual(r["idioma_origem"], "es")
+        mock_gt.assert_called_once_with(source="es", target="pt")
+
     @patch("apps.telegram_bot.translator._detectar_idioma", return_value="pt")
     def test_em_portugues_nao_traduz(self, mock_detect):
         original = "Já estou em português"

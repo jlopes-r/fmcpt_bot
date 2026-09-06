@@ -9,6 +9,7 @@ import asyncio
 import logging
 import subprocess
 import uuid
+import threading
 import psutil
 from datetime import datetime, timedelta
 from urllib.parse import urlparse, urlunparse
@@ -82,12 +83,14 @@ from packages.telegram_ui import (
     set_bot_commands_via_bot_api,
     set_bot_commands_menu_button_via_bot_api,
 )
-from packages.url_utils import normalizar_url
+from packages.url_utils import normalizar_url, preparar_url_download_generico
 from apps.telegram_bot.downloaders import (
     limite_duracao_filter,
     FORMATO_MP4_H264 as _FORMATO_MP4_H264,
     baixar_com_ytdlp as _baixar_com_ytdlp,
     baixar_url_limitado as _baixar_url_limitado,
+    video_exige_confirmacao as _video_exige_confirmacao,
+    DownloadCancelled,
 )
 from apps.telegram_bot.duplicates import normalizar_link_social
 from apps.telegram_bot.instagram import (
@@ -121,7 +124,7 @@ DOWNLOAD_COUNT = 0
 DOWNLOAD_COUNT_LOCK = asyncio.Lock()
 
 LIMITE_DURACAO = 600
-LIMITE_TAMANHO = max(1, get_int_env("MAX_MEDIA_BYTES", 2_000_000_000))
+LIMITE_TAMANHO = max(1, get_int_env("MAX_MEDIA_BYTES", 5_000_000_000))
 MAX_DOWNLOADS = max(1, get_int_env("MAX_DOWNLOADS", 3))
 MAX_RETRIES = 2
 RATE_LIMIT = 10
@@ -148,8 +151,13 @@ GRUPOS_AUTORIZADOS = parse_chat_ids(_grupos_raw)
 DOMINIOS_PERMITIDOS = [
     "x.com", "twitter.com", "youtube.com", "youtu.be",
     "instagram.com", "instagr.am", "tiktok.com", "threads.net",
-    "pinterest.com", "pin.it"
+    "pinterest.com", "pin.it", "facebook.com", "fb.com", "fb.watch"
 ]
+
+PLATAFORMAS_DOWNLOAD_GENERICO = (
+    "youtube.com", "youtu.be", "tiktok.com", "threads.net",
+    "pinterest.com", "pin.it", "facebook.com", "fb.com", "fb.watch",
+)
 
 # -----------------------------------------
 # POOL DE SESSÕES HTTP REUTILIZÁVEIS
@@ -244,6 +252,7 @@ _usuarios_bloqueados = {}  # user_id -> timestamp (cooldown de castigo de 5min)
 _uso_bloq = defaultdict(list)  # admin_id -> [timestamps dos blocks aplicados hoje]
 _ultimo_link_por_usuario = {}  # user_id -> {"url_norm": str, "url_raw": str, "timestamp": float}
 _bloqueios_por_link = defaultdict(set)  # user_id -> set de url_norms que já causaram bloqueio
+_downloads_cancelaveis = {}  # msg_id -> (threading.Event, user_id)
 
 # -----------------------------------------
 # LOGGING
@@ -332,6 +341,7 @@ def url_permitida(url: str) -> bool:
     except Exception:
         return False
 
+
 def verificar_rate_limit(user_id: int) -> bool:
     agora = time.time()
     _historico_uso[user_id] = [t for t in _historico_uso[user_id] if agora - t < RATE_JANELA]
@@ -365,9 +375,26 @@ async def avisar_video_longo(msg_espera, url, usuario, message):
     await msg_espera.edit_text(texto_aviso, reply_markup=botoes)
     _retry_cache[msg_espera.id] = (url, usuario, message.chat.id, message.id)
 
+
+async def _baixar_com_cancelamento(url, ydl_opts, msg_espera, message):
+    """Executa yt-dlp com um botão que interrompe o download em andamento."""
+    cancel_event = threading.Event()
+    user_id = getattr(getattr(message, "from_user", None), "id", None)
+    _downloads_cancelaveis[msg_espera.id] = (cancel_event, user_id)
+    botoes = InlineKeyboardMarkup([[
+        InlineKeyboardButton("🛑 Cancelar download", callback_data=f"canceldownload_{msg_espera.id}")
+    ]])
+    try:
+        await msg_espera.edit_text("⬇️ Preparando download...", reply_markup=botoes)
+        return await _baixar_com_ytdlp(
+            url, ydl_opts, msg_espera=msg_espera,
+            cancel_event=cancel_event, reply_markup=botoes,
+        )
+    finally:
+        _downloads_cancelaveis.pop(msg_espera.id, None)
+
 def _foi_pulado_por_duracao(item: dict) -> bool:
-    duracao = item.get('duration') or 0
-    return bool(duracao and duracao > LIMITE_DURACAO)
+    return _video_exige_confirmacao(item.get('duration'), LIMITE_DURACAO)
 
 def _converter_arquivo_para_jpg(origem: Path, destino: Path) -> None:
     """Converte webp/heic/heif para jpg sem manter o arquivo inteiro em memoria."""
@@ -499,7 +526,7 @@ async def extrair_e_enviar_midia(client, message, url, usuario, msg_espera, forc
                         'Accept-Language': 'en-US,en;q=0.9',
                     }
 
-                info = await _baixar_com_ytdlp(url, ydl_opts, msg_espera=msg_espera)
+                info = await _baixar_com_cancelamento(url, ydl_opts, msg_espera, message)
 
                 midias = info.get('entries', [info])
                 lista_telegram = []
@@ -534,7 +561,10 @@ async def extrair_e_enviar_midia(client, message, url, usuario, msg_espera, forc
                                 # Verifica se foi filtrado por tamanho antes de dar erro
                                 filesize = item.get('filesize') or item.get('filesize_approx')
                                 if filesize and filesize > LIMITE_TAMANHO:
-                                    raise Exception(f"Arquivo muito grande ({filesize / 1024 / 1024:.1f}MB). O limite é de 2GB.")
+                                    raise Exception(
+                                        f"Arquivo muito grande ({filesize / 1024 / 1024:.1f}MB). "
+                                        f"O limite é de {LIMITE_TAMANHO / 1_000_000_000:.0f}GB."
+                                    )
                                 # yt-dlp novo não lança exceção quando o match_filter pula
                                 # o vídeo: retorna o info dict sem requested_downloads.
                                 if not force_long and _foi_pulado_por_duracao(item):
@@ -582,6 +612,9 @@ async def extrair_e_enviar_midia(client, message, url, usuario, msg_espera, forc
                     pass
                 return True
 
+            except DownloadCancelled:
+                await msg_espera.edit_text("🛑 Download cancelado.")
+                return False
             except yt_dlp.utils.DownloadError as e:
                 erro_str = str(e)
                 # Erros de limite não fazem sentido tentar de novo
@@ -1578,6 +1611,28 @@ async def callback_long_video(client, callback_query):
             
         await extrair_e_enviar_midia(client, original_message, url, usuario_orig, msg_espera, force_long=True)
 
+
+@app.on_callback_query(filters.regex(r"^canceldownload_(\d+)$"))
+async def callback_cancelar_download(client, callback_query):
+    msg_id = int(callback_query.matches[0].group(1))
+    download = _downloads_cancelaveis.get(msg_id)
+    if not download:
+        await callback_query.answer("Esse download já terminou.", show_alert=True)
+        return
+
+    cancel_event, user_id = download
+    callback_user_id = getattr(getattr(callback_query, "from_user", None), "id", None)
+    if user_id is not None and callback_user_id != user_id:
+        await callback_query.answer("Só quem iniciou o download pode cancelar.", show_alert=True)
+        return
+
+    cancel_event.set()
+    await callback_query.answer("Cancelando download...")
+    try:
+        await callback_query.message.edit_text("🛑 Cancelando download...")
+    except Exception:
+        pass
+
 async def limpeza_periodica():
     """Remove arquivos órfãos da pasta downloads a cada 30 minutos."""
     while True:
@@ -1679,7 +1734,7 @@ async def enviar_midia_quote(client, message, qrt_info, match, msg_espera, usuar
                 'max_filesize': LIMITE_TAMANHO,
             }
             try:
-                info = await _baixar_com_ytdlp(video_url, ydl_opts, msg_espera=msg_espera)
+                info = await _baixar_com_cancelamento(video_url, ydl_opts, msg_espera, message)
                 item = info.get('entries', [info])[0]
                 path = None
                 if 'requested_downloads' in item:
@@ -1694,6 +1749,9 @@ async def enviar_midia_quote(client, message, qrt_info, match, msg_espera, usuar
                 arquivos_quote.append(path)
                 caption_video = legenda_quote if not lista_quote else ""
                 lista_quote.append(InputMediaVideo(path, caption=caption_video, supports_streaming=True))
+            except DownloadCancelled:
+                await msg_espera.edit_text("🛑 Download cancelado.")
+                return
             except Exception as e:
                 log.error(f"X quote yt-dlp erro: {e}")
                 log.info(f"X quote: tentando download direto: {video_url}")
@@ -1961,8 +2019,8 @@ async def processar_links(client, message):
                             duracao_s = m.get('duration_millis', 0) / 1000
                             video_url = m['url']
 
-                            if duracao_s > LIMITE_DURACAO:
-                                await msg_espera.edit_text(erro_aleatorio(ERROS_VIDEO_LONGO, min=LIMITE_DURACAO // 60))
+                            if _video_exige_confirmacao(duracao_s, LIMITE_DURACAO):
+                                await avisar_video_longo(msg_espera, url_raw, usuario, message)
                                 return
 
                             log.info(f"X: baixando video ({int(duracao_s)}s) via yt-dlp...")
@@ -1977,7 +2035,7 @@ async def processar_links(client, message):
                                 'max_filesize': LIMITE_TAMANHO,
                             }
                             try:
-                                info = await _baixar_com_ytdlp(url_raw, ydl_opts, msg_espera=msg_espera)
+                                info = await _baixar_com_cancelamento(url_raw, ydl_opts, msg_espera, message)
 
                                 item = info.get('entries', [info])[0]
                                 path = None
@@ -1996,6 +2054,9 @@ async def processar_links(client, message):
                                 arquivos_x.append(path)
                                 caption_video = legenda if not lista_telegram else ""
                                 lista_telegram.append(InputMediaVideo(path, caption=caption_video, supports_streaming=True))
+                            except DownloadCancelled:
+                                await msg_espera.edit_text("🛑 Download cancelado.")
+                                return
                             except Exception as e:
                                 log.error(f"X yt-dlp erro: {e}")
                                 log.info(f"X: tentando download direto: {video_url}")
@@ -2130,15 +2191,9 @@ async def processar_links(client, message):
             _processing_urls.pop(url_norm, None)
         return
 
-    # 3. YOUTUBE, TIKTOK, THREADS, PINTEREST (yt-dlp generico)
-    if url_raw and any(d in url_raw for d in ["youtube.com", "youtu.be", "tiktok.com", "threads.net", "pinterest.com", "pin.it"]):
-        url = url_raw
-        # Suporte para shorts e links normais com limpeza de tracking
-        yt_match = re.search(r'(?:youtube\.com/(?:watch\?v=|shorts/|live/)|youtu\.be/)([a-zA-Z0-9_-]+)', url)
-        if yt_match:
-            url = f"https://www.youtube.com/watch?v={yt_match.group(1)}"
-        elif not any(d in url for d in ["youtube.com", "youtu.be", "google.com"]):
-            url = urlunparse(urlparse(url)._replace(query="")).rstrip("/")
+    # 3. YOUTUBE, TIKTOK, THREADS, PINTEREST E FACEBOOK (yt-dlp generico)
+    if url_raw and any(d in url_raw for d in PLATAFORMAS_DOWNLOAD_GENERICO):
+        url = preparar_url_download_generico(url_raw)
 
         msg_espera = await message.reply_text("⏳ *Puxando mídia original...*")
         sucesso = await extrair_e_enviar_midia(client, message, url, usuario, msg_espera)

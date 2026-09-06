@@ -1,12 +1,13 @@
 # FMCPT Bot
 
-Bot multiplataforma para download de mídias do Telegram com suporte a Twitter/X, YouTube, Instagram, TikTok, Threads e Pinterest.
+Bot multiplataforma para download de mídias do Telegram com suporte a Twitter/X, YouTube, Instagram, TikTok, Threads, Pinterest e Facebook.
 
 ## 🚀 Funcionalidades
 
 - **Download universal** de vídeos e imagens via yt-dlp
 - **Instagram** com múltiplos fallbacks (cookies, embed, Instaloader, API externa)
 - **Twitter/X** via API vxtwitter para carrosséis e vídeos
+- **Facebook** via yt-dlp para vídeos e publicações públicas
 - **Detecção de links duplicados** com "Boca de Leite" 🥛
 - **Rate limiting** e segurança por grupo
 - **Estatísticas** de uso em tempo real
@@ -18,10 +19,10 @@ A tradução continua usando `deep-translator` e a detecção local com `langdet
 sem chave de API ou serviço pago adicional. Textos em português e inglês são
 preservados. No X, o bot considera o idioma informado pela fonte e analisa tweet
 e citação separadamente. Sem informação suficiente, mantém o original: a
-detecção exige pelo menos 20 letras e 4 palavras em textos latinos, confiança
-de 95% e concordância com o idioma da fonte quando disponível. Isso reduz
-traduções indevidas, mas também deixa algumas frases estrangeiras curtas sem
-tradução. Links, menções, hashtags e emojis são preservados. O serviço de tradução
+detecção exige pelo menos 20 letras e 4 palavras em textos latinos e confiança
+de 95%. Quando a fonte informa um idioma estrangeiro, esse metadado permite
+traduzir frases curtas nas quais o detector se abstém; uma detecção confiável em
+desacordo ainda preserva o original. Links, menções, hashtags e emojis são preservados. O serviço de tradução
 continua dependendo de disponibilidade externa; se falhar, o original é mantido.
 
 Os cards do Instagram usam fontes escaláveis, avatar circular e altura ajustada
@@ -82,7 +83,7 @@ MINI_APP_URL=https://sua-url-do-mini-app
 MAX_DOWNLOADS=3
 IG_MEDIA_DOWNLOAD_CONCURRENCY=3
 IG_MAX_CAROUSEL_ITEMS=20
-MAX_MEDIA_BYTES=2000000000
+MAX_MEDIA_BYTES=5000000000
 PROFILE_PICTURE_MAX_BYTES=10485760
 
 # So habilite se o Mini App estiver atras de um proxy que controla X-Forwarded-For.

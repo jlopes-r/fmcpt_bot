@@ -230,8 +230,10 @@ def traduzir_com_detalhes(
       - A detecção falhar ou for incerta;
       - A tradução falhar ou retornar uma página de erro da API.
 
-    O idioma informado pela fonte protege PT/EN e precisa concordar com o
-    detector para outros idiomas. "und"/"zxx" não autorizam uma tradução.
+    O idioma informado pela fonte protege PT/EN. Para outros idiomas, ele
+    também permite traduzir textos curtos quando o detector local se abstém;
+    se o detector tiver evidência e discordar da fonte, o original é mantido.
+    "und"/"zxx" não autorizam uma tradução.
     """
     resultado = {
         "original": texto,
@@ -255,14 +257,16 @@ def traduzir_com_detalhes(
         log.debug(f"Tradução ignorada: texto parece ruído ({texto_limpo[:50]}...)")
         return resultado
 
-    idioma = _detectar_idioma(_texto_para_deteccao(texto_limpo))
-    if not idioma:
-        # Detecção incerta -> não arrisca traduzir conteúdo já em PT.
+    idioma_detectado = _detectar_idioma(_texto_para_deteccao(texto_limpo))
+    if not idioma_detectado and not idioma_fonte:
+        # Sem metadado nem detecção confiável, não arrisca traduzir conteúdo
+        # que pode já estar em português.
         return resultado
+    idioma = idioma_detectado or idioma_fonte
     if _normalizar_idioma(idioma) in (*IDIOMAS_SEM_TRADUCAO, _normalizar_idioma(alvo)):
         # PT (já é o alvo) e EN (usuário quer manter original) não são traduzidos.
         return resultado
-    if idioma_fonte and idioma_fonte != _normalizar_idioma(idioma):
+    if idioma_fonte and idioma_detectado and idioma_fonte != _normalizar_idioma(idioma_detectado):
         return resultado
 
     # Só a requisição de tradução recebe placeholders; o detector nunca os vê.

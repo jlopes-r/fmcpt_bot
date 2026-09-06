@@ -16,7 +16,11 @@ YOUTUBE_CLIENTS_FALLBACK = ("tv", "ios", "mweb", "android")
 
 # Timeout máximo da chamada ao yt-dlp (extração + download). Sem timeout, um
 # vídeo bloqueado podia prender a thread e "enrolar" os downloads seguintes.
-YDLP_TIMEOUT = 300  # segundos (5 minutos)
+YDLP_TIMEOUT = 7200  # segundos (2 horas); downloads longos podem ser cancelados
+
+
+class DownloadCancelled(Exception):
+    """Download interrompido por solicitação do usuário."""
 
 # Formato preferido: mp4 com vídeo h264 (avc1) + áudio m4a, para garantir que o
 # Telegram consiga reproduzir sem reprocessar. Cai para mp4 genérico, depois
@@ -51,6 +55,14 @@ def limite_duracao_filter(limite_segundos: int):
     return _filter
 
 
+def video_exige_confirmacao(duracao, limite_segundos: int) -> bool:
+    """Informa se um vídeo deve aguardar confirmação antes do download."""
+    try:
+        return float(duracao or 0) > limite_segundos
+    except (TypeError, ValueError):
+        return False
+
+
 def _aplicar_opcoes_seguras(ydl_opts: dict) -> dict:
     """Mescla as opções do chamador com as defaults de segurança.
 
@@ -68,7 +80,7 @@ def processar_com_ytdlp(url, ydl_opts):
         return ydl.extract_info(url, download=True)
 
 
-def _progresso_ytdlp_sync(msg_espera, loop):
+def _progresso_ytdlp_sync(msg_espera, loop, cancel_event=None, reply_markup=None):
     """Cria um progress_hooks do yt-dlp que agrega o progresso à mensagem.
 
     O hook roda numa thread do executor (fora do event loop). Por isso usamos
@@ -78,6 +90,8 @@ def _progresso_ytdlp_sync(msg_espera, loop):
     estado = {"ultimo_pct": 0, "ultimo_tempo": 0}
 
     def _hook(d):
+        if cancel_event is not None and cancel_event.is_set():
+            raise DownloadCancelled("Download cancelado pelo usuário")
         if d.get("status") != "downloading":
             return
         total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
@@ -95,33 +109,39 @@ def _progresso_ytdlp_sync(msg_espera, loop):
             estado["ultimo_tempo"] = agora
             if msg_espera is not None:
                 asyncio.run_coroutine_threadsafe(
-                    _atualizar_barra_download(msg_espera, pct),
+                    _atualizar_barra_download(msg_espera, pct, reply_markup),
                     loop,
                 )
 
     return _hook
 
 
-async def _atualizar_barra_download(msg_espera, pct: int) -> None:
+async def _atualizar_barra_download(msg_espera, pct: int, reply_markup=None) -> None:
     try:
         barra = "█" * (pct // 10) + "░" * (10 - pct // 10)
         await msg_espera.edit_text(
-            f"⬇️ Baixando... {barra} {pct}%"
+            f"⬇️ Baixando... {barra} {pct}%",
+            reply_markup=reply_markup,
         )
     except Exception:
         pass
 
 
-def processar_com_fallback(url, ydl_opts, msg_espera=None, loop=None):
+def processar_com_fallback(url, ydl_opts, msg_espera=None, loop=None, cancel_event=None, reply_markup=None):
     """Roda o yt-dlp; se o YouTube bloquear o vídeo, tenta de novo com outros
     player clients mais robustos (contorna "sign in"/verificação)."""
     opts = _aplicar_opcoes_seguras(ydl_opts or {})
     if msg_espera is not None and loop is not None:
-        opts["progress_hooks"] = [*(opts.get("progress_hooks") or []), _progresso_ytdlp_sync(msg_espera, loop)]
+        opts["progress_hooks"] = [
+            *(opts.get("progress_hooks") or []),
+            _progresso_ytdlp_sync(msg_espera, loop, cancel_event, reply_markup),
+        ]
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
             return ydl.extract_info(url, download=True)
     except Exception as e:
+        if cancel_event is not None and cancel_event.is_set():
+            raise DownloadCancelled("Download cancelado pelo usuário") from e
         if "youtube.com" not in url:
             raise
         log.warning(
@@ -136,7 +156,10 @@ def processar_com_fallback(url, ydl_opts, msg_espera=None, loop=None):
             return ydl2.extract_info(url, download=True)
 
 
-async def baixar_com_ytdlp(url, ydl_opts, timeout: float | None = None, msg_espera=None):
+async def baixar_com_ytdlp(
+    url, ydl_opts, timeout: float | None = None, msg_espera=None,
+    cancel_event=None, reply_markup=None,
+):
     """Executa o yt-dlp em thread com timeout garantido e progresso opcional.
 
     Se a chamada estourar o tempo (vídeo bloqueado/enrolado), levanta
@@ -145,12 +168,20 @@ async def baixar_com_ytdlp(url, ydl_opts, timeout: float | None = None, msg_espe
     timeout = timeout or YDLP_TIMEOUT
     loop = asyncio.get_running_loop()
     fut = loop.run_in_executor(
-        None, partial(processar_com_fallback, url, ydl_opts, msg_espera, loop)
+        None,
+        partial(
+            processar_com_fallback, url, ydl_opts, msg_espera, loop,
+            cancel_event, reply_markup,
+        ),
     )
     try:
         return await asyncio.wait_for(fut, timeout=timeout)
     except asyncio.TimeoutError:
         log.error("yt-dlp excedeu o timeout de %.0fs para %s", timeout, url)
+        raise
+    except Exception as e:
+        if cancel_event is not None and cancel_event.is_set():
+            raise DownloadCancelled("Download cancelado pelo usuário") from e
         raise
 
 
