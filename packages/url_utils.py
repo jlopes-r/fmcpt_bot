@@ -1,5 +1,5 @@
 import re
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
 
 
 def normalizar_url(url: str) -> str:
@@ -15,11 +15,20 @@ def normalizar_url(url: str) -> str:
 
 
 def normalizar_link_social(url_raw: str) -> str:
+    parsed = urlparse(url_raw)
+    if is_facebook_url(url_raw):
+        query = urlencode(sorted((k, v) for k, v in parse_qsl(parsed.query) if k in ('v', 'video_id', 'story_fbid', 'fbid', 'id')))
+        return urlunparse(('https', 'www.facebook.com' if parsed.hostname != 'fb.watch' else 'fb.watch', parsed.path.rstrip('/'), '', query, ''))
     url_norm = urlunparse(urlparse(url_raw)._replace(query="")).lower().rstrip("/")
     tw_match = re.search(r"(?:x|twitter)\.com/[^/]+/status/(\d+)", url_norm)
     if tw_match:
         return f"https://x.com/i/status/{tw_match.group(1)}"
     return url_norm
+
+
+def is_facebook_url(url: str) -> bool:
+    host = urlparse(url).hostname or ''
+    return any(host == d or host.endswith('.' + d) for d in ('facebook.com', 'fb.com', 'fb.watch'))
 
 
 def preparar_url_download_generico(url: str) -> str:

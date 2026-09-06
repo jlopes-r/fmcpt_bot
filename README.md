@@ -7,7 +7,13 @@ Bot multiplataforma para download de mídias do Telegram com suporte a Twitter/X
 - **Download universal** de vídeos e imagens via yt-dlp
 - **Instagram** com múltiplos fallbacks (cookies, embed, Instaloader, API externa)
 - **Twitter/X** via API vxtwitter para carrosséis e vídeos
-- **Facebook** via yt-dlp para vídeos e publicações públicas
+- **Facebook**: vídeos via yt-dlp; texto e fotos quando identificados nos dados públicos da publicação. Páginas com login obrigatório ou estruturas não reconhecidas podem não ser extraídas. Miniaturas não são tratadas como fotos do post.
+
+Downloads via yt-dlp usam processos isolados e diretórios próprios, com cancelamento
+por solicitante e prazo de duas horas. O worker reserva 768 MiB livres no disco e
+serializa as transferências pesadas. O limite configurado de 5 GB é um teto de
+download, não uma garantia de espaço disponível ou de upload aceito pelo Telegram.
+Arquivos temporários da operação são removidos após o envio ou falha.
 - **Detecção de links duplicados** com "Boca de Leite" 🥛
 - **Rate limiting** e segurança por grupo
 - **Estatísticas** de uso em tempo real

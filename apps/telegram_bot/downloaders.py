@@ -2,6 +2,14 @@ import asyncio
 import logging
 import os
 import time
+import json
+import sys
+import signal
+import shutil
+import tempfile
+from pathlib import Path
+from contextvars import ContextVar
+from functools import wraps
 from collections.abc import Callable
 from functools import partial
 
@@ -17,6 +25,24 @@ YOUTUBE_CLIENTS_FALLBACK = ("tv", "ios", "mweb", "android")
 # Timeout máximo da chamada ao yt-dlp (extração + download). Sem timeout, um
 # vídeo bloqueado podia prender a thread e "enrolar" os downloads seguintes.
 YDLP_TIMEOUT = 7200  # segundos (2 horas); downloads longos podem ser cancelados
+DISK_RESERVE = 768 * 1024 * 1024
+_download_lock = asyncio.Lock()
+ACTIVE_DIRECTORIES = set()
+_jobs = ContextVar('download_jobs', default=None)
+
+
+def managed_downloads(function):
+    @wraps(function)
+    async def wrapped(*args, **kwargs):
+        jobs = []
+        token = _jobs.set(jobs)
+        try:
+            return await function(*args, **kwargs)
+        finally:
+            for info in jobs:
+                release_job(info)
+            _jobs.reset(token)
+    return wrapped
 
 
 class DownloadCancelled(Exception):
@@ -52,6 +78,7 @@ def limite_duracao_filter(limite_segundos: int):
             return f"Video tem {duracao}s, acima do limite de {limite_segundos}s"
         return None
 
+    _filter.duration_limit = limite_segundos
     return _filter
 
 
@@ -148,7 +175,7 @@ def processar_com_fallback(url, ydl_opts, msg_espera=None, loop=None, cancel_eve
             "yt-dlp falhou com os clients atuais (%s); tentando fallback %s",
             e, YOUTUBE_CLIENTS_FALLBACK,
         )
-        fallback_opts = dict(ydl_opts)
+        fallback_opts = dict(opts)
         fallback_opts["extractor_args"] = {
             "youtube": {"player_client": list(YOUTUBE_CLIENTS_FALLBACK)}
         }
@@ -160,29 +187,125 @@ async def baixar_com_ytdlp(
     url, ydl_opts, timeout: float | None = None, msg_espera=None,
     cancel_event=None, reply_markup=None,
 ):
-    """Executa o yt-dlp em thread com timeout garantido e progresso opcional.
-
-    Se a chamada estourar o tempo (vídeo bloqueado/enrolado), levanta
-    asyncio.TimeoutError e libera o fluxo, evitando que o download prenda o bot.
-    """
-    timeout = timeout or YDLP_TIMEOUT
-    loop = asyncio.get_running_loop()
-    fut = loop.run_in_executor(
-        None,
-        partial(
-            processar_com_fallback, url, ydl_opts, msg_espera, loop,
-            cancel_event, reply_markup,
-        ),
-    )
-    try:
-        return await asyncio.wait_for(fut, timeout=timeout)
-    except asyncio.TimeoutError:
-        log.error("yt-dlp excedeu o timeout de %.0fs para %s", timeout, url)
-        raise
-    except Exception as e:
+    """Run an isolated worker with cancellation, deadline and disk budget."""
+    # Serialize heavy transfers on the small VM. Waiting is cancellable too.
+    while True:
         if cancel_event is not None and cancel_event.is_set():
-            raise DownloadCancelled("Download cancelado pelo usuário") from e
-        raise
+            raise DownloadCancelled()
+        try:
+            await asyncio.wait_for(_download_lock.acquire(), .25)
+            break
+        except asyncio.TimeoutError:
+            continue
+    directory = None
+    proc = None
+    success = False
+    reader = None
+    try:
+        root = Path(ydl_opts.get('paths', {}).get('home', '.')).resolve()
+        root.mkdir(parents=True, exist_ok=True)
+        if shutil.disk_usage(root).free < DISK_RESERVE * 2:
+            raise RuntimeError('Espaço livre insuficiente para baixar e montar a mídia.')
+        directory = Path(tempfile.mkdtemp(prefix='job_', dir=root))
+        ACTIVE_DIRECTORIES.add(str(directory))
+        opts = dict(ydl_opts)
+        duration_filter = opts.pop('match_filter', None)
+        if duration_filter:
+            opts['_duration_limit'] = getattr(duration_filter, 'duration_limit', 600)
+        opts['paths'] = {'home': str(directory), 'temp': str(directory)}
+        opts['outtmpl'] = str(directory / '%(id)s_%(autonumber)s.%(ext)s')
+        opts['noplaylist'] = True
+        opts.pop('progress_hooks', None)
+        kwargs = {'start_new_session': True} if os.name != 'nt' else {}
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable, '-m', 'apps.telegram_bot.download_worker',
+            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL, limit=16 * 1024 * 1024,
+            cwd=str(Path(__file__).resolve().parents[2]), **kwargs,
+        )
+        proc.stdin.write((json.dumps({'url': url, 'options': opts}) + '\n').encode())
+        await proc.stdin.drain()
+        proc.stdin.close()
+        result = None
+        async def consume():
+            nonlocal result
+            last_update = 0.0
+            async for line in proc.stdout:
+                try:
+                    event = json.loads(line)
+                except (ValueError, UnicodeError):
+                    continue
+                if 'result' in event:
+                    result = event['result']
+                if 'error' in event:
+                    raise yt_dlp.utils.DownloadError(event['error'])
+                if 'progress' in event and msg_espera is not None and time.monotonic() - last_update > 3:
+                    last_update = time.monotonic()
+                    if cancel_event is None or not cancel_event.is_set():
+                        try:
+                            await msg_espera.edit_text(f"⬇️ Baixando: {event['progress'] / 1048576:.1f} MiB", reply_markup=reply_markup)
+                        except Exception:
+                            pass
+        reader = asyncio.create_task(consume())
+        deadline = time.monotonic() + (timeout or YDLP_TIMEOUT)
+        while proc.returncode is None:
+            if cancel_event is not None and cancel_event.is_set():
+                raise DownloadCancelled()
+            if time.monotonic() > deadline:
+                raise asyncio.TimeoutError('Tempo limite do download excedido')
+            if shutil.disk_usage(directory).free < DISK_RESERVE:
+                raise RuntimeError('Download interrompido para evitar disco cheio.')
+            size = 0
+            for p in directory.rglob('*'):
+                try:
+                    if p.is_file():
+                        size += p.stat().st_size
+                except FileNotFoundError:
+                    pass  # ffmpeg/yt-dlp can rename files while being measured.
+            if size > int(opts.get('max_filesize') or 5_000_000_000) * 2:
+                raise RuntimeError('Arquivos temporários excederam o orçamento de disco.')
+            await asyncio.sleep(.2)
+        await reader
+        if cancel_event is not None and cancel_event.is_set():
+            raise DownloadCancelled()
+        if proc.returncode or not result:
+            raise RuntimeError('O extrator não retornou mídia válida.')
+        limit = int(opts.get('max_filesize') or 5_000_000_000)
+        if any(p.stat().st_size > limit for p in directory.rglob('*') if p.is_file()):
+            raise RuntimeError('Arquivo final excede o limite configurado.')
+        result['_job_directory'] = str(directory)
+        if _jobs.get() is not None:
+            _jobs.get().append(result)
+        success = True
+        return result
+    finally:
+        if proc is not None:
+            if os.name != 'nt':
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            elif proc.returncode is None:
+                killer = await asyncio.create_subprocess_exec('taskkill', '/PID', str(proc.pid), '/T', '/F', stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+                await killer.wait()
+            await proc.wait()
+        if reader is not None:
+            if not reader.done():
+                reader.cancel()
+            await asyncio.gather(reader, return_exceptions=True)
+        if directory is not None:
+            if not success:
+                shutil.rmtree(directory)
+            if not success:
+                ACTIVE_DIRECTORIES.discard(str(directory))
+        _download_lock.release()
+
+
+def release_job(info):
+    directory = (info or {}).get('_job_directory')
+    if directory and directory in ACTIVE_DIRECTORIES:
+        shutil.rmtree(directory, ignore_errors=True)
+        ACTIVE_DIRECTORIES.discard(directory)
 
 
 async def baixar_url_limitado(
@@ -216,6 +339,8 @@ async def baixar_url_limitado(
             total = 0
             with open(destino, "wb") as arquivo:
                 async for chunk in resp.content.iter_chunked(1024 * 1024):
+                    if shutil.disk_usage(Path(destino).parent).free < DISK_RESERVE:
+                        raise RuntimeError('Espaço em disco insuficiente.')
                     total += len(chunk)
                     if total > limite_bytes:
                         raise Exception(

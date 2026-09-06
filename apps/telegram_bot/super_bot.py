@@ -10,6 +10,7 @@ import logging
 import subprocess
 import uuid
 import threading
+import shutil
 import psutil
 from datetime import datetime, timedelta
 from urllib.parse import urlparse, urlunparse
@@ -83,7 +84,8 @@ from packages.telegram_ui import (
     set_bot_commands_via_bot_api,
     set_bot_commands_menu_button_via_bot_api,
 )
-from packages.url_utils import normalizar_url, preparar_url_download_generico
+from packages.url_utils import normalizar_url, preparar_url_download_generico, is_facebook_url
+from apps.telegram_bot.facebook import fetch_public_post, FacebookAccessRestricted, ACCESS_NOTICE, UNAVAILABLE_NOTICE
 from apps.telegram_bot.downloaders import (
     limite_duracao_filter,
     FORMATO_MP4_H264 as _FORMATO_MP4_H264,
@@ -91,6 +93,9 @@ from apps.telegram_bot.downloaders import (
     baixar_url_limitado as _baixar_url_limitado,
     video_exige_confirmacao as _video_exige_confirmacao,
     DownloadCancelled,
+    ACTIVE_DIRECTORIES,
+    release_job,
+    managed_downloads,
 )
 from apps.telegram_bot.duplicates import normalizar_link_social
 from apps.telegram_bot.instagram import (
@@ -253,6 +258,7 @@ _uso_bloq = defaultdict(list)  # admin_id -> [timestamps dos blocks aplicados ho
 _ultimo_link_por_usuario = {}  # user_id -> {"url_norm": str, "url_raw": str, "timestamp": float}
 _bloqueios_por_link = defaultdict(set)  # user_id -> set de url_norms que já causaram bloqueio
 _downloads_cancelaveis = {}  # msg_id -> (threading.Event, user_id)
+_long_requests = {}
 
 # -----------------------------------------
 # LOGGING
@@ -364,12 +370,13 @@ async def encurtar_url(url: str) -> str:
 _filtro_duracao = limite_duracao_filter(LIMITE_DURACAO)
 
 async def avisar_video_longo(msg_espera, url, usuario, message):
-    texto_aviso = erro_aleatorio(ERROS_VIDEO_LONGO, min=LIMITE_DURACAO // 60)
-    texto_aviso += "\n\n⚠️ Tem certeza que quer baixar essa merda gigante? Pode demorar pra caralho e bugar o bot."
+    token = uuid.uuid4().hex
+    _long_requests[token] = (url, usuario, message, time.monotonic())
+    texto_aviso = '⏱️ Vídeo com mais de 10 minutos. Deseja continuar o download?'
 
     botoes = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Sim, baixa essa porra", callback_data=f"forcelong_{msg_espera.id}")],
-        [InlineKeyboardButton("❌ Não, foda-se", callback_data=f"cancellong_{msg_espera.id}")]
+        [InlineKeyboardButton("✅ Baixar", callback_data=f"forcelong_{token}")],
+        [InlineKeyboardButton("❌ Cancelar", callback_data=f"cancellong_{token}")]
     ])
 
     await msg_espera.edit_text(texto_aviso, reply_markup=botoes)
@@ -380,9 +387,10 @@ async def _baixar_com_cancelamento(url, ydl_opts, msg_espera, message):
     """Executa yt-dlp com um botão que interrompe o download em andamento."""
     cancel_event = threading.Event()
     user_id = getattr(getattr(message, "from_user", None), "id", None)
-    _downloads_cancelaveis[msg_espera.id] = (cancel_event, user_id)
+    token = uuid.uuid4().hex
+    _downloads_cancelaveis[token] = (cancel_event, user_id, message.chat.id)
     botoes = InlineKeyboardMarkup([[
-        InlineKeyboardButton("🛑 Cancelar download", callback_data=f"canceldownload_{msg_espera.id}")
+        InlineKeyboardButton("🛑 Cancelar download", callback_data=f"canceldownload_{token}")
     ]])
     try:
         await msg_espera.edit_text("⬇️ Preparando download...", reply_markup=botoes)
@@ -391,7 +399,7 @@ async def _baixar_com_cancelamento(url, ydl_opts, msg_espera, message):
             cancel_event=cancel_event, reply_markup=botoes,
         )
     finally:
-        _downloads_cancelaveis.pop(msg_espera.id, None)
+        _downloads_cancelaveis.pop(token, None)
 
 def _foi_pulado_por_duracao(item: dict) -> bool:
     return _video_exige_confirmacao(item.get('duration'), LIMITE_DURACAO)
@@ -482,6 +490,7 @@ async def _enviar_album_com_progresso(client, message, lote, msg_espera):
             pass
 
 
+@managed_downloads
 async def extrair_e_enviar_midia(client, message, url, usuario, msg_espera, force_long=False):
     """Motor de download genérico. Retorna True se obteve sucesso."""
     global DOWNLOAD_COUNT, _fila_espera
@@ -499,6 +508,7 @@ async def extrair_e_enviar_midia(client, message, url, usuario, msg_espera, forc
             async with _fila_lock:
                 _fila_espera -= 1
         for tentativa in range(1, MAX_RETRIES + 1):
+            info = None
             try:
                 if tentativa > 1:
                     await msg_espera.edit_text(f"🔄 Tentativa {tentativa}/{MAX_RETRIES}...")
@@ -548,15 +558,6 @@ async def extrair_e_enviar_midia(client, message, url, usuario, msg_espera, forc
                     if not path:
                         path = item.get('filepath')
                         if not path or not os.path.exists(path):
-                            # Fallback: procura o arquivo na pasta de downloads pelo ID do vídeo
-                            video_id = item.get('id', '')
-                            if video_id:
-                                import glob
-                                padrao = str(PASTA_DOWNLOADS / f"{video_id}.*")
-                                encontrados = glob.glob(padrao)
-                                if encontrados:
-                                    path = encontrados[0]
-                                    log.info(f"Fallback: arquivo encontrado via glob: {path}")
                             if not path or not os.path.exists(path):
                                 # Verifica se foi filtrado por tamanho antes de dar erro
                                 filesize = item.get('filesize') or item.get('filesize_approx')
@@ -617,6 +618,12 @@ async def extrair_e_enviar_midia(client, message, url, usuario, msg_espera, forc
                 return False
             except yt_dlp.utils.DownloadError as e:
                 erro_str = str(e)
+                if is_facebook_url(url) and any(marker in erro_str.lower() for marker in (
+                    'you must log in', 'login required', 'requires login', 'private video',
+                    'private facebook', 'only available for registered users',
+                )):
+                    await msg_espera.edit_text(ACCESS_NOTICE)
+                    return False
                 # Erros de limite não fazem sentido tentar de novo
                 if "Video tem" in erro_str:
                     await avisar_video_longo(msg_espera, url, usuario, message)
@@ -629,7 +636,7 @@ async def extrair_e_enviar_midia(client, message, url, usuario, msg_espera, forc
                 if tentativa >= MAX_RETRIES:
                     log.error(f"Erro yt-dlp (após {MAX_RETRIES} tentativas): {e}")
                     try:
-                        await msg_espera.edit_text(erro_aleatorio(ERROS_EXTRACAO))
+                        await msg_espera.edit_text(UNAVAILABLE_NOTICE if is_facebook_url(url) else erro_aleatorio(ERROS_EXTRACAO))
                         _retry_cache[msg_espera.id] = (url, usuario, message.chat.id, message.id)
                     except Exception:
                         pass
@@ -638,12 +645,13 @@ async def extrair_e_enviar_midia(client, message, url, usuario, msg_espera, forc
                 if tentativa >= MAX_RETRIES:
                     log.error(f"Erro Motor (após {MAX_RETRIES} tentativas): {e}")
                     try:
-                        await msg_espera.edit_text(erro_aleatorio(ERROS_INESPERADO))
+                        await msg_espera.edit_text(UNAVAILABLE_NOTICE if is_facebook_url(url) else erro_aleatorio(ERROS_INESPERADO))
                         _retry_cache[msg_espera.id] = (url, usuario, message.chat.id, message.id)
                     except Exception:
                         pass
                     return False
             finally:
+                release_job(info)
                 for p in arquivos_para_deletar:
                     if os.path.exists(p):
                         os.remove(p)
@@ -1574,55 +1582,43 @@ async def avisar_admin_cookies(client, motivo="expirados"):
         except Exception as e:
             log.error(f"Falha ao avisar admin sobre cookies: {e}")
 
-@app.on_callback_query(filters.regex(r"^(forcelong|cancellong)_(\d+)"))
+@app.on_callback_query(filters.regex(r"^(forcelong|cancellong)_([a-f0-9]{32})$"))
 async def callback_long_video(client, callback_query):
     action = callback_query.matches[0].group(1)
-    msg_id = int(callback_query.matches[0].group(2))
-    
-    if msg_id not in _retry_cache:
-        await callback_query.answer("Essa mensagem já expirou ou foi processada.", show_alert=True)
-        try:
-            await callback_query.message.edit_text("❌ Ação expirada.")
-        except Exception:
-            pass
+    token = callback_query.matches[0].group(2)
+    request = _long_requests.get(token)
+    if request is None:
+        await callback_query.answer('Confirmação expirada.', show_alert=True)
         return
-        
-    url, usuario_orig, chat_id, original_msg_id = _retry_cache.pop(msg_id)
-    
-    if action == "cancellong":
-        await callback_query.answer("Download cancelado.")
-        try:
-            await callback_query.message.edit_text(f"🛑 O usuário arregou e cancelou o download do vídeo longo.")
-        except Exception:
-            pass
+    url, usuario_orig, original_message, created = request
+    owner = getattr(original_message.from_user, 'id', None)
+    if owner is None or callback_query.from_user.id != owner or callback_query.message.chat.id != original_message.chat.id:
+        await callback_query.answer('Só quem solicitou pode confirmar ou cancelar.', show_alert=True)
         return
-        
-    if action == "forcelong":
-        await callback_query.answer("Forçando download...")
-        try:
-            msg_espera = await callback_query.message.edit_text("⏳ *Forçando o download do vídeo gigante...*")
-        except Exception:
-            msg_espera = callback_query.message
-            
-        try:
-            original_message = await client.get_messages(chat_id, original_msg_id)
-        except Exception:
-            original_message = callback_query.message
-            
-        await extrair_e_enviar_midia(client, original_message, url, usuario_orig, msg_espera, force_long=True)
+    _long_requests.pop(token, None)
+    if time.monotonic() - created > 900:
+        await callback_query.answer('Confirmação expirada.', show_alert=True)
+        return
+    await callback_query.answer()
+    if action == 'cancellong':
+        await callback_query.message.edit_text('🛑 Download cancelado.')
+        return
+    await extrair_e_enviar_midia(client, original_message, url, usuario_orig, callback_query.message, force_long=True)
+    return
 
 
-@app.on_callback_query(filters.regex(r"^canceldownload_(\d+)$"))
+
+@app.on_callback_query(filters.regex(r"^canceldownload_([a-f0-9]{32})$"))
 async def callback_cancelar_download(client, callback_query):
-    msg_id = int(callback_query.matches[0].group(1))
+    msg_id = callback_query.matches[0].group(1)
     download = _downloads_cancelaveis.get(msg_id)
     if not download:
         await callback_query.answer("Esse download já terminou.", show_alert=True)
         return
 
-    cancel_event, user_id = download
+    cancel_event, user_id, chat_id = download
     callback_user_id = getattr(getattr(callback_query, "from_user", None), "id", None)
-    if user_id is not None and callback_user_id != user_id:
+    if user_id is None or callback_user_id != user_id or callback_query.message.chat.id != chat_id:
         await callback_query.answer("Só quem iniciou o download pode cancelar.", show_alert=True)
         return
 
@@ -1639,12 +1635,19 @@ async def limpeza_periodica():
         await asyncio.sleep(1800)  # 30 minutos
         try:
             agora = time.time()
+            for token, request in list(_long_requests.items()):
+                if time.monotonic() - request[3] > 900:
+                    _long_requests.pop(token, None)
             removidos = 0
             for f in os.listdir(PASTA_DOWNLOADS):
                 caminho = PASTA_DOWNLOADS / f
+                if caminho.is_dir() and caminho.name.startswith('job_') and str(caminho.resolve()) not in ACTIVE_DIRECTORIES:
+                    if agora - caminho.stat().st_mtime > 86400:
+                        shutil.rmtree(caminho)
+                    continue
                 if caminho.is_file():
                     idade = agora - os.path.getmtime(caminho)
-                    if idade > 3600:  # Mais de 1 hora
+                    if idade > 86400:  # Conservative age for legacy flat files.
                         os.remove(caminho)
                         removidos += 1
             if removidos > 0:
@@ -1693,6 +1696,7 @@ async def limpeza_periodica():
 # -----------------------------------------
 # MÍDIA DE QUOTE
 # -----------------------------------------
+@managed_downloads
 async def enviar_midia_quote(client, message, qrt_info, match, msg_espera, usuario_orig):
     """Envia a mídia do tweet quoteado como mensagem separada."""
     midias = qrt_info.get('media_extended', [])
@@ -1719,6 +1723,8 @@ async def enviar_midia_quote(client, message, qrt_info, match, msg_espera, usuar
 
             duracao_s = m.get('duration_millis', 0) / 1000
             if duracao_s > LIMITE_DURACAO:
+                quote_status = await message.reply_text('⏱️ Vídeo longo na citação.')
+                await avisar_video_longo(quote_status, m['url'], usuario_orig, message)
                 continue
 
             video_url = m['url']
@@ -1838,6 +1844,7 @@ async def enviar_aviso_duplicado(client, message, info_original: dict, repetido_
 COMANDOS = set(command_names(SUPER_COMMANDS))
 
 @app.on_message(filters.text & ~filters.command(list(COMANDOS)))
+@managed_downloads
 async def processar_links(client, message):
     global DOWNLOAD_COUNT
     texto = message.text
@@ -2191,7 +2198,41 @@ async def processar_links(client, message):
             _processing_urls.pop(url_norm, None)
         return
 
-    # 3. YOUTUBE, TIKTOK, THREADS, PINTEREST E FACEBOOK (yt-dlp generico)
+    if url_raw and is_facebook_url(url_raw):
+        status = await message.reply_text('📘 Carregando publicação do Facebook...')
+        try:
+            try:
+                post = await fetch_public_post(await get_http_session(), url_raw)
+            except FacebookAccessRestricted:
+                await status.edit_text(ACCESS_NOTICE)
+                return
+            except (aiohttp.ClientError, ValueError, asyncio.TimeoutError) as exc:
+                log.info('Facebook: dados públicos indisponíveis: %s', type(exc).__name__)
+                post = None
+            delivered = False
+            if post:
+                if post['text']:
+                    for part in dividir_texto_longo(post['text']):
+                        await message.reply_text(part, parse_mode=None)
+                    delivered = True
+                for photo in post['photos'][:20]:
+                    await client.send_photo(message.chat.id, photo, reply_to_message_id=message.id)
+                    delivered = True
+            if not post or post['has_video']:
+                delivered_video = await extrair_e_enviar_midia(client, message, url_raw, usuario, status)
+                delivered = delivered or delivered_video
+            elif delivered:
+                await status.delete()
+            else:
+                await status.edit_text(UNAVAILABLE_NOTICE)
+            if delivered:
+                await asyncio.to_thread(db.registrar_link_e_checar, url_norm, message.chat.id, usuario, user_id)
+        finally:
+            async with _processing_lock:
+                _processing_urls.pop(url_norm, None)
+        return
+
+    # 3. YOUTUBE, TIKTOK, THREADS, PINTEREST (yt-dlp generico)
     if url_raw and any(d in url_raw for d in PLATAFORMAS_DOWNLOAD_GENERICO):
         url = preparar_url_download_generico(url_raw)
 
