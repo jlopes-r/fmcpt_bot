@@ -67,6 +67,9 @@ _OPCOES_SEGURAS = {
     "no_color": True,
     "quiet": True,
     "no_warnings": True,
+    # stdout belongs to the JSON protocol used by download_worker. Native
+    # progress output can prefix the hook's JSON and make valid results unreadable.
+    "noprogress": True,
     "merge_output_format": "mp4",
 }
 

@@ -64,6 +64,9 @@ class DownloadTests(unittest.IsolatedAsyncioTestCase):
 
 
 class MetadataTests(unittest.TestCase):
+    def test_safe_options_disable_native_progress_output(self):
+        self.assertTrue(dl._aplicar_opcoes_seguras({})['noprogress'])
+
     def test_facebook_ids_and_case_are_preserved(self):
         self.assertNotEqual(normalizar_link_social('https://facebook.com/watch/?v=1'), normalizar_link_social('https://facebook.com/watch/?v=2'))
 

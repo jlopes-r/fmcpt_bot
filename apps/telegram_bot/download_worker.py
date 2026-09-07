@@ -9,6 +9,8 @@ from apps.telegram_bot.downloaders import processar_com_fallback, limite_duracao
 def main():
     request = json.loads(sys.stdin.readline())
     opts = request['options']
+    # stdout is reserved for line-delimited JSON consumed by the parent.
+    opts['noprogress'] = True
     limit = opts.pop('_duration_limit', None)
     if limit:
         opts['match_filter'] = limite_duracao_filter(limit)
