@@ -1194,6 +1194,37 @@ async def _extract_via_api(shortcode: str, cookies: dict = None) -> dict | None:
     return None
 
 
+async def _extract_via_api_media_id(media_id: str, cookies: dict) -> dict | None:
+    """Extrai Story pela API autenticada usando o media_id ja conhecido."""
+    if not media_id or not cookies:
+        return None
+    try:
+        await _ig_wait_pacing()
+        headers = {**BROWSER_HEADERS, **IG_APP_HEADERS}
+        csrf = cookies.get('csrftoken', '')
+        if csrf:
+            headers['X-CSRFToken'] = csrf
+        headers['Cookie'] = _build_cookie_header(cookies)
+        api_url = f'https://i.instagram.com/api/v1/media/{media_id}/info/'
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+            resp = await client.get(api_url, headers=headers)
+        log.info("   Story API status: %d", resp.status_code)
+        if resp.status_code == 429:
+            _mark_ig_429()
+            return None
+        if _is_challenge_response(resp):
+            _mark_cookies_bad("Story API exigiu login/challenge")
+            return None
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        items = data.get('items') or []
+        return _parse_api_item(items[0]) if items else None
+    except Exception as e:
+        log.info("   Story API falhou: %s", str(e)[:200])
+        return None
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  Camada 2 — GraphQL com doc_id público
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1600,16 +1631,16 @@ async def _extract_via_highlights_api(highlight_id: str, cookies: dict = None) -
 async def download_instagram(
     url: str,
     cookie_path: str,
-    out_dir: str
+    out_dir: str,
+    *,
+    secondary_cookie_path: str = "",
 ) -> dict | None:
     """
-    Pipeline completo de download do Instagram v2.
+    Download autenticado com duas contas, em ordem deterministica.
 
-    Ordem de tentativa:
-      1. API Interna (i.instagram.com) — funciona p/ tudo, sem login
-      2. GraphQL (doc_id público) — bom para fotos/carrossel
-      3. Embed Scraping — extrai do HTML da página embed
-      4. yt-dlp — força bruta, bom para Reels/vídeos
+    Tenta somente a API interna com os cookies primarios e, se ela falhar,
+    repete com os cookies secundarios. Nao faz auto-login, GraphQL, embed ou
+    yt-dlp: a manutencao das duas sessoes fica totalmente explicita.
 
     Retorna dict com:
       - urls: lista de URLs diretas da CDN, OU
@@ -1617,140 +1648,54 @@ async def download_instagram(
       - type: 'photo' | 'video' | 'carousel'
       - title: caption/legenda
       - uploader: nome do autor
-      - _cookies_failed: True se falhou por cookies expirados (para o caller)
+      - _cookie_source: 'primary' ou 'secondary'
+      - _primary_cookie_failed: True quando a secundaria salvou o download
     """
     log.info("📷 Instagram Extractor v2: %s", url)
     shortcode = _get_shortcode(url)
 
-    # Carrega cookies para autenticar as requisições
-    cookies = _load_cookies_from_file(cookie_path)
-
-    # ── BUG ANTERIOR: quando _cookies_known_bad era True, pulávamos as camadas 1-3
-    #    direto pro yt-dlp. Mas os cookies são relidos do disco a cada chamada e o
-    #    sessionid pode estar válido — o flag costuma ser gravado por um rate-limit
-    #    temporário do Instagram, não por cookies expirados. Então SEMPRE tentamos
-    #    as camadas 1-3 com os cookies atuais antes de cair pro yt-dlp.
-    if not cookies_are_valid():
-        log.info(
-            "⚠️ Cookies marcados como inválidos antes (%s) — tentando camadas 1-3 mesmo assim",
-            get_cookie_failure_reason(),
-        )
-
-    # Destaques (highlights): só API interna com cookies; sem fallback produtivo
-    if _is_highlight(url):
-        highlight_id = _get_highlight_id(url)
-        log.info("⭐ Destaque detectado: id=%s", highlight_id)
-        result = await _extract_via_highlights_api(highlight_id, cookies)
-        if result:
-            log.info("✅ Destaque via Highlights API: %d URLs", len(result['urls']))
-            reset_cookies_bad()
-            return result
-        log.warning("❌ Todas as tentativas falharam para Destaque: %s", url)
-        return None
-
-    # Stories: tenta API primeiro (story_id = media_id), depois yt-dlp
-    if _is_story(url):
-        story_info = _get_story_info(url)
-        if story_info:
-            username, story_media_id = story_info
-            log.info("📖 Story detectado: @%s, media_id=%s", username, story_media_id)
-
-            # Camada 1: API Interna (funciona para stories com cookies válidos)
-            if cookies:
-                try:
-                    await _ig_wait_pacing()
-                    async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
-                        csrf = cookies.get('csrftoken', '')
-                        api_url = f'https://i.instagram.com/api/v1/media/{story_media_id}/info/'
-                        headers = {
-                            **BROWSER_HEADERS,
-                            **IG_APP_HEADERS,
-                        }
-                        if csrf:
-                            headers['X-CSRFToken'] = csrf
-                        headers['Cookie'] = _build_cookie_header(cookies)
-
-                        resp = await client.get(api_url, headers=headers)
-                        log.info("   Story API status: %d", resp.status_code)
-
-                        # Detectar challenge
-                        if _is_challenge_response(resp):
-                            log.warning("   🍪 Story API redirecionou para challenge")
-                            _mark_cookies_bad("Story API retornou challenge")
-                        elif resp.status_code == 200:
-                            try:
-                                data = resp.json()
-                            except (json.JSONDecodeError, ValueError):
-                                log.warning("   🍪 Story API body não é JSON")
-                                _mark_cookies_bad("Story API retornou HTML")
-                                data = None
-                            if data:
-                                items = data.get('items', [])
-                                if items:
-                                    result = _parse_api_item(items[0])
-                                    if result:
-                                        log.info("   ✅ Story via API: %d URLs", len(result['urls']))
-                                        reset_cookies_bad()  # sessão funcionou — flag era falso positivo
-                                        return result
-                                log.info("   API retornou 200 mas sem itens válidos para story")
-                        else:
-                            log.info("   Story API retornou %d", resp.status_code)
-                except Exception as e:
-                    log.info("   ❌ Story API falhou: %s", str(e)[:200])
-
-            # Camada 2: yt-dlp (fallback)
-            log.info("   Tentando yt-dlp para story...")
-            result = await _extract_via_ytdlp(url, cookie_path, out_dir)
-            if result:
-                return result
-
-        log.warning("❌ Todas as tentativas falharam para Story: %s", url)
-        return None
-
-    if not shortcode:
+    if not shortcode and not _is_highlight(url) and not _is_story(url):
         log.warning("❌ Não foi possível extrair shortcode de: %s", url)
         return None
 
-    # ── Tentativa 1: com cookies existentes ──
-    result = await _try_all_layers(shortcode, cookies, url)
-    if result:
-        reset_cookies_bad()  # as camadas funcionaram — cookies estão OK
-        return result
+    cookie_slots = (
+        ("primary", cookie_path),
+        ("secondary", secondary_cookie_path),
+    )
+    primary_failed = False
+    for slot, path in cookie_slots:
+        if not path or not os.path.exists(path):
+            log.warning("🍪 Cookies Instagram %s nao configurados: %s", slot, path or "(vazio)")
+            if slot == "primary":
+                primary_failed = True
+            continue
+        cookies = _load_cookies_from_file(path)
+        if not cookies:
+            log.warning("🍪 Cookies Instagram %s vazios ou invalidos", slot)
+            if slot == "primary":
+                primary_failed = True
+            continue
 
-    # ── Se challenge/cooldown foi detectado, não tenta auto-login ──
-    # Auto-login durante cooldown de 429 tambem pega o bloqueio e ainda marca
-    # a conta com sinal de automacao. So tentamos renovar fora do cooldown.
-    if _cookies_known_bad or _ig_429_recente():
-        log.info("⏩ Challenge/429 detectado — pulando auto-login, direto para yt-dlp")
-    elif os.getenv('IG_USERNAME') and os.getenv('IG_PASSWORD'):
-        # ── Tentativa 2: auto-login para gerar cookies frescos ──
-        log.info("🔄 Cookies falharam. Tentando auto-login para gerar cookies frescos...")
-        loop = asyncio.get_running_loop()
-        fresh_cookies = await loop.run_in_executor(
-            None, _auto_login_and_save_cookies, cookie_path
-        )
-        if fresh_cookies:
-            reset_cookies_bad()  # Auto-login gerou cookies novos
-            result = await _try_all_layers(shortcode, fresh_cookies, url)
-            if result:
-                reset_cookies_bad()
-                return result
-    else:
-        log.info("🔑 Auto-login não disponível (IG_USERNAME/IG_PASSWORD não configurados)")
+        log.info("🍪 Tentando conta Instagram %s", slot)
+        if _is_highlight(url):
+            result = await _extract_via_highlights_api(_get_highlight_id(url), cookies)
+        elif _is_story(url):
+            story_info = _get_story_info(url)
+            result = await _extract_via_api_media_id(story_info[1], cookies) if story_info else None
+        else:
+            result = await _extract_via_api(shortcode, cookies)
 
-    # ── Camada Final: yt-dlp (força bruta) ──
-    result = await _extract_via_ytdlp(url, cookie_path, out_dir)
-    if result:
-        if not result.get('title'):
-            post_meta = await _fetch_post_meta_via_oembed(shortcode, _get_embed_path(url))
-            if post_meta and post_meta.get('title'):
-                result['title'] = post_meta['title']
-                if post_meta.get('uploader') and (not result.get('uploader') or result.get('uploader') == 'Autor'):
-                    result['uploader'] = post_meta['uploader']
-        log.info("✅ Instagram download via yt-dlp: %s", url)
-        return result
+        if _is_acceptable_result_for_url(result, url):
+            result['_cookie_source'] = slot
+            result['_primary_cookie_failed'] = primary_failed
+            reset_cookies_bad()
+            log.info("✅ Instagram via conta %s: %s", slot, url)
+            return result
+        if slot == "primary":
+            primary_failed = True
+            log.warning("⚠️ Conta Instagram primaria falhou; tentando secundaria")
 
-    log.warning("❌ Todas as tentativas falharam para: %s", url)
+    log.warning("❌ As duas contas de cookies falharam para: %s", url)
     return None
 
 

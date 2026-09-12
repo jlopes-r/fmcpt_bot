@@ -72,6 +72,7 @@ from packages.config import (
     get_bool_env,
     get_int_env,
     instagram_cookie_path,
+    instagram_secondary_cookie_path,
     load_environment,
     mini_app_url,
     parse_chat_ids,
@@ -142,6 +143,7 @@ PROCESSING_URL_TTL = max(60, get_int_env("PROCESSING_URL_TTL", 2 * 60 * 60))
 AUDIO_BOCA_LEITE_DIR = os.path.join(RAIZ, "assets", "audios")
 PASTA_DOWNLOADS = DOWNLOADS_DIR
 COOKIE_PATH = str(instagram_cookie_path())
+SECONDARY_COOKIE_PATH = str(instagram_secondary_cookie_path())
 MINI_APP_URL = mini_app_url()
 
 API_ID = get_int_env("API_ID")
@@ -677,7 +679,9 @@ async def processar_instagram(client, message, url, usuario, msg_espera, link_du
     """Handler dedicado para Instagram com cookies + embed fallback. Retorna True se obteve sucesso."""
     global DOWNLOAD_COUNT
     arquivos_para_deletar = []
-    for tentativa in range(1, MAX_RETRIES + 1):
+    # O extrator ja faz a sequencia completa: conta primaria e depois
+    # secundaria. Nao repete as duas sessoes na mesma solicitacao.
+    for tentativa in range(1, 2):
         try:
             if tentativa > 1:
                 await msg_espera.edit_text(f"🔄 Instagram: Tentativa {tentativa}/{MAX_RETRIES}...")
@@ -685,10 +689,15 @@ async def processar_instagram(client, message, url, usuario, msg_espera, link_du
                 # Se o IP esta em cooldown de 429, espera sair antes de re-tentar.
                 await aguardar_cooldown_429()
 
-            result = await download_instagram(url, COOKIE_PATH, str(PASTA_DOWNLOADS))
+            result = await download_instagram(
+                url,
+                COOKIE_PATH,
+                str(PASTA_DOWNLOADS),
+                secondary_cookie_path=SECONDARY_COOKIE_PATH,
+            )
 
             if not result:
-                if tentativa >= MAX_RETRIES:
+                if tentativa >= 1:
                     msg_base = erro_aleatorio(ERROS_INSTAGRAM)
                     if cookies_known_bad:
                         motivo = get_cookie_failure_reason()
@@ -706,6 +715,12 @@ async def processar_instagram(client, message, url, usuario, msg_espera, link_du
                     _retry_cache[msg_espera.id] = (url, usuario, message.chat.id, message.id)
                     return False
                 continue
+
+            if result.get('_primary_cookie_failed') and result.get('_cookie_source') == 'secondary':
+                await avisar_admin_cookies(
+                    client,
+                    "com falha; a conta secundaria assumiu o download. Verifique a sessao principal",
+                )
 
             legenda_base = limpar_texto(result.get('title', ''))
             autor = result.get('uploader', 'Autor')
@@ -834,8 +849,8 @@ async def processar_instagram(client, message, url, usuario, msg_espera, link_du
                 raise Exception("Nenhum arquivo válido encontrado ou baixado.")
 
         except Exception as e:
-            if tentativa >= MAX_RETRIES:
-                log.error(f"Erro Instagram handler (após {MAX_RETRIES} tentativas): {e}")
+            if tentativa >= 1:
+                log.error("Erro Instagram handler: %s", e)
                 msg_base = erro_aleatorio(ERROS_INSTAGRAM)
                 
                 if cookies_known_bad:

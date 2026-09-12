@@ -62,5 +62,12 @@ def instagram_cookie_path() -> Path:
     return Path(os.getenv("IG_COOKIE_PATH", DATA_DIR / "instagram_cookies.txt"))
 
 
+def instagram_secondary_cookie_path() -> Path:
+    return Path(os.getenv(
+        "IG_SECONDARY_COOKIE_PATH",
+        DATA_DIR / "instagram_cookies_secondary.txt",
+    ))
+
+
 def mini_app_url() -> str:
     return os.getenv("MINI_APP_URL", "").strip()

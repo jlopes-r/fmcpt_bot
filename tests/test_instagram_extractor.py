@@ -415,57 +415,7 @@ class InstagramExtractorTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(ig._cookies_known_bad)
         self.addCleanup(ig.reset_cookies_bad)
 
-    async def test_reel_thumbnail_does_not_stop_video_fallback(self):
-        reel_url = "https://www.instagram.com/reel/DNBCJoiOp9J/"
-        thumb_result = {
-            "urls": ["https://example.com/thumb.jpg"],
-            "type": "photo",
-            "title": "",
-            "uploader": "Autor",
-        }
-        video_result = {
-            "files": ["C:/tmp/reel.mp4"],
-            "type": "video",
-            "title": "Video",
-            "uploader": "Autor",
-        }
-
-        with (
-            patch.object(ig, "_load_cookies_from_file", return_value={}),
-            patch.object(ig, "_extract_via_api", new=AsyncMock(return_value=None)),
-            patch.object(ig, "_extract_via_graphql", new=AsyncMock(return_value=None)),
-            patch.object(ig, "_extract_via_embed", new=AsyncMock(return_value=thumb_result)) as embed,
-            patch.object(ig, "_extract_via_ytdlp", new=AsyncMock(return_value=video_result)) as ytdlp,
-        ):
-            result = await ig.download_instagram(reel_url, "", "C:/tmp")
-
-        self.assertEqual(result, video_result)
-        embed.assert_awaited_once_with("DNBCJoiOp9J", {}, "reel")
-        ytdlp.assert_awaited_once_with(reel_url, "", "C:/tmp")
-
-    async def test_post_photo_can_return_embed_result(self):
-        post_url = "https://www.instagram.com/p/ABC123/"
-        photo_result = {
-            "urls": ["https://example.com/photo.jpg"],
-            "type": "photo",
-            "title": "",
-            "uploader": "Autor",
-        }
-
-        with (
-            patch.object(ig, "_load_cookies_from_file", return_value={}),
-            patch.object(ig, "_extract_via_api", new=AsyncMock(return_value=None)),
-            patch.object(ig, "_extract_via_graphql", new=AsyncMock(return_value=None)),
-            patch.object(ig, "_extract_via_embed", new=AsyncMock(return_value=photo_result)) as embed,
-            patch.object(ig, "_extract_via_ytdlp", new=AsyncMock()) as ytdlp,
-        ):
-            result = await ig.download_instagram(post_url, "", "C:/tmp")
-
-        self.assertEqual(result, photo_result)
-        embed.assert_awaited_once_with("ABC123", {}, "p")
-        ytdlp.assert_not_awaited()
-
-    async def test_cookies_flagged_bad_still_attempts_layers(self):
+    async def test_primary_cookie_success_does_not_try_secondary(self):
         reel_url = "https://www.instagram.com/reel/DNBCJoiOp9J/"
         video_result = {
             "urls": ["https://example.com/reel.mp4"],
@@ -474,72 +424,62 @@ class InstagramExtractorTest(unittest.IsolatedAsyncioTestCase):
             "uploader": "Autor",
         }
 
-        ig._cookies_known_bad = True
-        ig._cookies_bad_since = time.time()
-        self.addCleanup(ig.reset_cookies_bad)
+        with (
+            patch.object(ig.os.path, "exists", return_value=True),
+            patch.object(ig, "_load_cookies_from_file", return_value={"sessionid": "abc"}),
+            patch.object(ig, "_extract_via_api", new=AsyncMock(return_value=video_result)) as api,
+        ):
+            result = await ig.download_instagram(
+                reel_url, "primary.txt", "C:/tmp", secondary_cookie_path="secondary.txt"
+            )
+
+        self.assertEqual(result["_cookie_source"], "primary")
+        self.assertFalse(result["_primary_cookie_failed"])
+        self.assertEqual(api.await_count, 1)
+
+    async def test_secondary_cookie_is_used_after_primary_failure(self):
+        reel_url = "https://www.instagram.com/reel/DNBCJoiOp9J/"
+        video_result = {
+            "urls": ["https://example.com/reel.mp4"],
+            "type": "video",
+            "title": "Video",
+            "uploader": "Autor",
+        }
 
         with (
-            patch.object(ig, "_load_cookies_from_file", return_value={"sessionid": "abc"}),
-            patch.object(ig, "_extract_via_api", new=AsyncMock(return_value=video_result)),
-            patch.object(ig, "_extract_via_graphql", new=AsyncMock(return_value=None)),
-            patch.object(ig, "_extract_via_embed", new=AsyncMock(return_value=None)),
+            patch.object(ig.os.path, "exists", return_value=True),
+            patch.object(ig, "_load_cookies_from_file", side_effect=[
+                {"sessionid": "primary"}, {"sessionid": "secondary"},
+            ]),
+            patch.object(ig, "_extract_via_api", new=AsyncMock(side_effect=[None, video_result])) as api,
+        ):
+            result = await ig.download_instagram(
+                reel_url, "primary.txt", "C:/tmp", secondary_cookie_path="secondary.txt"
+            )
+
+        self.assertEqual(result["_cookie_source"], "secondary")
+        self.assertTrue(result["_primary_cookie_failed"])
+        self.assertEqual(api.await_count, 2)
+
+    async def test_no_anonymous_fallback_when_both_accounts_fail(self):
+        reel_url = "https://www.instagram.com/reel/DNBCJoiOp9J/"
+        with (
+            patch.object(ig.os.path, "exists", return_value=True),
+            patch.object(ig, "_load_cookies_from_file", return_value={"sessionid": "x"}),
+            patch.object(ig, "_extract_via_api", new=AsyncMock(return_value=None)) as api,
+            patch.object(ig, "_extract_via_graphql", new=AsyncMock()) as graphql,
+            patch.object(ig, "_extract_via_embed", new=AsyncMock()) as embed,
             patch.object(ig, "_extract_via_ytdlp", new=AsyncMock()) as ytdlp,
         ):
-            result = await ig.download_instagram(reel_url, "C:/tmp/cookies.txt", "C:/tmp")
+            result = await ig.download_instagram(
+                reel_url, "primary.txt", "C:/tmp", secondary_cookie_path="secondary.txt"
+            )
 
-        self.assertEqual(result, video_result)
+        self.assertIsNone(result)
+        self.assertEqual(api.await_count, 2)
+        graphql.assert_not_awaited()
+        embed.assert_not_awaited()
         ytdlp.assert_not_awaited()
-        self.assertFalse(ig._cookies_known_bad)
-
-    async def test_reel_ytdlp_empty_caption_is_enriched_via_oembed(self):
-        reel_url = "https://www.instagram.com/reel/DNBCJoiOp9J/"
-        video_result = {
-            "files": ["C:/tmp/reel.mp4"],
-            "type": "video",
-            "title": "",
-            "uploader": "Autor",
-        }
-
-        with (
-            patch.object(ig, "_load_cookies_from_file", return_value={}),
-            patch.object(ig, "_extract_via_api", new=AsyncMock(return_value=None)),
-            patch.object(ig, "_extract_via_graphql", new=AsyncMock(return_value=None)),
-            patch.object(ig, "_extract_via_embed", new=AsyncMock(return_value=None)),
-            patch.object(ig, "_extract_via_ytdlp", new=AsyncMock(return_value=video_result)) as ytdlp,
-            patch.object(ig, "_fetch_post_meta_via_oembed", new=AsyncMock(return_value={
-                'title': '🐺 lobo na rua',
-                'uploader': 'gustramontini',
-            })) as oembed,
-        ):
-            result = await ig.download_instagram(reel_url, "", "C:/tmp")
-
-        self.assertEqual(result["title"], '🐺 lobo na rua')
-        self.assertEqual(result["uploader"], "gustramontini")
-        self.assertEqual(result["files"], ["C:/tmp/reel.mp4"])
-        ytdlp.assert_awaited_once_with(reel_url, "", "C:/tmp")
-        oembed.assert_awaited_once_with("DNBCJoiOp9J", "reel")
-
-    async def test_reel_with_caption_does_not_call_oembed(self):
-        reel_url = "https://www.instagram.com/reel/DNBCJoiOp9J/"
-        video_result = {
-            "files": ["C:/tmp/reel.mp4"],
-            "type": "video",
-            "title": "Legenda ja presente",
-            "uploader": "Autor",
-        }
-
-        with (
-            patch.object(ig, "_load_cookies_from_file", return_value={}),
-            patch.object(ig, "_extract_via_api", new=AsyncMock(return_value=None)),
-            patch.object(ig, "_extract_via_graphql", new=AsyncMock(return_value=None)),
-            patch.object(ig, "_extract_via_embed", new=AsyncMock(return_value=None)),
-            patch.object(ig, "_extract_via_ytdlp", new=AsyncMock(return_value=video_result)),
-            patch.object(ig, "_fetch_post_meta_via_oembed", new=AsyncMock()) as oembed,
-        ):
-            result = await ig.download_instagram(reel_url, "", "C:/tmp")
-
-        self.assertEqual(result["title"], "Legenda ja presente")
-        oembed.assert_not_awaited()
 
 
 if __name__ == "__main__":
