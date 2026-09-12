@@ -505,6 +505,17 @@ async def validate_cookie_health(cookie_path: str) -> dict:
             text = resp.text or ''
             body_low = text[:3000].lower()
 
+            # Um 429 pode terminar numa URL de login por causa do redirect,
+            # mas continua sendo limite temporario do IP, nao prova de sessao
+            # invalida. Classifique antes de procurar challenge na URL final.
+            if resp.status_code == 429:
+                _mark_ig_429()
+                return {
+                    "valid": False,
+                    "rate_limited": True,
+                    "reason": "Instagram limitou requisicoes (status 429) — tente novamente mais tarde",
+                }
+
             # Sinais claros de sessão inválida / bloqueio
             if _is_challenge_response(resp) or any(
                 kw in body_low for kw in ('login_required', 'checkpoint_required', 'challenge_required')
@@ -528,7 +539,7 @@ async def validate_cookie_health(cookie_path: str) -> dict:
                 _mark_cookies_bad("Validação real: status %d do Instagram" % resp.status_code)
                 return {"valid": False, "reason": f"Instagram rejeitou a sessão (status {resp.status_code})"}
 
-            # 429 = rate-limit transitório — não marca cookies como ruins
+            # Outros 5xx/limites transitorios nao marcam cookies como ruins.
             _mark_ig_429()
             return {"valid": False, "reason": f"Instagram limitou requisições (status {resp.status_code}) — tente de novo em instantes"}
     except Exception as e:

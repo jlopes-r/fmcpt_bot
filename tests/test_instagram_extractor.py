@@ -415,6 +415,20 @@ class InstagramExtractorTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(ig._cookies_known_bad)
         self.addCleanup(ig.reset_cookies_bad)
 
+    async def test_validate_cookie_health_does_not_invalidate_on_429(self):
+        ig.reset_cookies_bad()
+        self.addCleanup(ig.reset_cookies_bad)
+        with (
+            patch("apps.telegram_bot.instagram_extractor.os.path.exists", return_value=True),
+            patch.object(ig, "_load_cookies_from_file", return_value={"sessionid": "abc"}),
+            patch.object(ig.httpx, "AsyncClient", FakeRateLimitedProfileClient),
+        ):
+            result = await ig.validate_cookie_health("C:/tmp/cookies.txt")
+
+        self.assertFalse(result["valid"])
+        self.assertTrue(result["rate_limited"])
+        self.assertFalse(ig._cookies_known_bad)
+
     async def test_primary_cookie_success_does_not_try_secondary(self):
         reel_url = "https://www.instagram.com/reel/DNBCJoiOp9J/"
         video_result = {
