@@ -1,5 +1,6 @@
 import unittest
 import threading
+from pathlib import Path
 
 from apps.telegram_bot.downloaders import (
     DownloadCancelled,
@@ -10,6 +11,10 @@ from packages.url_utils import preparar_url_download_generico
 
 
 class SocialDownloadRoutingTest(unittest.TestCase):
+    def test_dependencia_de_impersonacao_do_tiktok_declarada(self):
+        requirements = (Path(__file__).parents[1] / "apps" / "telegram_bot" / "requirements.txt").read_text(encoding="utf-8")
+        self.assertIn("curl-cffi", requirements)
+
     def test_query_que_identifica_video_do_facebook_e_preservada(self):
         url = "https://www.facebook.com/video.php?v=123456&ref=sharing"
         self.assertEqual(preparar_url_download_generico(url), url)

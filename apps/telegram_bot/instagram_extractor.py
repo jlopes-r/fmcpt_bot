@@ -238,14 +238,14 @@ def _mark_cookies_bad(reason: str = "") -> None:
     if not _cookies_known_bad:
         _cookies_known_bad = True
         _cookies_bad_since = time.time()
-        _cookies_bad_reason = reason or "Cookies expirados ou inválidos"
+        _cookies_bad_reason = reason or "Sessao rejeitada ou verificacao exigida"
         log.warning("🍪❌ Cookies marcados como INVÁLIDOS: %s", _cookies_bad_reason)
 
 
 def get_cookie_failure_reason() -> str:
     """Retorna o motivo exato pelo qual os cookies falharam."""
     global _cookies_bad_reason
-    return _cookies_bad_reason or "Cookies expirados ou login necessário"
+    return _cookies_bad_reason or "Sessao rejeitada ou login/verificacao necessarios"
 
 
 def reset_cookies_bad() -> None:
@@ -1155,9 +1155,13 @@ async def _extract_via_api(shortcode: str, cookies: dict = None) -> dict | None:
                 log.info("   API resp status: %d (%s)", resp.status_code, host)
 
                 # ── Detectar challenge/login redirect ──
+                if resp.status_code == 429:
+                    log.warning("   ⏳ API (%s) limitada pelo Instagram (429); cookies nao foram invalidados", host)
+                    _mark_ig_429()
+                    return None
                 if _is_challenge_response(resp):
-                    log.warning("   🍪 API (%s) redirecionou para challenge — cookies expirados", host)
-                    _mark_cookies_bad("API Interna retornou challenge")
+                    log.warning("   🍪 API (%s) exigiu login/challenge; a validade dos cookies nao pode ser confirmada", host)
+                    _mark_cookies_bad("API Interna exigiu login/challenge")
                     return None
 
                 if resp.status_code == 200:
@@ -1240,9 +1244,13 @@ async def _extract_via_graphql(shortcode: str, cookies: dict = None) -> dict | N
                 log.info("   GraphQL doc_id=%s → status=%d", doc_id, resp.status_code)
 
                 # ── Detectar challenge/login redirect ──
+                if resp.status_code == 429:
+                    log.warning("   ⏳ GraphQL limitado pelo Instagram (429); cookies nao foram invalidados")
+                    _mark_ig_429()
+                    return None
                 if _is_challenge_response(resp):
-                    log.warning("   🍪 GraphQL redirecionou para challenge — cookies expirados")
-                    _mark_cookies_bad("GraphQL retornou challenge")
+                    log.warning("   🍪 GraphQL exigiu login/challenge; a validade dos cookies nao pode ser confirmada")
+                    _mark_cookies_bad("GraphQL exigiu login/challenge")
                     return None
 
                 if resp.status_code == 200:
@@ -1292,9 +1300,13 @@ async def _extract_via_embed(shortcode: str, cookies: dict = None, embed_path: s
             log.info("   Embed status: %d, body length: %d", resp.status_code, len(resp.text))
 
             # ── Detectar challenge/login redirect ──
+            if resp.status_code == 429:
+                log.warning("   ⏳ Embed limitado pelo Instagram (429); cookies nao foram invalidados")
+                _mark_ig_429()
+                return None
             if _is_challenge_response(resp):
-                log.warning("   🍪 Embed redirecionou para challenge — cookies expirados")
-                _mark_cookies_bad("Embed retornou challenge")
+                log.warning("   🍪 Embed exigiu login/challenge; a validade dos cookies nao pode ser confirmada")
+                _mark_cookies_bad("Embed exigiu login/challenge")
                 return None
 
             if resp.status_code != 200:

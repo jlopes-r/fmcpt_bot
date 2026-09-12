@@ -228,6 +228,45 @@ class DeteccaoConservadoraTest(unittest.TestCase):
         self.assertTrue(traduzir_com_detalhes("今天的天气非常晴朗", idioma_informado="zh")["foi_traduzido"])
         mock_gt.assert_called_once_with(source="zh-CN", target="pt")
 
+    @patch("apps.telegram_bot.translator.GoogleTranslator")
+    @patch("apps.telegram_bot.translator._detectar_idioma", return_value="zh")
+    def test_codigo_chines_semuon_regiao_compativel(self, mock_detect, mock_gt):
+        mock_gt.return_value.translate.return_value = "O tempo está bom"
+        self.assertTrue(traduzir_com_detalhes("今天的天气非常晴朗")["foi_traduzido"])
+        mock_gt.assert_called_once_with(source="zh-CN", target="pt")
+
+    @patch("apps.telegram_bot.translator.GoogleTranslator")
+    @patch("apps.telegram_bot.translator._detectar_idioma", return_value=None)
+    def test_metadata_incoerente_nao_traduz_texto_longo(self, mock_detect, mock_gt):
+        texto = "Sydney Sweeney surge em publicidade para casa de apostas."
+        self.assertFalse(traduzir_com_detalhes(texto, idioma_informado="es")["foi_traduzido"])
+        mock_gt.assert_not_called()
+
+    @patch("apps.telegram_bot.translator.GoogleTranslator")
+    @patch("apps.telegram_bot.translator._detectar_idioma", return_value="zh")
+    def test_codigo_chines_sem_regiao_compativel_com_tradutor(self, mock_detect, mock_gt):
+        mock_gt.return_value.translate.return_value = "Ola"
+        self.assertTrue(traduzir_com_detalhes("你好世界今天天气很好")["foi_traduzido"])
+        mock_gt.assert_called_once_with(source="zh-CN", target="pt")
+
+    @patch("apps.telegram_bot.translator.GoogleTranslator")
+    @patch("apps.telegram_bot.translator._detectar_idioma", return_value=None)
+    def test_metadata_incoerente_nao_traduz_texto_longo(self, mock_detect, mock_gt):
+        texto = "Sydney Sweeney surge em publicidade para casa de apostas."
+        self.assertFalse(traduzir_com_detalhes(texto, idioma_informado="es")["foi_traduzido"])
+        mock_gt.assert_not_called()
+
+    @patch("apps.telegram_bot.translator.MyMemoryTranslator")
+    @patch("apps.telegram_bot.translator.time.sleep")
+    @patch("apps.telegram_bot.translator.GoogleTranslator")
+    @patch("apps.telegram_bot.translator._detectar_idioma", return_value="es")
+    def test_fallback_mymemory_apos_google_falhar(self, mock_detect, mock_google, mock_sleep, mock_memory):
+        mock_google.return_value.translate.side_effect = RuntimeError("indisponivel")
+        mock_memory.return_value.translate.return_value = "Confira esta atualizacao"
+        resultado = traduzir_com_detalhes("Mira esta actualizacion de nuestro equipo")
+        self.assertTrue(resultado["foi_traduzido"])
+        mock_memory.assert_called_once_with(source="es", target="pt-BR")
+
 
 class PareceErroTraducaoTest(unittest.TestCase):
     def test_detecta_pagina_de_erro_http(self):

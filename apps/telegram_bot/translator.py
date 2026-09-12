@@ -6,9 +6,10 @@ from collections import Counter
 from langdetect import detect_langs, DetectorFactory
 
 try:
-    from deep_translator import GoogleTranslator
+    from deep_translator import GoogleTranslator, MyMemoryTranslator
 except Exception:  # pragma: no cover
     GoogleTranslator = None
+    MyMemoryTranslator = None
 
 log = logging.getLogger(__name__)
 
@@ -37,6 +38,15 @@ CONFIANCA_MINIMA = 0.95
 MARGEM_MINIMA = 0.25
 MIN_LETRAS_LATINAS = 20
 MIN_PALAVRAS_LATINAS = 4
+
+# MyMemory usa variantes regionais para alguns idiomas. Ele serve apenas como
+# fallback quando o endpoint gratuito do Google usado pelo deep-translator
+# estiver indisponivel.
+_MYMEMORY_LANG = {
+    "zh": "zh-CN",
+    "he": "he-IL",
+    "pt": "pt-BR",
+}
 
 # Placeholder para entidades que NÃO devem ser traduzidas (@usuarios e emojis).
 # Antes de traduzir, trocamos essas entidades pelo placeholder; traduzimos só o
@@ -257,11 +267,23 @@ def traduzir_com_detalhes(
         log.debug(f"Tradução ignorada: texto parece ruído ({texto_limpo[:50]}...)")
         return resultado
 
-    idioma_detectado = _detectar_idioma(_texto_para_deteccao(texto_limpo))
+    texto_deteccao = _texto_para_deteccao(texto_limpo)
+    idioma_detectado = _detectar_idioma(texto_deteccao)
     if not idioma_detectado and not idioma_fonte:
         # Sem metadado nem detecção confiável, não arrisca traduzir conteúdo
         # que pode já estar em português.
         return resultado
+    if not idioma_detectado and idioma_fonte:
+        letras = sum(c.isalpha() for c in texto_deteccao)
+        escrita_nao_latina = any(c.isalpha() and ord(c) > 0x024F for c in texto_deteccao)
+        # Metadados da fonte ajudam em frases realmente curtas. Em texto latino
+        # longo, uma abstencao do detector nao autoriza traduzir: o X as vezes
+        # informa um idioma errado inclusive para publicacoes em portugues.
+        if not escrita_nao_latina and (
+            letras >= MIN_LETRAS_LATINAS
+            and len(texto_deteccao.split()) >= MIN_PALAVRAS_LATINAS
+        ):
+            return resultado
     idioma = idioma_detectado or idioma_fonte
     if _normalizar_idioma(idioma) in (*IDIOMAS_SEM_TRADUCAO, _normalizar_idioma(alvo)):
         # PT (já é o alvo) e EN (usuário quer manter original) não são traduzidos.
@@ -277,12 +299,14 @@ def traduzir_com_detalhes(
     tokens_esperados = Counter(_PLACEHOLDER_RE.findall(texto_isolado))
 
     try:
-        origem_tradutor = {"zh-cn": "zh-CN", "zh-tw": "zh-TW", "he": "iw"}.get(idioma, idioma)
+        origem_tradutor = {"zh": "zh-CN", "zh-cn": "zh-CN", "zh-tw": "zh-TW", "he": "iw"}.get(idioma, idioma)
         tradutor = GoogleTranslator(source=origem_tradutor, target=alvo)
+        falha_google = False
         for tentativa in range(1, MAX_TENTATIVAS_TRADUCAO + 1):
             try:
                 traducao = tradutor.translate(texto_isolado)
             except Exception as e:
+                falha_google = True
                 log.warning(f"Falha na tradução automática (tentativa {tentativa}/{MAX_TENTATIVAS_TRADUCAO}): {e}")
                 traducao = None
 
@@ -301,6 +325,24 @@ def traduzir_com_detalhes(
                 espera = DELAY_BASE_TRADUCAO * (2 ** (tentativa - 1))
                 log.info(f"Tradução indisponível, nova tentativa em {espera:.0f}s...")
                 time.sleep(espera)
+
+        # O endpoint do Google pode recusar temporariamente textos validos com
+        # "No translation was found". Tenta um provedor independente uma vez,
+        # mantendo as mesmas validacoes de placeholders e pagina de erro.
+        if not resultado["foi_traduzido"] and falha_google and MyMemoryTranslator is not None:
+            try:
+                origem_mm = _MYMEMORY_LANG.get(_normalizar_idioma(idioma), idioma)
+                alvo_mm = _MYMEMORY_LANG.get(_normalizar_idioma(alvo), alvo)
+                traducao = MyMemoryTranslator(source=origem_mm, target=alvo_mm).translate(texto_isolado)
+                if traducao and not _parece_erro_traducao(traducao):
+                    if Counter(_PLACEHOLDER_RE.findall(traducao)) == tokens_esperados:
+                        restaurado = _restaurar_entidades(traducao, entidades)
+                        if restaurado.strip() != texto_limpo:
+                            resultado["traduzido"] = restaurado
+                            resultado["idioma_origem"] = idioma
+                            resultado["foi_traduzido"] = True
+            except Exception as e:
+                log.warning("Fallback de traducao indisponivel: %s", e)
     except Exception as e:
         log.warning(f"Erro inesperado na tradução automática: {e}")
     return resultado

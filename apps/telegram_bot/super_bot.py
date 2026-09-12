@@ -524,6 +524,17 @@ async def extrair_e_enviar_midia(client, message, url, usuario, msg_espera, forc
                     'max_filesize': LIMITE_TAMANHO,
                     'extractor_args': {'youtube': {'player_client': ['android', 'web']}},
                 }
+
+                if "tiktok.com" in url:
+                    # TikTok passou a devolver challenges diferentes por
+                    # fingerprint TLS. A primeira tentativa usa impersonacao;
+                    # a segunda tambem troca o host da API, em vez de repetir
+                    # exatamente a mesma requisicao que acabou de falhar.
+                    ydl_opts['impersonate'] = True
+                    if tentativa > 1:
+                        ydl_opts['extractor_args']['tiktok'] = {
+                            'api_hostname': ['api22-normal-c-useast2a.tiktokv.com'],
+                        }
                 
                 if not force_long:
                     ydl_opts['match_filter'] = _filtro_duracao
