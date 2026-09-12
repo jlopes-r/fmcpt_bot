@@ -1687,6 +1687,13 @@ async def download_instagram(
         else:
             result = await _extract_via_api(shortcode, cookies)
 
+        # Segunda forma de leitura da MESMA conta: o yt-dlp recebe somente o
+        # arquivo de cookies deste slot. Isso contorna bloqueios do endpoint de
+        # metadados sem recorrer a sessao anonima ou a outra fonte.
+        if not _is_acceptable_result_for_url(result, url):
+            log.info("🍪 API da conta %s falhou; tentando extrator autenticado", slot)
+            result = await _extract_via_ytdlp(url, path, out_dir)
+
         if _is_acceptable_result_for_url(result, url):
             result['_cookie_source'] = slot
             result['_primary_cookie_failed'] = primary_failed

@@ -452,6 +452,7 @@ class InstagramExtractorTest(unittest.IsolatedAsyncioTestCase):
                 {"sessionid": "primary"}, {"sessionid": "secondary"},
             ]),
             patch.object(ig, "_extract_via_api", new=AsyncMock(side_effect=[None, video_result])) as api,
+            patch.object(ig, "_extract_via_ytdlp", new=AsyncMock(return_value=None)),
         ):
             result = await ig.download_instagram(
                 reel_url, "primary.txt", "C:/tmp", secondary_cookie_path="secondary.txt"
@@ -461,7 +462,7 @@ class InstagramExtractorTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["_primary_cookie_failed"])
         self.assertEqual(api.await_count, 2)
 
-    async def test_no_anonymous_fallback_when_both_accounts_fail(self):
+    async def test_authenticated_extractor_uses_each_cookie_without_anonymous_fallback(self):
         reel_url = "https://www.instagram.com/reel/DNBCJoiOp9J/"
         with (
             patch.object(ig.os.path, "exists", return_value=True),
@@ -469,7 +470,7 @@ class InstagramExtractorTest(unittest.IsolatedAsyncioTestCase):
             patch.object(ig, "_extract_via_api", new=AsyncMock(return_value=None)) as api,
             patch.object(ig, "_extract_via_graphql", new=AsyncMock()) as graphql,
             patch.object(ig, "_extract_via_embed", new=AsyncMock()) as embed,
-            patch.object(ig, "_extract_via_ytdlp", new=AsyncMock()) as ytdlp,
+            patch.object(ig, "_extract_via_ytdlp", new=AsyncMock(return_value=None)) as ytdlp,
         ):
             result = await ig.download_instagram(
                 reel_url, "primary.txt", "C:/tmp", secondary_cookie_path="secondary.txt"
@@ -479,7 +480,9 @@ class InstagramExtractorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(api.await_count, 2)
         graphql.assert_not_awaited()
         embed.assert_not_awaited()
-        ytdlp.assert_not_awaited()
+        self.assertEqual(ytdlp.await_count, 2)
+        self.assertEqual(ytdlp.await_args_list[0].args[1], "primary.txt")
+        self.assertEqual(ytdlp.await_args_list[1].args[1], "secondary.txt")
 
 
 if __name__ == "__main__":
