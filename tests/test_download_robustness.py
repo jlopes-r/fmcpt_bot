@@ -67,6 +67,7 @@ class MetadataTests(unittest.TestCase):
     def test_worker_never_serializes_blank_errors(self):
         source = Path(dl.__file__).with_name('download_worker.py').read_text(encoding='utf-8')
         self.assertIn("str(exc).strip() or type(exc).__name__", source)
+        self.assertIn("ImpersonateTarget.from_str", source)
 
     def test_safe_options_disable_native_progress_output(self):
         self.assertTrue(dl._aplicar_opcoes_seguras({})['noprogress'])

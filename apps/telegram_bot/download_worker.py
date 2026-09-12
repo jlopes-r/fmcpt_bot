@@ -2,6 +2,7 @@
 import json
 import sys
 from pathlib import Path
+from yt_dlp.networking.impersonate import ImpersonateTarget
 
 from apps.telegram_bot.downloaders import processar_com_fallback, limite_duracao_filter
 
@@ -9,6 +10,11 @@ from apps.telegram_bot.downloaders import processar_com_fallback, limite_duracao
 def main():
     request = json.loads(sys.stdin.readline())
     opts = request['options']
+    # A CLI converte "chrome" para ImpersonateTarget, mas a API Python exige
+    # o objeto ja tipado. O protocolo JSON do worker so consegue transportar
+    # a representacao textual, entao convertemos aqui.
+    if isinstance(opts.get('impersonate'), str):
+        opts['impersonate'] = ImpersonateTarget.from_str(opts['impersonate'])
     # stdout is reserved for line-delimited JSON consumed by the parent.
     opts['noprogress'] = True
     limit = opts.pop('_duration_limit', None)
