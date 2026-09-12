@@ -1158,7 +1158,9 @@ async def _extract_via_api(shortcode: str, cookies: dict = None) -> dict | None:
                 if resp.status_code == 429:
                     log.warning("   ⏳ API (%s) limitada pelo Instagram (429); cookies nao foram invalidados", host)
                     _mark_ig_429()
-                    return None
+                    # O limite pode afetar apenas o endpoint web. Ainda dentro
+                    # da mesma conta, tenta o endpoint autenticado do app.
+                    continue
                 if _is_challenge_response(resp):
                     log.warning("   🍪 API (%s) exigiu login/challenge; a validade dos cookies nao pode ser confirmada", host)
                     _mark_cookies_bad("API Interna exigiu login/challenge")
