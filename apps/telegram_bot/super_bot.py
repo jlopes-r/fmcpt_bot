@@ -532,7 +532,7 @@ async def extrair_e_enviar_midia(client, message, url, usuario, msg_espera, forc
                     # fingerprint TLS. A primeira tentativa usa impersonacao;
                     # a segunda tambem troca o host da API, em vez de repetir
                     # exatamente a mesma requisicao que acabou de falhar.
-                    ydl_opts['impersonate'] = True
+                    ydl_opts['impersonate'] = 'chrome'
                     if tentativa > 1:
                         ydl_opts['extractor_args']['tiktok'] = {
                             'api_hostname': ['api22-normal-c-useast2a.tiktokv.com'],

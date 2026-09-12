@@ -34,7 +34,8 @@ def main():
         paths(info)
         print(json.dumps({'result': info}), flush=True)
     except Exception as exc:
-        print(json.dumps({'error': str(exc)}), flush=True)
+        error = str(exc).strip() or type(exc).__name__
+        print(json.dumps({'error': error}), flush=True)
         sys.exit(1)
 
 
