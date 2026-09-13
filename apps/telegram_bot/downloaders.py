@@ -31,6 +31,47 @@ ACTIVE_DIRECTORIES = set()
 _jobs = ContextVar('download_jobs', default=None)
 
 
+async def _encerrar_processo(proc, timeout: float = 5.0) -> None:
+    """Encerra o worker sem ficar preso caso o utilitario do SO falhe."""
+    if proc.returncode is not None:
+        await proc.wait()
+        return
+
+    if os.name != 'nt':
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+    else:
+        try:
+            killer = await asyncio.create_subprocess_exec(
+                'taskkill', '/PID', str(proc.pid), '/T', '/F',
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await asyncio.wait_for(killer.wait(), timeout)
+        except (OSError, asyncio.TimeoutError):
+            pass
+        if proc.returncode is None:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+
+    try:
+        await asyncio.wait_for(proc.wait(), timeout)
+    except asyncio.TimeoutError:
+        if proc.returncode is None:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+        await proc.wait()
+
+
 def managed_downloads(function):
     @wraps(function)
     async def wrapped(*args, **kwargs):
@@ -63,7 +104,6 @@ _OPCOES_SEGURAS = {
     "retries": 3,
     "fragment_retries": 3,
     "socket_timeout": 30,
-    "nocheckcertificate": True,
     "no_color": True,
     "quiet": True,
     "no_warnings": True,
@@ -217,7 +257,18 @@ async def baixar_com_ytdlp(
             opts['_duration_limit'] = getattr(duration_filter, 'duration_limit', 600)
         opts['paths'] = {'home': str(directory), 'temp': str(directory)}
         opts['outtmpl'] = str(directory / '%(id)s_%(autonumber)s.%(ext)s')
-        opts['noplaylist'] = True
+        # Playlists permanecem desativadas por padrao. Extratores que precisam
+        # de uma sequencia real (stories ou varias midias do mesmo post) podem
+        # habilita-las explicitamente, sempre com um teto defensivo.
+        if opts.get('noplaylist', True):
+            opts['noplaylist'] = True
+        else:
+            opts['noplaylist'] = False
+            try:
+                playlist_end = int(opts.get('playlistend') or 20)
+            except (TypeError, ValueError):
+                playlist_end = 20
+            opts['playlistend'] = max(1, min(playlist_end, 50))
         opts.pop('progress_hooks', None)
         kwargs = {'start_new_session': True} if os.name != 'nt' else {}
         proc = await asyncio.create_subprocess_exec(
@@ -283,15 +334,7 @@ async def baixar_com_ytdlp(
         return result
     finally:
         if proc is not None:
-            if os.name != 'nt':
-                try:
-                    os.killpg(proc.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-            elif proc.returncode is None:
-                killer = await asyncio.create_subprocess_exec('taskkill', '/PID', str(proc.pid), '/T', '/F', stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
-                await killer.wait()
-            await proc.wait()
+            await _encerrar_processo(proc)
         if reader is not None:
             if not reader.done():
                 reader.cancel()

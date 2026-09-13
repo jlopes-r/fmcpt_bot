@@ -5,12 +5,9 @@ Uses yt-dlp login to refresh sessionid cookies automatically.
 Run via cron every 7 days to prevent expiration.
 """
 import os
-import sys
+import random
 import re
 import time
-import json
-from http.cookiejar import MozillaCookieJar
-from pathlib import Path
 from datetime import datetime
 
 # Paths
@@ -70,12 +67,6 @@ def login_and_get_sessionid(username, password):
         return None
 
     # Step 2: Generate device info
-    import hashlib
-    import hmac
-    import random
-    
-    generate_sessionid = str(random.randint(1000000000, 9999999999))
-    
     # Step 3: Login
     data = {
         "phone_id": "7179658273819460078",
@@ -155,7 +146,6 @@ def test_cookies():
         return False
 
 def main():
-    import random
     log("=" * 50)
     log("Starting Instagram cookie renewal")
     

@@ -1,0 +1,36 @@
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+extend-exclude = ["data", "downloads", "scratch", "venv"]
+
+[tool.ruff.lint]
+# Comeca pelos erros de sintaxe/importacao e erros logicos do Pyflakes.
+select = ["E4", "E7", "E9", "F"]
+
+[tool.ruff.lint.per-file-ignores]
+# Divida os entry points antes de remover estas excecoes incrementais.
+"apps/comandos/comandos_bot.py" = ["E402", "F401", "F541"]
+"apps/ephemeral_commands/service.py" = ["F541"]
+"apps/telegram_bot/downloaders.py" = ["F401"]
+"apps/telegram_bot/instagram_extractor.py" = ["F541"]
+"apps/telegram_bot/super_bot.py" = ["E402", "F401", "F541", "F841"]
+"scripts/generate_mini_app_catalog.py" = ["E402"]
+"tests/test_instagram_extractor.py" = ["F401"]
+
+[tool.mypy]
+python_version = "3.10"
+files = [
+    "packages/command_catalog.py",
+    "packages/config.py",
+    "packages/private_access.py",
+    "packages/url_utils.py",
+    "apps/telegram_bot/media_utils.py",
+    "apps/telegram_bot/text_utils.py",
+]
+follow_imports = "skip"
+ignore_missing_imports = true
+check_untyped_defs = true
+no_implicit_optional = true
+warn_unused_ignores = true
+show_error_codes = true
+pretty = true

@@ -2,12 +2,15 @@ import importlib
 import os
 import asyncio
 import logging
+import sys
 import unittest
 from unittest.mock import patch
 
 
 class SmokeImportTest(unittest.TestCase):
     def setUp(self):
+        sys.modules.pop("apps.telegram_bot.super_bot", None)
+        sys.modules.pop("apps.comandos.comandos_bot", None)
         self.loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self.loop)
 
@@ -22,6 +25,8 @@ class SmokeImportTest(unittest.TestCase):
             handler.close()
         asyncio.set_event_loop(None)
         self.loop.close()
+        sys.modules.pop("apps.telegram_bot.super_bot", None)
+        sys.modules.pop("apps.comandos.comandos_bot", None)
 
     def test_import_super_bot_sem_token_real(self):
         env = {

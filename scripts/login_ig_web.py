@@ -77,7 +77,6 @@ def main():
         print(f"  {cookie.name}: {cookie.value[:30]}...")
     
     # Generate cookies.txt
-    expires = str(int(time.time()) + 90 * 24 * 3600)
     lines = ["# Netscape HTTP Cookie File"]
     
     for cookie in session.cookies:

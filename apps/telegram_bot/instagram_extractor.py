@@ -18,19 +18,52 @@ import logging
 import urllib.parse
 import http.cookiejar
 import tempfile
+from contextvars import ContextVar
 from html.parser import HTMLParser
 from datetime import datetime
-from functools import partial
 
-import yt_dlp
 import httpx
+
+from apps.telegram_bot.downloaders import baixar_com_ytdlp
+from apps.telegram_bot.instagram_resilience import (
+    InstagramAccountPool,
+    InstagramFailure,
+    classify_instagram_response,
+    load_graphql_documents,
+    resolve_instagram_share_url,
+)
 
 log = logging.getLogger("SuperBot")
 
 # ─── Regex ────────────────────────────────────────────────────────────────────
 SHORTCODE_REGEX = re.compile(r'/(?:p|reel|reels|ad|tv)/([A-Za-z0-9_-]+)')
-STORIES_REGEX = re.compile(r'/stories/([^/]+)/([0-9]+)')
+STORIES_REGEX = re.compile(r'/stories/(?!highlights(?:/|$))([^/?#]+)(?:/([0-9]+))?')
 HIGHLIGHTS_REGEX = re.compile(r'/stories/highlights/([0-9]+)')
+
+
+def _bounded_env_number(name: str, default: float, minimum: float, maximum: float) -> float:
+    try:
+        value = float(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(value, maximum))
+
+
+_instagram_account_pool = InstagramAccountPool(
+    failure_threshold=int(_bounded_env_number('IG_CIRCUIT_FAILURES', 2, 1, 10)),
+    circuit_seconds=_bounded_env_number('IG_CIRCUIT_SECONDS', 300, 10, 3600),
+    invalid_cookie_seconds=_bounded_env_number(
+        'IG_INVALID_COOKIE_COOLDOWN', 1800, 60, 86400
+    ),
+    challenge_seconds=_bounded_env_number('IG_CHALLENGE_COOLDOWN', 3600, 60, 86400),
+    ip_rate_limit_seconds=_bounded_env_number('IG_429_COOLDOWN', 120, 10, 3600),
+)
+_active_ig_account: ContextVar[str | None] = ContextVar(
+    'active_instagram_account', default=None
+)
+_active_ig_endpoint: ContextVar[str] = ContextVar(
+    'active_instagram_endpoint', default='unknown'
+)
 
 # ─── Headers que imitam um navegador real ─────────────────────────────────────
 BROWSER_HEADERS = {
@@ -209,6 +242,14 @@ def _mark_ig_429() -> None:
     """Registra o momento do ultimo 429 para cooldown global."""
     global _ig_429_since
     _ig_429_since = time.time()
+    account_id = _active_ig_account.get()
+    if account_id:
+        _instagram_account_pool.report_failure(
+            account_id,
+            _active_ig_endpoint.get(),
+            InstagramFailure.IP_RATE_LIMITED,
+            "Instagram retornou status 429",
+        )
 
 
 def _ig_429_recente() -> bool:
@@ -232,9 +273,26 @@ def cookies_are_valid() -> bool:
     return False
 
 
-def _mark_cookies_bad(reason: str = "") -> None:
+def _mark_cookies_bad(
+    reason: str = "",
+    failure: InstagramFailure | None = None,
+) -> None:
     """Marca cookies como inválidos para evitar retentativas inúteis."""
     global _cookies_known_bad, _cookies_bad_since, _cookies_bad_reason
+    account_id = _active_ig_account.get()
+    if account_id:
+        failure = failure or (
+            InstagramFailure.CHALLENGE
+            if any(word in reason.casefold() for word in ('challenge', 'checkpoint'))
+            else InstagramFailure.COOKIE_INVALID
+        )
+        _instagram_account_pool.report_failure(
+            account_id,
+            _active_ig_endpoint.get(),
+            failure,
+            reason or "Sessao rejeitada ou verificacao exigida",
+        )
+        return
     if not _cookies_known_bad:
         _cookies_known_bad = True
         _cookies_bad_since = time.time()
@@ -248,12 +306,52 @@ def get_cookie_failure_reason() -> str:
     return _cookies_bad_reason or "Sessao rejeitada ou login/verificacao necessarios"
 
 
-def reset_cookies_bad() -> None:
+def reset_cookies_bad(*, reset_pool: bool = True) -> None:
     """Reset manual (chamado quando novos cookies são carregados)."""
     global _cookies_known_bad, _cookies_bad_since, _cookies_bad_reason
     _cookies_known_bad = False
     _cookies_bad_since = 0.0
     _cookies_bad_reason = ""
+    account_id = _active_ig_account.get()
+    endpoint = _active_ig_endpoint.get()
+    if account_id and endpoint not in {'unknown', 'ytdlp'}:
+        _instagram_account_pool.report_success(account_id, endpoint)
+    elif not account_id and reset_pool:
+        _instagram_account_pool.reset()
+
+
+def get_instagram_account_health() -> dict[str, object]:
+    """Retorna um snapshot da saude individual das contas e do IP."""
+    return _instagram_account_pool.snapshot()
+
+
+async def _run_account_endpoint(
+    account_id: str,
+    endpoint: str,
+    operation,
+    *args,
+):
+    """Executa uma camada somente quando seu circuit breaker permite."""
+    if account_id and not _instagram_account_pool.can_attempt(account_id, endpoint):
+        log.info(
+            "Instagram circuit aberto: conta=%s endpoint=%s",
+            _instagram_account_pool.health(account_id).label,
+            endpoint,
+        )
+        return None
+    account_token = _active_ig_account.set(account_id or None)
+    endpoint_token = _active_ig_endpoint.set(endpoint)
+    try:
+        result = await operation(*args)
+        is_success = bool(result) and not (
+            isinstance(result, dict) and result.get('valid') is False
+        )
+        if is_success and account_id:
+            _instagram_account_pool.report_success(account_id, endpoint)
+        return result
+    finally:
+        _active_ig_endpoint.reset(endpoint_token)
+        _active_ig_account.reset(account_token)
 
 
 def _is_challenge_response(resp) -> bool:
@@ -273,6 +371,25 @@ def _is_challenge_response(resp) -> bool:
     ]):
         return True
     return False
+
+
+def _observe_instagram_response(resp, context: str) -> InstagramFailure | None:
+    """Atualiza o estado de saude usando uma classificacao unica de resposta."""
+    failure = classify_instagram_response(resp)
+    if failure is InstagramFailure.IP_RATE_LIMITED:
+        _mark_ig_429()
+    elif failure in {InstagramFailure.COOKIE_INVALID, InstagramFailure.CHALLENGE}:
+        _mark_cookies_bad(f"{context}: {failure.value}", failure)
+    elif failure is InstagramFailure.TRANSIENT:
+        account_id = _active_ig_account.get()
+        if account_id:
+            _instagram_account_pool.report_failure(
+                account_id,
+                _active_ig_endpoint.get(),
+                failure,
+                f"{context}: status {getattr(resp, 'status_code', 0)}",
+            )
+    return failure
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -314,12 +431,15 @@ def _get_embed_path(url: str) -> str:
     return 'reel' if _is_reel(url) else 'p'
 
 
-def _get_story_info(url: str) -> tuple[str, str] | None:
+def _get_story_info(url: str) -> tuple[str, str | None] | None:
     """Extrai username e media_id de uma URL de story.
-    O ID numérico no URL do story JÁ é o media_id."""
+    O ID numérico no URL do story JÁ é o media_id. Links para a
+    sequencia atual do perfil podem nao trazer esse ID."""
     match = STORIES_REGEX.search(url)
     if match:
-        return match.group(1), match.group(2)
+        username = urllib.parse.unquote(match.group(1))
+        if re.fullmatch(r'[A-Za-z0-9._]{1,30}', username):
+            return username, match.group(2)
     return None
 
 
@@ -470,7 +590,7 @@ def inspect_cookie_health(cookie_path: str) -> str:
     return "\n".join(linhas)
 
 
-async def validate_cookie_health(cookie_path: str) -> dict:
+async def _validate_cookie_health_request(cookie_path: str) -> dict:
     """Confere a validade REAL dos cookies chamando um endpoint autenticado da API
     web do Instagram (news/inbox). Ele só retorna 200 com dados para quem está
     logado — diferente do /api/v1/media que responde mesmo deslogado.
@@ -503,25 +623,35 @@ async def validate_cookie_health(cookie_path: str) -> dict:
             resp = await client.get(api_url, headers=headers)
             log.info("🍪 Validação real do cookie: status=%d", resp.status_code)
             text = resp.text or ''
-            body_low = text[:3000].lower()
+            failure = classify_instagram_response(resp)
 
             # Um 429 pode terminar numa URL de login por causa do redirect,
             # mas continua sendo limite temporario do IP, nao prova de sessao
             # invalida. Classifique antes de procurar challenge na URL final.
-            if resp.status_code == 429:
+            if failure is InstagramFailure.IP_RATE_LIMITED:
                 _mark_ig_429()
                 return {
                     "valid": False,
                     "rate_limited": True,
+                    "failure": failure.value,
                     "reason": "Instagram limitou requisicoes (status 429) — tente novamente mais tarde",
                 }
 
             # Sinais claros de sessão inválida / bloqueio
-            if _is_challenge_response(resp) or any(
-                kw in body_low for kw in ('login_required', 'checkpoint_required', 'challenge_required')
-            ):
-                _mark_cookies_bad("Validação real: sessão rejeitada pelo Instagram")
-                return {"valid": False, "reason": "Instagram exigiu login/verificação — sessão inválida"}
+            if failure in {InstagramFailure.COOKIE_INVALID, InstagramFailure.CHALLENGE}:
+                _mark_cookies_bad(
+                    "Validação real: sessão rejeitada pelo Instagram", failure
+                )
+                return {
+                    "valid": False,
+                    "failure": failure.value,
+                    "challenge": failure is InstagramFailure.CHALLENGE,
+                    "reason": (
+                        "Instagram exigiu verificação manual (challenge/checkpoint)"
+                        if failure is InstagramFailure.CHALLENGE
+                        else "Instagram exigiu login; cookie expirado ou inválido"
+                    ),
+                }
 
             if resp.status_code == 200:
                 try:
@@ -536,15 +666,40 @@ async def validate_cookie_health(cookie_path: str) -> dict:
                 return {"valid": False, "reason": f"Resposta inesperada: {text[:120]}"}
 
             if resp.status_code in (400, 401, 403):
-                _mark_cookies_bad("Validação real: status %d do Instagram" % resp.status_code)
-                return {"valid": False, "reason": f"Instagram rejeitou a sessão (status {resp.status_code})"}
+                return {
+                    "valid": False,
+                    "failure": InstagramFailure.TRANSIENT.value,
+                    "reason": f"Instagram rejeitou a requisição (status {resp.status_code})",
+                }
 
-            # Outros 5xx/limites transitorios nao marcam cookies como ruins.
-            _mark_ig_429()
-            return {"valid": False, "reason": f"Instagram limitou requisições (status {resp.status_code}) — tente de novo em instantes"}
+            # Outros 5xx/erros transitorios nao invalidam cookies nem o IP.
+            _observe_instagram_response(resp, "validacao de cookie")
+            return {"valid": False, "reason": f"Instagram respondeu status {resp.status_code} — tente de novo em instantes"}
     except Exception as e:
         log.info("❌ Validação real falhou: %s", str(e)[:150])
         return {"valid": False, "reason": f"Erro ao validar cookies: {str(e)[:120]}"}
+
+
+async def validate_cookie_health(cookie_path: str) -> dict:
+    """Valida uma conta e atualiza apenas a saúde daquele arquivo de cookies."""
+    if not cookie_path or not os.path.exists(cookie_path):
+        return await _validate_cookie_health_request(cookie_path)
+    account_id = _instagram_account_pool.register('health', cookie_path)
+    result = await _run_account_endpoint(
+        account_id,
+        'cookie_health',
+        _validate_cookie_health_request,
+        cookie_path,
+    )
+    if result is not None:
+        return result
+    health = _instagram_account_pool.health(account_id)
+    return {
+        'valid': False,
+        'failure': health.state,
+        'reason': health.reason or 'Conta em cooldown; aguarde antes de validar novamente',
+        'cooldown': True,
+    }
 
 
 def _build_cookie_header(cookies: dict) -> str:
@@ -755,7 +910,12 @@ def _parse_profile_meta(html: str, username: str) -> dict | None:
     }
 
 
-async def fetch_instagram_profile(url: str, cookie_path: str = '') -> dict | None:
+async def fetch_instagram_profile(
+    url: str,
+    cookie_path: str = '',
+    *,
+    secondary_cookie_path: str = '',
+) -> dict | None:
     """Busca dados públicos de um perfil do Instagram, com cache de 1h.
 
     Usa cache em memoria/disco primeiro (chave = username). Só bate na API do
@@ -774,17 +934,11 @@ async def fetch_instagram_profile(url: str, cookie_path: str = '') -> dict | Non
         log.info("👤 Instagram perfil @%s (cache)", username)
         return cached
 
-    cookies = _load_cookies_from_file(cookie_path)
-    headers = {
-        **BROWSER_HEADERS,
-        **IG_APP_HEADERS,
-        'X-Requested-With': 'XMLHttpRequest',
-    }
-    if cookies:
-        headers['Cookie'] = _build_cookie_header(cookies)
-
     api_url = f'https://www.instagram.com/api/v1/users/web_profile_info/?username={urllib.parse.quote(username)}'
     page_url = f'https://www.instagram.com/{urllib.parse.quote(username)}/'
+    cookie_paths = list(dict.fromkeys([cookie_path] + (
+        [secondary_cookie_path] if secondary_cookie_path else []
+    )))
 
     result = None
     try:
@@ -793,35 +947,56 @@ async def fetch_instagram_profile(url: str, cookie_path: str = '') -> dict | Non
             if rate_limited:
                 log.info("👤 Instagram perfil @%s: cooldown de 429 ativo — rotas web ignoradas", username)
             else:
-                await _ig_wait_pacing()
-                try:
-                    resp = await client.get(api_url, headers=headers)
-                    log.info("👤 Instagram perfil API @%s status=%d", username, resp.status_code)
-                    if resp.status_code == 429:
-                        _mark_ig_429()
-                        rate_limited = True
-                    elif resp.status_code == 200:
-                        payload = resp.json()
-                        data = (payload.get('data') or {}) if isinstance(payload, dict) else {}
-                        result = _parse_profile_user(data.get('user'), username) if isinstance(data, dict) else None
-                except Exception as e:
-                    log.info("👤 Instagram perfil API @%s indisponível: %s", username, type(e).__name__)
+                for index, path in enumerate(cookie_paths):
+                    cookies = _load_cookies_from_file(path)
+                    if index > 0 and not cookies:
+                        continue
+                    headers = {
+                        **BROWSER_HEADERS,
+                        **IG_APP_HEADERS,
+                        'X-Requested-With': 'XMLHttpRequest',
+                    }
+                    if cookies:
+                        headers['Cookie'] = _build_cookie_header(cookies)
 
-                # So busca o HTML se a API falhou sem ser por throttling.
-                # Martelar o www depois de um 429 so reforca o sinal de automacao.
-                if not _profile_is_complete(result) and not rate_limited:
-                    await asyncio.sleep(_IG_PROFILE_PACING)
+                    slot = 'primary' if index == 0 else 'secondary'
+                    account_result = None
+                    await _ig_wait_pacing()
                     try:
-                        resp = await client.get(page_url, headers=headers)
-                        log.info("👤 Instagram perfil HTML @%s status=%d", username, resp.status_code)
+                        resp = await client.get(api_url, headers=headers)
+                        log.info("👤 Instagram perfil API @%s (%s) status=%d", username, slot, resp.status_code)
                         if resp.status_code == 429:
                             _mark_ig_429()
                             rate_limited = True
-                        if resp.status_code == 200:
-                            result = _merge_profiles(result, _parse_profile_from_html(resp.text, username))
-                            result = _merge_profiles(result, _parse_profile_meta(resp.text, username))
+                        elif resp.status_code == 200:
+                            payload = resp.json()
+                            data = (payload.get('data') or {}) if isinstance(payload, dict) else {}
+                            account_result = _parse_profile_user(data.get('user'), username) if isinstance(data, dict) else None
                     except Exception as e:
-                        log.info("👤 Instagram perfil HTML @%s indisponível: %s", username, type(e).__name__)
+                        log.info("👤 Instagram perfil API @%s (%s) indisponível: %s", username, slot, type(e).__name__)
+
+                    # So busca o HTML se a API falhou sem ser por throttling.
+                    if not _profile_is_complete(account_result) and not rate_limited:
+                        await asyncio.sleep(_IG_PROFILE_PACING)
+                        try:
+                            resp = await client.get(page_url, headers=headers)
+                            log.info("👤 Instagram perfil HTML @%s (%s) status=%d", username, slot, resp.status_code)
+                            if resp.status_code == 429:
+                                _mark_ig_429()
+                                rate_limited = True
+                            if resp.status_code == 200:
+                                account_result = _merge_profiles(
+                                    account_result, _parse_profile_from_html(resp.text, username)
+                                )
+                                account_result = _merge_profiles(
+                                    account_result, _parse_profile_meta(resp.text, username)
+                                )
+                        except Exception as e:
+                            log.info("👤 Instagram perfil HTML @%s (%s) indisponível: %s", username, slot, type(e).__name__)
+
+                    result = _merge_profiles(result, account_result)
+                    if _profile_is_complete(result) or rate_limited:
+                        break
 
             if not result or not result.get('profile_pic_url'):
                 # oEmbed e o ultimo recurso para o card responder (api.instagram.com
@@ -927,7 +1102,12 @@ async def _fetch_post_meta_via_oembed(shortcode: str, embed_path: str = 'p') -> 
         return None
 
 
-async def detect_profile_privado(url: str, cookie_path: str = '') -> bool | None:
+async def detect_profile_privado(
+    url: str,
+    cookie_path: str = '',
+    *,
+    secondary_cookie_path: str = '',
+) -> bool | None:
     """Detecta se um perfil do Instagram é privado.
 
     Retorna True se privado, False se público, e None se não der pra determinar
@@ -943,41 +1123,44 @@ async def detect_profile_privado(url: str, cookie_path: str = '') -> bool | None
     if cached and cached.get('is_private') is not None:
         return bool(cached.get('is_private'))
 
-    cookies = _load_cookies_from_file(cookie_path)
-    headers = {
-        **BROWSER_HEADERS,
-        **IG_APP_HEADERS,
-        'X-Requested-With': 'XMLHttpRequest',
-    }
-    if cookies:
-        headers['Cookie'] = _build_cookie_header(cookies)
-
     page_url = f'https://www.instagram.com/{urllib.parse.quote(username)}/'
-    try:
-        if _ig_429_recente():
-            return None
-        await _ig_wait_pacing()
-        async with httpx.AsyncClient(timeout=12.0, follow_redirects=True) as client:
-            resp = await client.get(page_url, headers=headers)
-            if resp.status_code == 429:
-                _mark_ig_429()
-            if _is_challenge_response(resp):
-                return None
-            if resp.status_code == 200:
-                html = resp.text
-            else:
-                return None
-    except Exception as e:
-        log.info("⚠️ Falha ao detectar privacidade de @%s: %s", username, str(e)[:120])
+    cookie_paths = list(dict.fromkeys([cookie_path] + (
+        [secondary_cookie_path] if secondary_cookie_path else []
+    )))
+    if _ig_429_recente():
         return None
 
-    # A página pode conter o usuário logado, autores e perfis sugeridos.
-    # Uma flag is_private fora do objeto do perfil pedido não prova sua privacidade.
-    profile = _parse_profile_from_html(html, username)
-    privado = profile.get('is_private') if profile else None
-    if isinstance(privado, bool):
-        _profile_cache_upsert_privacy(username, privado)
-        return privado
+    for path in cookie_paths:
+        cookies = _load_cookies_from_file(path)
+        if path != cookie_paths[0] and not cookies:
+            continue
+        headers = {
+            **BROWSER_HEADERS,
+            **IG_APP_HEADERS,
+            'X-Requested-With': 'XMLHttpRequest',
+        }
+        if cookies:
+            headers['Cookie'] = _build_cookie_header(cookies)
+        try:
+            await _ig_wait_pacing()
+            async with httpx.AsyncClient(timeout=12.0, follow_redirects=True) as client:
+                resp = await client.get(page_url, headers=headers)
+            if resp.status_code == 429:
+                _mark_ig_429()
+                return None
+            if _is_challenge_response(resp) or resp.status_code != 200:
+                continue
+        except Exception as e:
+            log.info("⚠️ Falha ao detectar privacidade de @%s: %s", username, str(e)[:120])
+            continue
+
+        # A pagina pode conter o usuario logado, autores e perfis sugeridos.
+        # Uma flag fora do objeto do perfil pedido nao prova sua privacidade.
+        profile = _parse_profile_from_html(resp.text, username)
+        privado = profile.get('is_private') if profile else None
+        if isinstance(privado, bool):
+            _profile_cache_upsert_privacy(username, privado)
+            return privado
     return None
 
 
@@ -1038,9 +1221,43 @@ def _auto_login_and_save_cookies(cookie_path: str) -> dict:
 #  Parsers — transformam dados brutos do IG em nosso formato padrão
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _validated_carousel_urls(
+    urls: list[str],
+    *,
+    returned_children: int,
+    expected_children: object = None,
+    has_next_page: bool = False,
+) -> tuple[list[str], int] | None:
+    """Rejeita carrosseis truncados ou com itens sem mídia utilizável."""
+    try:
+        expected = int(expected_children) if expected_children is not None else returned_children
+    except (TypeError, ValueError):
+        expected = returned_children
+    expected = max(expected, returned_children)
+    unique_urls = list(dict.fromkeys(urls))
+    complete = (
+        not has_next_page
+        and returned_children > 0
+        and len(urls) == returned_children
+        and len(unique_urls) == returned_children
+        and returned_children >= expected
+    )
+    if not complete:
+        log.warning(
+            "Carrossel incompleto rejeitado: urls=%d filhos=%d esperado=%d has_next=%s",
+            len(unique_urls),
+            returned_children,
+            expected,
+            has_next_page,
+        )
+        return None
+    return unique_urls, expected
+
+
 def _parse_api_item(item: dict) -> dict | None:
     """Converte um item do formato API (v1) para o nosso dict padrão."""
     urls = []
+    expected_count = 1
 
     # Caption
     caption_obj = item.get('caption', {})
@@ -1057,6 +1274,15 @@ def _parse_api_item(item: dict) -> dict | None:
                 urls.append(m['video_versions'][0]['url'])
             elif m.get('image_versions2', {}).get('candidates'):
                 urls.append(m['image_versions2']['candidates'][0]['url'])
+        validated = _validated_carousel_urls(
+            urls,
+            returned_children=len(carousel),
+            expected_children=item.get('carousel_media_count'),
+            has_next_page=bool(item.get('more_available') or item.get('has_more_available')),
+        )
+        if not validated:
+            return None
+        urls, expected_count = validated
 
     # Vídeo único
     elif item.get('video_versions'):
@@ -1077,12 +1303,15 @@ def _parse_api_item(item: dict) -> dict | None:
         'type': media_type,
         'title': caption,
         'uploader': uploader,
+        '_expected_items': expected_count if carousel else 1,
+        '_complete': True,
     }
 
 
 def _parse_graphql_media(media: dict) -> dict | None:
     """Converte um item do formato GraphQL para o nosso dict padrão."""
     urls = []
+    expected_count = 1
 
     # Caption
     edges = media.get('edge_media_to_caption', {}).get('edges', [])
@@ -1101,6 +1330,16 @@ def _parse_graphql_media(media: dict) -> dict | None:
                 urls.append(node['video_url'])
             elif node.get('display_url'):
                 urls.append(node['display_url'])
+        sidecar_container = media.get('edge_sidecar_to_children', {})
+        validated = _validated_carousel_urls(
+            urls,
+            returned_children=len(sidecar),
+            expected_children=sidecar_container.get('count'),
+            has_next_page=bool((sidecar_container.get('page_info') or {}).get('has_next_page')),
+        )
+        if not validated:
+            return None
+        urls, expected_count = validated
 
     # Vídeo único
     elif media.get('is_video') and media.get('video_url'):
@@ -1122,6 +1361,8 @@ def _parse_graphql_media(media: dict) -> dict | None:
         'uploader': uploader,
         'media_full_name': owner.get('full_name') or '',
         'media_avatar': owner.get('profile_pic_url') or '',
+        '_expected_items': expected_count if sidecar else 1,
+        '_complete': True,
     }
 
 
@@ -1164,25 +1405,23 @@ async def _extract_via_api(shortcode: str, cookies: dict = None) -> dict | None:
                 host = api_url.split('//')[1].split('/')[0]
                 resp = await client.get(api_url, headers=headers)
                 log.info("   API resp status: %d (%s)", resp.status_code, host)
+                failure = _observe_instagram_response(resp, f"API interna {host}")
 
                 # ── Detectar challenge/login redirect ──
-                if resp.status_code == 429:
+                if failure is InstagramFailure.IP_RATE_LIMITED:
                     log.warning("   ⏳ API (%s) limitada pelo Instagram (429); cookies nao foram invalidados", host)
-                    _mark_ig_429()
                     # O limite pode afetar apenas o endpoint web. Ainda dentro
                     # da mesma conta, tenta o endpoint autenticado do app.
                     continue
-                if _is_challenge_response(resp):
-                    log.warning("   🍪 API (%s) exigiu login/challenge; a validade dos cookies nao pode ser confirmada", host)
-                    _mark_cookies_bad("API Interna exigiu login/challenge")
+                if failure in {InstagramFailure.COOKIE_INVALID, InstagramFailure.CHALLENGE}:
+                    log.warning("   🍪 API (%s) rejeitou a conta: %s", host, failure.value)
                     return None
 
                 if resp.status_code == 200:
                     try:
                         data = resp.json()
                     except (json.JSONDecodeError, ValueError):
-                        log.warning("   🍪 API (%s) retornou 200 mas body não é JSON — provável challenge", host)
-                        _mark_cookies_bad("API Interna retornou HTML ao invés de JSON")
+                        log.warning("   🍪 API (%s) retornou 200 mas body não é JSON", host)
                         return None
                     items = data.get('items', [])
                     if items:
@@ -1192,11 +1431,6 @@ async def _extract_via_api(shortcode: str, cookies: dict = None) -> dict | None:
                             return result
                     log.info("   API (%s) retornou JSON mas sem itens válidos", host)
                 elif resp.status_code in (400, 401, 403, 429):
-                    body = (resp.text or '')[:300].lower()
-                    if any(kw in body for kw in ('checkpoint_required', 'login_required', 'challenge_required')):
-                        log.warning("   🍪 API (%s) retornou %d com login/challenge — marcando cookies ruins", host, resp.status_code)
-                        _mark_cookies_bad("API retornou %d com login/challenge" % resp.status_code)
-                        return None
                     log.info("   API (%s) retornou %d: %s", host, resp.status_code, resp.text[:100])
                 else:
                     log.info("   API (%s) retornou %d: %s", host, resp.status_code, resp.text[:100])
@@ -1222,11 +1456,12 @@ async def _extract_via_api_media_id(media_id: str, cookies: dict) -> dict | None
         async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
             resp = await client.get(api_url, headers=headers)
         log.info("   Story API status: %d", resp.status_code)
-        if resp.status_code == 429:
-            _mark_ig_429()
-            return None
-        if _is_challenge_response(resp):
-            _mark_cookies_bad("Story API exigiu login/challenge")
+        failure = _observe_instagram_response(resp, "Story por media_id")
+        if failure in {
+            InstagramFailure.IP_RATE_LIMITED,
+            InstagramFailure.COOKIE_INVALID,
+            InstagramFailure.CHALLENGE,
+        }:
             return None
         if resp.status_code != 200:
             return None
@@ -1259,11 +1494,11 @@ async def _extract_via_graphql(shortcode: str, cookies: dict = None) -> dict | N
         'has_threaded_comments': False,
     })
 
-    # Lista de doc_ids conhecidos (o mais recente primeiro)
-    doc_ids = [
-        '8845758582119845',  # doc_id do parth-dl (2025)
-        '17991233890457762',  # doc_id antigo (backup)
-    ]
+    # Conjunto versionado; IDs podem ser rotacionados por configuração sem
+    # alterar código ou executar atualizadores dentro do bot.
+    documents = load_graphql_documents()
+    doc_ids = documents.legacy
+    log.info("   GraphQL docset=%s", documents.version)
 
     try:
         async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
@@ -1277,6 +1512,49 @@ async def _extract_via_graphql(shortcode: str, cookies: dict = None) -> dict | N
             if cookies:
                 headers['Cookie'] = _build_cookie_header(cookies)
 
+            # Endpoint Relay atual. O formato e o doc_id acompanham o extrator
+            # da versao de yt-dlp instalada; a resposta traz um item API-like
+            # dentro de if_not_gated_logged_out.
+            modern_headers = {
+                **headers,
+                'X-FB-Friendly-Name': 'PolarisLoggedOutDesktopWWWPostRootContentQuery',
+                'Referer': f'https://www.instagram.com/p/{shortcode}/',
+            }
+            modern_data = {
+                'fb_api_caller_class': 'RelayModern',
+                'fb_api_req_friendly_name': 'PolarisLoggedOutDesktopWWWPostRootContentQuery',
+                'server_timestamps': 'true',
+                'variables': json.dumps(
+                    {'media_id': _shortcode_to_media_id(shortcode)},
+                    separators=(',', ':'),
+                ),
+                'doc_id': documents.modern,
+            }
+            resp = await client.post(
+                'https://www.instagram.com/api/graphql',
+                headers=modern_headers,
+                data=modern_data,
+            )
+            log.info("   GraphQL Relay atual → status=%d", resp.status_code)
+            failure = _observe_instagram_response(resp, "GraphQL Relay")
+            if failure in {
+                InstagramFailure.IP_RATE_LIMITED,
+                InstagramFailure.COOKIE_INVALID,
+                InstagramFailure.CHALLENGE,
+            }:
+                return None
+            if resp.status_code == 200:
+                try:
+                    payload = resp.json()
+                except (json.JSONDecodeError, ValueError):
+                    payload = {}
+                media = ((payload.get('data') or {}).get('xig_polaris_media') or {})
+                product = media.get('if_not_gated_logged_out') or media
+                result = _parse_api_item(product) or _parse_graphql_media(product)
+                if result:
+                    log.info("   ✅ GraphQL atual retornou %d URLs", len(result['urls']))
+                    return result
+
             for doc_id in doc_ids:
                 query_url = (
                     f"https://www.instagram.com/graphql/query/"
@@ -1286,23 +1564,23 @@ async def _extract_via_graphql(shortcode: str, cookies: dict = None) -> dict | N
 
                 resp = await client.get(query_url, headers=headers)
                 log.info("   GraphQL doc_id=%s → status=%d", doc_id, resp.status_code)
+                failure = _observe_instagram_response(
+                    resp, f"GraphQL legado doc_id={doc_id}"
+                )
 
                 # ── Detectar challenge/login redirect ──
-                if resp.status_code == 429:
+                if failure is InstagramFailure.IP_RATE_LIMITED:
                     log.warning("   ⏳ GraphQL limitado pelo Instagram (429); cookies nao foram invalidados")
-                    _mark_ig_429()
                     return None
-                if _is_challenge_response(resp):
-                    log.warning("   🍪 GraphQL exigiu login/challenge; a validade dos cookies nao pode ser confirmada")
-                    _mark_cookies_bad("GraphQL exigiu login/challenge")
+                if failure in {InstagramFailure.COOKIE_INVALID, InstagramFailure.CHALLENGE}:
+                    log.warning("   🍪 GraphQL rejeitou a conta: %s", failure.value)
                     return None
 
                 if resp.status_code == 200:
                     try:
                         data = resp.json()
                     except (json.JSONDecodeError, ValueError):
-                        log.warning("   🍪 GraphQL retornou 200 mas body não é JSON — provável challenge")
-                        _mark_cookies_bad("GraphQL retornou HTML ao invés de JSON")
+                        log.warning("   🍪 GraphQL retornou 200 mas body não é JSON")
                         return None
                     # Formato novo (xdt_shortcode_media)
                     data_obj = data.get('data') or {}
@@ -1342,15 +1620,14 @@ async def _extract_via_embed(shortcode: str, cookies: dict = None, embed_path: s
         async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
             resp = await client.get(embed_url, headers=embed_headers)
             log.info("   Embed status: %d, body length: %d", resp.status_code, len(resp.text))
+            failure = _observe_instagram_response(resp, "Embed")
 
             # ── Detectar challenge/login redirect ──
-            if resp.status_code == 429:
+            if failure is InstagramFailure.IP_RATE_LIMITED:
                 log.warning("   ⏳ Embed limitado pelo Instagram (429); cookies nao foram invalidados")
-                _mark_ig_429()
                 return None
-            if _is_challenge_response(resp):
-                log.warning("   🍪 Embed exigiu login/challenge; a validade dos cookies nao pode ser confirmada")
-                _mark_cookies_bad("Embed exigiu login/challenge")
+            if failure in {InstagramFailure.COOKIE_INVALID, InstagramFailure.CHALLENGE}:
+                log.warning("   🍪 Embed rejeitou a conta: %s", failure.value)
                 return None
 
             if resp.status_code != 200:
@@ -1466,12 +1743,6 @@ async def _extract_via_embed(shortcode: str, cookies: dict = None, embed_path: s
 #  Camada 4 — yt-dlp (força bruta)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _run_ytdlp(url: str, ydl_opts: dict) -> dict:
-    """Executa yt-dlp em thread separada."""
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        return ydl.extract_info(url, download=True)
-
-
 async def _extract_via_ytdlp(url: str, cookie_path: str, out_dir: str) -> dict | None:
     """
     Usa yt-dlp com ou sem cookies para baixar vídeos/reels.
@@ -1479,12 +1750,12 @@ async def _extract_via_ytdlp(url: str, cookie_path: str, out_dir: str) -> dict |
     """
     log.info("🔌 Camada 4 (yt-dlp): %s", url)
 
-    loop = asyncio.get_running_loop()
     ydl_opts = {
         'outtmpl': os.path.join(out_dir, '%(id)s_%(index)s.%(ext)s'),
         'quiet': True,
         'no_warnings': True,
         'noplaylist': False,
+        'playlistend': int(_bounded_env_number('IG_MAX_STORY_ITEMS', 20, 1, 50)),
         'extract_flat': False,
         'socket_timeout': 30,
         'retries': 2,
@@ -1511,27 +1782,30 @@ async def _extract_via_ytdlp(url: str, cookie_path: str, out_dir: str) -> dict |
             log.warning("Falha ao copiar cookies para yt-dlp: %s", str(e)[:100])
 
     try:
-        info = await asyncio.wait_for(
-            loop.run_in_executor(None, partial(_run_ytdlp, url, ydl_opts)),
-            timeout=60
+        info = await baixar_com_ytdlp(
+            url,
+            ydl_opts,
+            timeout=_bounded_env_number('IG_YTDLP_TIMEOUT', 180, 30, 1800),
         )
 
-        entries = info.get('entries', [info])
         arquivos = []
 
-        for item in entries:
-            path = None
-            if 'requested_downloads' in item:
-                for dl in item['requested_downloads']:
-                    if 'filepath' in dl and os.path.exists(dl['filepath']):
-                        path = dl['filepath']
-                        break
-            if not path:
-                path = item.get('filepath')
-                if path and os.path.exists(path):
-                    arquivos.append(path)
-            elif path not in arquivos:
-                arquivos.append(path)
+        def collect_files(item):
+            if not isinstance(item, dict):
+                return
+            for child in item.get('entries') or []:
+                collect_files(child)
+            candidates = [item.get('filepath')]
+            candidates.extend(
+                download.get('filepath')
+                for download in item.get('requested_downloads') or []
+                if isinstance(download, dict)
+            )
+            for candidate in candidates:
+                if candidate and os.path.isfile(candidate) and candidate not in arquivos:
+                    arquivos.append(candidate)
+
+        collect_files(info)
 
         if not arquivos:
             return None
@@ -1564,6 +1838,154 @@ async def _extract_via_ytdlp(url: str, cookie_path: str, out_dir: str) -> dict |
 #  Orquestrador Principal
 # ═══════════════════════════════════════════════════════════════════════════════
 
+async def _resolve_instagram_user_id(username: str, cookies: dict) -> str | None:
+    """Resolve username para o PK usado pelo endpoint de stories."""
+    if not username or not cookies:
+        return None
+    await _ig_wait_pacing()
+    headers = {**BROWSER_HEADERS, **IG_APP_HEADERS}
+    headers['Cookie'] = _build_cookie_header(cookies)
+    csrf = cookies.get('csrftoken', '')
+    if csrf:
+        headers['X-CSRFToken'] = csrf
+    api_url = (
+        'https://www.instagram.com/api/v1/users/web_profile_info/'
+        f'?username={urllib.parse.quote(username)}'
+    )
+    try:
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+            resp = await client.get(api_url, headers=headers)
+        failure = _observe_instagram_response(resp, "Resolver usuário de story")
+        if failure in {
+            InstagramFailure.IP_RATE_LIMITED,
+            InstagramFailure.COOKIE_INVALID,
+            InstagramFailure.CHALLENGE,
+        } or resp.status_code != 200:
+            return None
+        data = resp.json()
+        user = ((data.get('data') or {}).get('user') or data.get('user') or {})
+        actual_username = str(user.get('username') or '')
+        if actual_username and actual_username.casefold() != username.casefold():
+            log.warning(
+                "Resposta de perfil não pertence ao story solicitado: %s != %s",
+                actual_username,
+                username,
+            )
+            return None
+        user_id = user.get('id') or user.get('pk')
+        return str(user_id) if user_id else None
+    except (httpx.HTTPError, json.JSONDecodeError, ValueError, TypeError) as exc:
+        log.info("   Resolver usuário de story falhou: %s", str(exc)[:160])
+        return None
+
+
+def _story_reels_from_payload(data: dict) -> list[dict]:
+    """Normaliza as duas formas conhecidas do payload de reels_media."""
+    reels: list[dict] = []
+    raw_reels = data.get('reels') or {}
+    if isinstance(raw_reels, dict):
+        reels.extend(value for value in raw_reels.values() if isinstance(value, dict))
+    elif isinstance(raw_reels, list):
+        reels.extend(value for value in raw_reels if isinstance(value, dict))
+    raw_media = data.get('reels_media') or []
+    if isinstance(raw_media, list):
+        reels.extend(value for value in raw_media if isinstance(value, dict))
+    return reels
+
+
+def _parse_story_reels(data: dict, username: str = "") -> dict | None:
+    """Converte uma sequência completa de stories, preservando a ordem da API."""
+    reels = _story_reels_from_payload(data)
+    if not reels:
+        return None
+
+    urls: list[str] = []
+    media_types: list[str] = []
+    uploader = username or 'Autor'
+    caption = ''
+    item_count = 0
+    seen_item_ids: set[str] = set()
+    for reel in reels:
+        reel_user = reel.get('user') or reel.get('owner') or {}
+        reel_username = str(reel_user.get('username') or '')
+        if username and reel_username and reel_username.casefold() != username.casefold():
+            continue
+        if reel_username:
+            uploader = reel_username
+        items = reel.get('items') or []
+        if not isinstance(items, list):
+            return None
+        if reel.get('more_available') or reel.get('has_more_available'):
+            log.warning("Sequência de stories paginada/incompleta; rejeitando resultado")
+            return None
+        for item in items:
+            if not isinstance(item, dict):
+                return None
+            item_id = str(item.get('pk') or item.get('id') or '')
+            if item_id and item_id in seen_item_ids:
+                continue
+            parsed = _parse_api_item(item)
+            if not parsed:
+                log.warning("Story sem mídia utilizável; sequência parcial rejeitada")
+                return None
+            item_count += 1
+            urls.extend(parsed['urls'])
+            media_types.extend([parsed['type']] * len(parsed['urls']))
+            if item_id:
+                seen_item_ids.add(item_id)
+            if not caption:
+                caption = parsed.get('title') or ''
+
+    if not urls or item_count == 0:
+        return None
+    if len(urls) != len(set(urls)):
+        log.warning("Sequência de stories contém mídia duplicada; rejeitando")
+        return None
+    return {
+        'urls': urls,
+        'type': 'carousel' if len(urls) > 1 else (
+            'video' if media_types and media_types[0] == 'video' else 'photo'
+        ),
+        'title': _sanitize_caption(caption),
+        'uploader': uploader,
+        '_expected_items': len(urls),
+        '_complete': True,
+        '_story_sequence': True,
+    }
+
+
+async def _extract_via_stories_api(username: str, cookies: dict) -> dict | None:
+    """Busca diretamente todos os stories ativos de um perfil autenticado."""
+    user_id = await _resolve_instagram_user_id(username, cookies)
+    if not user_id:
+        return None
+
+    await _ig_wait_pacing()
+    headers = {**BROWSER_HEADERS, **IG_APP_HEADERS}
+    headers['Cookie'] = _build_cookie_header(cookies)
+    csrf = cookies.get('csrftoken', '')
+    if csrf:
+        headers['X-CSRFToken'] = csrf
+    api_url = (
+        'https://i.instagram.com/api/v1/feed/reels_media/'
+        f'?reel_ids={urllib.parse.quote(user_id)}&reel_flag=1'
+    )
+    try:
+        async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
+            resp = await client.get(api_url, headers=headers)
+        failure = _observe_instagram_response(resp, "Sequência de stories")
+        if failure in {
+            InstagramFailure.IP_RATE_LIMITED,
+            InstagramFailure.COOKIE_INVALID,
+            InstagramFailure.CHALLENGE,
+        } or resp.status_code != 200:
+            return None
+        return _parse_story_reels(resp.json(), username)
+    except (httpx.HTTPError, json.JSONDecodeError, ValueError, TypeError) as exc:
+        log.info("   Stories API falhou: %s", str(exc)[:200])
+        return None
+
+
 async def _extract_via_highlights_api(highlight_id: str, cookies: dict = None) -> dict | None:
     """Busca o conteúdo de um destaque do Instagram via API interna.
 
@@ -1591,9 +2013,12 @@ async def _extract_via_highlights_api(highlight_id: str, cookies: dict = None) -
         async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
             resp = await client.get(api_url, headers=headers)
             log.info("   Highlights API status: %d", resp.status_code)
-            if _is_challenge_response(resp):
-                log.warning("   🍪 Highlight API redirecionou para challenge")
-                _mark_cookies_bad("Highlights API retornou challenge")
+            failure = _observe_instagram_response(resp, "Highlights API")
+            if failure in {
+                InstagramFailure.IP_RATE_LIMITED,
+                InstagramFailure.COOKIE_INVALID,
+                InstagramFailure.CHALLENGE,
+            }:
                 return None
             if resp.status_code != 200:
                 log.info("   Highlights API retornou %d", resp.status_code)
@@ -1602,7 +2027,6 @@ async def _extract_via_highlights_api(highlight_id: str, cookies: dict = None) -
                 data = resp.json()
             except (json.JSONDecodeError, ValueError):
                 log.warning("   🍪 Highlights API body não é JSON")
-                _mark_cookies_bad("Highlights API retornou HTML")
                 return None
 
         reels = data.get('reels', {})
@@ -1651,9 +2075,9 @@ async def download_instagram(
     """
     Download autenticado com duas contas, em ordem deterministica.
 
-    Tenta somente a API interna com os cookies primarios e, se ela falhar,
-    repete com os cookies secundarios. Nao faz auto-login, GraphQL, embed ou
-    yt-dlp: a manutencao das duas sessoes fica totalmente explicita.
+    Para cada conta configurada, tenta as rotas autenticadas adequadas ao tipo
+    de URL e depois o yt-dlp com uma copia dos mesmos cookies. A conta
+    secundaria so entra quando a primaria nao entrega uma midia valida.
 
     Retorna dict com:
       - urls: lista de URLs diretas da CDN, OU
@@ -1665,6 +2089,14 @@ async def download_instagram(
       - _primary_cookie_failed: True quando a secundaria salvou o download
     """
     log.info("📷 Instagram Extractor v2: %s", url)
+    try:
+        resolved_url = await resolve_instagram_share_url(url)
+    except (ValueError, httpx.HTTPError) as exc:
+        log.warning("❌ Link /share do Instagram rejeitado: %s", str(exc)[:160])
+        return None
+    if resolved_url != url:
+        log.info("🔗 Instagram /share resolvido: %s", resolved_url)
+        url = resolved_url
     shortcode = _get_shortcode(url)
 
     if not shortcode and not _is_highlight(url) and not _is_story(url):
@@ -1682,33 +2114,75 @@ async def download_instagram(
             if slot == "primary":
                 primary_failed = True
             continue
+        account_id = _instagram_account_pool.register(slot, path)
         cookies = _load_cookies_from_file(path)
-        if not cookies:
+        if not cookies or 'sessionid' not in cookies:
             log.warning("🍪 Cookies Instagram %s vazios ou invalidos", slot)
+            _instagram_account_pool.report_failure(
+                account_id,
+                'cookie_file',
+                InstagramFailure.COOKIE_INVALID,
+                "Arquivo de cookies vazio ou sem sessionid",
+            )
             if slot == "primary":
                 primary_failed = True
             continue
 
         log.info("🍪 Tentando conta Instagram %s", slot)
         if _is_highlight(url):
-            result = await _extract_via_highlights_api(_get_highlight_id(url), cookies)
+            result = await _run_account_endpoint(
+                account_id,
+                'highlights_api',
+                _extract_via_highlights_api,
+                _get_highlight_id(url),
+                cookies,
+            )
         elif _is_story(url):
             story_info = _get_story_info(url)
-            result = await _extract_via_api_media_id(story_info[1], cookies) if story_info else None
+            story_media_id = story_info[1] if story_info else None
+            if story_media_id:
+                result = await _run_account_endpoint(
+                    account_id,
+                    'story_media_api',
+                    _extract_via_api_media_id,
+                    story_media_id,
+                    cookies,
+                )
+            else:
+                result = await _run_account_endpoint(
+                    account_id,
+                    'stories_api',
+                    _extract_via_stories_api,
+                    story_info[0],
+                    cookies,
+                ) if story_info else None
         else:
-            result = await _extract_via_api(shortcode, cookies)
+            result = await _try_all_layers(
+                shortcode, cookies, url, account_id=account_id
+            )
 
         # Segunda forma de leitura da MESMA conta: o yt-dlp recebe somente o
         # arquivo de cookies deste slot. Isso contorna bloqueios do endpoint de
         # metadados sem recorrer a sessao anonima ou a outra fonte.
         if not _is_acceptable_result_for_url(result, url):
-            log.info("🍪 API da conta %s falhou; tentando extrator autenticado", slot)
-            result = await _extract_via_ytdlp(url, path, out_dir)
+            log.info("🍪 Rotas da conta %s falharam; tentando extrator autenticado", slot)
+            result = await _run_account_endpoint(
+                account_id, 'ytdlp', _extract_via_ytdlp, url, path, out_dir
+            )
+
+        if result and shortcode and not result.get('title'):
+            post_meta = await _fetch_post_meta_via_oembed(shortcode, _get_embed_path(url))
+            if post_meta and post_meta.get('title'):
+                result['title'] = post_meta['title']
+                if post_meta.get('uploader') and (
+                    not result.get('uploader') or result.get('uploader') == 'Autor'
+                ):
+                    result['uploader'] = post_meta['uploader']
 
         if _is_acceptable_result_for_url(result, url):
             result['_cookie_source'] = slot
             result['_primary_cookie_failed'] = primary_failed
-            reset_cookies_bad()
+            reset_cookies_bad(reset_pool=False)
             log.info("✅ Instagram via conta %s: %s", slot, url)
             return result
         if slot == "primary":
@@ -1729,7 +2203,13 @@ def _is_acceptable_result_for_url(result: dict | None, url: str) -> bool:
     return True
 
 
-async def _try_all_layers(shortcode: str, cookies: dict, url: str) -> dict | None:
+async def _try_all_layers(
+    shortcode: str,
+    cookies: dict,
+    url: str,
+    *,
+    account_id: str = "",
+) -> dict | None:
     """Tenta as 3 camadas de extração (API, GraphQL, Embed) com os cookies fornecidos."""
 
     # Se o IP ainda esta em cooldown de 429, martelar API/GraphQL/Embed de novo
@@ -1742,21 +2222,32 @@ async def _try_all_layers(shortcode: str, cookies: dict, url: str) -> dict | Non
     # Cada camada ja aplica o pacing global antes de bater no Instagram.
 
     # ── Camada 1: API Interna ──
-    result = await _extract_via_api(shortcode, cookies)
+    result = await _run_account_endpoint(
+        account_id, 'media_api', _extract_via_api, shortcode, cookies
+    )
     if _is_acceptable_result_for_url(result, url):
         log.info("✅ Instagram download via API Interna: %s (%d itens)", url, len(result['urls']))
         return result
     log.info("⏭️ API Interna falhou, tentando Camada 2...")
 
     # ── Camada 2: GraphQL ──
-    result = await _extract_via_graphql(shortcode, cookies)
+    result = await _run_account_endpoint(
+        account_id, 'graphql', _extract_via_graphql, shortcode, cookies
+    )
     if _is_acceptable_result_for_url(result, url):
         log.info("✅ Instagram download via GraphQL: %s (%d itens)", url, len(result['urls']))
         return result
     log.info("⏭️ GraphQL falhou, tentando Camada 3...")
 
     # ── Camada 3: Embed Scraping ──
-    result = await _extract_via_embed(shortcode, cookies, _get_embed_path(url))
+    result = await _run_account_endpoint(
+        account_id,
+        'embed',
+        _extract_via_embed,
+        shortcode,
+        cookies,
+        _get_embed_path(url),
+    )
     if _is_acceptable_result_for_url(result, url):
         log.info("✅ Instagram download via Embed: %s (%d itens)", url, len(result['urls']))
         return result

@@ -112,19 +112,11 @@ window.FMCPT_CATALOG = {
           "usage": ""
         },
         {
-          "name": "update_ytdlp",
-          "category": "Administracao",
-          "description": "Atualiza o yt-dlp manualmente",
-          "aliases": [],
-          "adminOnly": false,
-          "usage": ""
-        },
-        {
           "name": "ig_status",
           "category": "Administracao",
           "description": "Verifica a validade dos cookies do Instagram",
           "aliases": [],
-          "adminOnly": false,
+          "adminOnly": true,
           "usage": ""
         },
         {
@@ -132,7 +124,7 @@ window.FMCPT_CATALOG = {
           "category": "Administracao",
           "description": "Gera cookies novos do Instagram via auto-login",
           "aliases": [],
-          "adminOnly": false,
+          "adminOnly": true,
           "usage": ""
         }
       ]

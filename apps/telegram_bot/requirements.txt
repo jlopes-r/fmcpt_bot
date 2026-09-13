@@ -1,13 +1,41 @@
-pyrogram
-tgcrypto
-yt-dlp
-curl-cffi
-aiohttp
-psutil
-python-dotenv
-requests
-httpx
-Pillow
-instaloader
-deep-translator
-langdetect
+# Lock de runtime validado em conjunto em 2026-09-12.
+# Fontes diretas: requirements.in. Dependencias transitivas tambem ficam fixas.
+Pyrogram==2.0.106
+TgCrypto==1.2.5
+yt-dlp==2026.8.19
+curl-cffi==0.16.3
+aiohttp==3.14.3
+psutil==7.2.2
+python-dotenv==1.2.3
+requests==2.34.2
+httpx==0.28.1
+Pillow==12.3.0
+instaloader==4.15.3
+deep-translator==1.11.4
+langdetect==1.0.9
+
+# Importada diretamente por apps/telegram_bot/facebook.py.
+beautifulsoup4==4.15.0
+
+# Dependencias transitivas do runtime.
+aiohappyeyeballs==2.7.1
+aiosignal==1.4.0
+anyio==4.15.0
+attrs==26.1.0
+certifi==2026.7.22
+cffi==2.1.1
+charset-normalizer==3.5.1
+frozenlist==1.8.0
+h11==0.16.0
+httpcore==1.0.9
+idna==3.19
+multidict==6.7.1
+propcache==0.5.2
+pyaes==1.6.1
+pycparser==3.0
+PySocks==1.7.1
+six==1.17.0
+soupsieve==2.9.2
+typing_extensions==4.16.0
+urllib3==2.7.0
+yarl==1.24.5

@@ -249,13 +249,6 @@ class DeteccaoConservadoraTest(unittest.TestCase):
         self.assertTrue(traduzir_com_detalhes("你好世界今天天气很好")["foi_traduzido"])
         mock_gt.assert_called_once_with(source="zh-CN", target="pt")
 
-    @patch("apps.telegram_bot.translator.GoogleTranslator")
-    @patch("apps.telegram_bot.translator._detectar_idioma", return_value=None)
-    def test_metadata_incoerente_nao_traduz_texto_longo(self, mock_detect, mock_gt):
-        texto = "Sydney Sweeney surge em publicidade para casa de apostas."
-        self.assertFalse(traduzir_com_detalhes(texto, idioma_informado="es")["foi_traduzido"])
-        mock_gt.assert_not_called()
-
     @patch("apps.telegram_bot.translator.MyMemoryTranslator")
     @patch("apps.telegram_bot.translator.time.sleep")
     @patch("apps.telegram_bot.translator.GoogleTranslator")

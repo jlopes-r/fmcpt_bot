@@ -1,0 +1,17 @@
+[Unit]
+Description=Super Bot - testes reais dos contratos das redes sociais
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=juanl
+WorkingDirectory=/home/juanl/bot
+Environment=ENV_FILE=/home/juanl/bot/apps/telegram_bot/.env
+EnvironmentFile=/home/juanl/bot/apps/telegram_bot/.env
+ExecStart=/home/juanl/bot/.deploy/current-venv/bin/python /home/juanl/bot/scripts/check_social_contracts.py
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+

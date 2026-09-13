@@ -1,6 +1,8 @@
 import unittest
 import time
 import json
+import tempfile
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -180,6 +182,142 @@ class InstagramExtractorTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(ig.get_profile_username("https://www.instagram.com/explore/"))
         self.assertIsNone(ig.get_profile_username("https://example.com/openai/"))
         self.assertIsNone(ig.get_profile_username("https://instagram.com.example.com/openai/"))
+
+    def test_story_links_with_and_without_media_id_are_recognized(self):
+        self.assertTrue(ig._is_story("https://www.instagram.com/stories/ada/123456/"))
+        self.assertEqual(ig._get_story_info(
+            "https://www.instagram.com/stories/ada/123456/"
+        ), ("ada", "123456"))
+        self.assertTrue(ig._is_story("https://www.instagram.com/stories/ada/"))
+        self.assertEqual(ig._get_story_info(
+            "https://www.instagram.com/stories/ada/"
+        ), ("ada", None))
+        self.assertFalse(ig._is_story(
+            "https://www.instagram.com/stories/highlights/987654/"
+        ))
+
+    async def test_current_graphql_response_parses_carousel(self):
+        product = {
+            'user': {'username': 'ada'},
+            'caption': {'text': 'Album'},
+            'carousel_media': [
+                {'image_versions2': {'candidates': [{'url': 'https://cdn/one.jpg'}]}},
+                {'video_versions': [{'url': 'https://cdn/two.mp4'}]},
+            ],
+        }
+        response = httpx.Response(
+            200,
+            json={'data': {'xig_polaris_media': {
+                'if_not_gated_logged_out': product,
+            }}},
+            request=httpx.Request('POST', 'https://www.instagram.com/api/graphql'),
+        )
+        client = AsyncMock()
+        client.__aenter__.return_value = client
+        client.post.return_value = response
+        with (
+            patch.object(ig.httpx, 'AsyncClient', return_value=client),
+            patch.object(ig, '_ig_wait_pacing', new=AsyncMock()),
+        ):
+            result = await ig._extract_via_graphql('ABC123', {'csrftoken': 'csrf'})
+
+        self.assertEqual(result['urls'], ['https://cdn/one.jpg', 'https://cdn/two.mp4'])
+        self.assertEqual(result['type'], 'carousel')
+        client.get.assert_not_awaited()
+
+    async def test_highlight_api_collects_all_items_in_order(self):
+        response = httpx.Response(
+            200,
+            json={'reels': {'highlight:987654': {'items': [
+                {
+                    'user': {'username': 'ada'},
+                    'video_versions': [{'url': 'https://cdn/one.mp4'}],
+                },
+                {
+                    'user': {'username': 'ada'},
+                    'image_versions2': {'candidates': [{'url': 'https://cdn/two.jpg'}]},
+                },
+            ]}}},
+            request=httpx.Request('GET', 'https://i.instagram.com/api/v1/feed/reels_media/'),
+        )
+        client = AsyncMock()
+        client.__aenter__.return_value = client
+        client.get.return_value = response
+        with (
+            patch.object(ig.httpx, 'AsyncClient', return_value=client),
+            patch.object(ig, '_ig_wait_pacing', new=AsyncMock()),
+        ):
+            result = await ig._extract_via_highlights_api(
+                '987654', {'sessionid': 'session', 'csrftoken': 'csrf'}
+            )
+
+        self.assertEqual(result['urls'], ['https://cdn/one.mp4', 'https://cdn/two.jpg'])
+        self.assertEqual(result['type'], 'carousel')
+
+    async def test_direct_story_api_collects_every_item_in_order(self):
+        response = httpx.Response(
+            200,
+            json={'reels': {'42': {
+                'user': {'username': 'ada'},
+                'items': [
+                    {
+                        'pk': 'one',
+                        'user': {'username': 'ada'},
+                        'image_versions2': {'candidates': [{'url': 'https://cdn/one.jpg'}]},
+                    },
+                    {
+                        'pk': 'two',
+                        'user': {'username': 'ada'},
+                        'video_versions': [{'url': 'https://cdn/two.mp4'}],
+                    },
+                ],
+            }}},
+            request=httpx.Request('GET', 'https://i.instagram.com/api/v1/feed/reels_media/'),
+        )
+        client = AsyncMock()
+        client.__aenter__.return_value = client
+        client.get.return_value = response
+        with (
+            patch.object(ig, '_resolve_instagram_user_id', new=AsyncMock(return_value='42')),
+            patch.object(ig.httpx, 'AsyncClient', return_value=client),
+            patch.object(ig, '_ig_wait_pacing', new=AsyncMock()),
+        ):
+            result = await ig._extract_via_stories_api('ada', {'sessionid': 'session'})
+
+        self.assertEqual(result['urls'], ['https://cdn/one.jpg', 'https://cdn/two.mp4'])
+        self.assertEqual(result['_expected_items'], 2)
+        self.assertTrue(result['_complete'])
+        self.assertTrue(result['_story_sequence'])
+
+    def test_api_carousel_rejects_missing_child_media(self):
+        item = {
+            'carousel_media_count': 2,
+            'carousel_media': [
+                {'image_versions2': {'candidates': [{'url': 'https://cdn/one.jpg'}]}},
+                {'image_versions2': {'candidates': []}},
+            ],
+        }
+        self.assertIsNone(ig._parse_api_item(item))
+
+    def test_graphql_carousel_rejects_truncated_page(self):
+        media = {
+            'edge_sidecar_to_children': {
+                'count': 3,
+                'page_info': {'has_next_page': True},
+                'edges': [
+                    {'node': {'display_url': 'https://cdn/one.jpg'}},
+                    {'node': {'display_url': 'https://cdn/two.jpg'}},
+                ],
+            },
+        }
+        self.assertIsNone(ig._parse_graphql_media(media))
+
+    def test_story_sequence_rejects_partial_payload(self):
+        payload = {'reels': {'42': {'user': {'username': 'ada'}, 'items': [
+            {'pk': 'one', 'image_versions2': {'candidates': [{'url': 'https://cdn/one.jpg'}]}},
+            {'pk': 'two'},
+        ]}}}
+        self.assertIsNone(ig._parse_story_reels(payload, 'ada'))
 
     async def test_fetch_instagram_profile_uses_web_profile_info(self):
         with (
@@ -412,7 +550,8 @@ class InstagramExtractorTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(result["valid"])
         self.assertIn("login", result["reason"].lower())
-        self.assertTrue(ig._cookies_known_bad)
+        self.assertEqual(result["failure"], "cookie_invalid")
+        self.assertFalse(ig._cookies_known_bad)
         self.addCleanup(ig.reset_cookies_bad)
 
     async def test_validate_cookie_health_does_not_invalidate_on_429(self):
@@ -466,6 +605,8 @@ class InstagramExtractorTest(unittest.IsolatedAsyncioTestCase):
                 {"sessionid": "primary"}, {"sessionid": "secondary"},
             ]),
             patch.object(ig, "_extract_via_api", new=AsyncMock(side_effect=[None, video_result])) as api,
+            patch.object(ig, "_extract_via_graphql", new=AsyncMock(return_value=None)),
+            patch.object(ig, "_extract_via_embed", new=AsyncMock(return_value=None)),
             patch.object(ig, "_extract_via_ytdlp", new=AsyncMock(return_value=None)),
         ):
             result = await ig.download_instagram(
@@ -476,14 +617,14 @@ class InstagramExtractorTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["_primary_cookie_failed"])
         self.assertEqual(api.await_count, 2)
 
-    async def test_authenticated_extractor_uses_each_cookie_without_anonymous_fallback(self):
+    async def test_authenticated_layers_and_ytdlp_use_each_cookie(self):
         reel_url = "https://www.instagram.com/reel/DNBCJoiOp9J/"
         with (
             patch.object(ig.os.path, "exists", return_value=True),
             patch.object(ig, "_load_cookies_from_file", return_value={"sessionid": "x"}),
             patch.object(ig, "_extract_via_api", new=AsyncMock(return_value=None)) as api,
-            patch.object(ig, "_extract_via_graphql", new=AsyncMock()) as graphql,
-            patch.object(ig, "_extract_via_embed", new=AsyncMock()) as embed,
+            patch.object(ig, "_extract_via_graphql", new=AsyncMock(return_value=None)) as graphql,
+            patch.object(ig, "_extract_via_embed", new=AsyncMock(return_value=None)) as embed,
             patch.object(ig, "_extract_via_ytdlp", new=AsyncMock(return_value=None)) as ytdlp,
         ):
             result = await ig.download_instagram(
@@ -492,11 +633,151 @@ class InstagramExtractorTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNone(result)
         self.assertEqual(api.await_count, 2)
-        graphql.assert_not_awaited()
-        embed.assert_not_awaited()
+        self.assertEqual(graphql.await_count, 2)
+        self.assertEqual(embed.await_count, 2)
         self.assertEqual(ytdlp.await_count, 2)
         self.assertEqual(ytdlp.await_args_list[0].args[1], "primary.txt")
         self.assertEqual(ytdlp.await_args_list[1].args[1], "secondary.txt")
+
+    async def test_story_without_media_id_falls_back_to_authenticated_ytdlp(self):
+        story_url = "https://www.instagram.com/stories/ada/"
+        story_result = {
+            "files": ["C:/tmp/story.mp4"],
+            "type": "video",
+            "title": "Story by ada",
+            "uploader": "ada",
+        }
+        with (
+            patch.object(ig.os.path, "exists", return_value=True),
+            patch.object(ig, "_load_cookies_from_file", return_value={"sessionid": "x"}),
+            patch.object(ig, "_extract_via_api_media_id", new=AsyncMock()) as media_api,
+            patch.object(ig, "_extract_via_stories_api", new=AsyncMock(return_value=None)) as stories_api,
+            patch.object(ig, "_extract_via_ytdlp", new=AsyncMock(return_value=story_result)) as ytdlp,
+        ):
+            result = await ig.download_instagram(story_url, "primary.txt", "C:/tmp")
+
+        media_api.assert_not_awaited()
+        stories_api.assert_awaited_once_with("ada", {"sessionid": "x"})
+        ytdlp.assert_awaited_once_with(story_url, "primary.txt", "C:/tmp")
+        self.assertEqual(result["_cookie_source"], "primary")
+
+    async def test_story_without_id_uses_complete_direct_sequence(self):
+        story_url = "https://www.instagram.com/stories/ada/"
+        story_result = {
+            "urls": ["https://cdn/first.jpg", "https://cdn/second.mp4"],
+            "type": "carousel",
+            "title": "",
+            "uploader": "ada",
+            "_expected_items": 2,
+            "_complete": True,
+            "_story_sequence": True,
+        }
+        with (
+            patch.object(ig.os.path, "exists", return_value=True),
+            patch.object(ig, "_load_cookies_from_file", return_value={"sessionid": "x"}),
+            patch.object(ig, "_extract_via_stories_api", new=AsyncMock(return_value=story_result)) as stories_api,
+            patch.object(ig, "_extract_via_ytdlp", new=AsyncMock()) as ytdlp,
+        ):
+            result = await ig.download_instagram(story_url, "primary.txt", "C:/tmp")
+
+        stories_api.assert_awaited_once_with("ada", {"sessionid": "x"})
+        ytdlp.assert_not_awaited()
+        self.assertEqual(result["urls"], story_result["urls"])
+        self.assertTrue(result["_complete"])
+
+    async def test_share_link_is_resolved_before_routing(self):
+        shared = "https://www.instagram.com/share/reel/example/"
+        canonical = "https://www.instagram.com/reel/DNBCJoiOp9J/"
+        result_data = {
+            "urls": ["https://cdn/reel.mp4"],
+            "type": "video",
+            "title": "",
+            "uploader": "ada",
+        }
+        with (
+            patch.object(ig, "resolve_instagram_share_url", new=AsyncMock(return_value=canonical)) as resolver,
+            patch.object(ig.os.path, "exists", return_value=True),
+            patch.object(ig, "_load_cookies_from_file", return_value={"sessionid": "x"}),
+            patch.object(ig, "_extract_via_api", new=AsyncMock(return_value=result_data)),
+        ):
+            result = await ig.download_instagram(shared, "primary.txt", "C:/tmp")
+
+        resolver.assert_awaited_once_with(shared)
+        self.assertEqual(result["urls"], ["https://cdn/reel.mp4"])
+
+    async def test_ytdlp_fallback_uses_isolated_worker_and_keeps_story_sequence(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            cookie = root / "cookies.txt"
+            cookie.write_text("# Netscape HTTP Cookie File\n", encoding="utf-8")
+            first = root / "first.mp4"
+            second = root / "second.jpg"
+            first.write_bytes(b"video")
+            second.write_bytes(b"photo")
+            worker_result = {
+                "title": "Stories",
+                "uploader": "ada",
+                "entries": [
+                    {"requested_downloads": [{"filepath": str(first)}]},
+                    {"filepath": str(second)},
+                ],
+            }
+            worker = AsyncMock(return_value=worker_result)
+            with patch.object(ig, "baixar_com_ytdlp", new=worker):
+                result = await ig._extract_via_ytdlp(
+                    "https://www.instagram.com/stories/ada/",
+                    str(cookie),
+                    folder,
+                )
+
+        self.assertEqual(result["files"], [str(first), str(second)])
+        options = worker.await_args.args[1]
+        self.assertFalse(options["noplaylist"])
+        self.assertGreaterEqual(options["playlistend"], 2)
+        self.assertGreaterEqual(worker.await_args.kwargs["timeout"], 30)
+
+    async def test_story_with_media_id_uses_direct_authenticated_api(self):
+        story_url = "https://www.instagram.com/stories/ada/123456/"
+        story_result = {
+            "urls": ["https://cdn/story.jpg"],
+            "type": "photo",
+            "title": "",
+            "uploader": "ada",
+        }
+        with (
+            patch.object(ig.os.path, "exists", return_value=True),
+            patch.object(ig, "_load_cookies_from_file", return_value={"sessionid": "x"}),
+            patch.object(ig, "_extract_via_api_media_id", new=AsyncMock(return_value=story_result)) as media_api,
+            patch.object(ig, "_extract_via_ytdlp", new=AsyncMock()) as ytdlp,
+        ):
+            result = await ig.download_instagram(story_url, "primary.txt", "C:/tmp")
+
+        media_api.assert_awaited_once_with("123456", {"sessionid": "x"})
+        ytdlp.assert_not_awaited()
+        self.assertEqual(result["_cookie_source"], "primary")
+
+    async def test_profile_tries_secondary_cookie_after_primary_session_fails(self):
+        failed = httpx.Response(401, text='login required')
+        client = AsyncMock()
+        client.__aenter__.return_value = client
+        client.get.side_effect = [failed, failed, FakeProfileResponse()]
+        with (
+            patch.object(ig, '_load_cookies_from_file', side_effect=[
+                {'sessionid': 'primary'}, {'sessionid': 'secondary'},
+            ]),
+            patch.object(ig.httpx, 'AsyncClient', return_value=client),
+            patch.object(ig.asyncio, 'sleep', new=AsyncMock()),
+        ):
+            profile = await ig.fetch_instagram_profile(
+                'https://www.instagram.com/openai/',
+                'primary.txt',
+                secondary_cookie_path='secondary.txt',
+            )
+
+        self.assertEqual(profile['username'], 'openai')
+        self.assertEqual(client.get.await_count, 3)
+        secondary_headers = client.get.await_args_list[2].kwargs['headers']
+        self.assertIn('sessionid=secondary', secondary_headers['Cookie'])
 
 
 if __name__ == "__main__":

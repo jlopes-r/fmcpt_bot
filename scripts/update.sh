@@ -1,138 +1,72 @@
-#!/bin/bash
-# ==============================================
-# Script de Atualização - VM
-# ==============================================
-# Uso: cd ~/bot && ./scripts/update.sh
-#
-# Faz git pull, detecta mudanças, gera changelog
-# e reinicia os bots automaticamente.
-# ==============================================
+#!/usr/bin/env bash
+# Safe on-VM updater. The deploy implementation itself is loaded from the
+# fetched target commit, so running this file never mutates its own execution.
+set -Eeuo pipefail
+IFS=$'\n\t'
 
-# Configuração - pode ser sobrescrita por REPO_DIR no ambiente.
 REPO_DIR="${REPO_DIR:-/home/juanl/bot}"
-SUPERBOT_SERVICE="superbot.service"
-COMANDOS_SERVICE="comandosbot.service"
+BRANCH="${DEPLOY_BRANCH:-main}"
+SERVICE="${SUPERBOT_SERVICE:-superbot.service}"
 
-cd "$REPO_DIR" || { echo "❌ Diretório $REPO_DIR não encontrado!"; exit 1; }
+usage() {
+    cat <<'EOF'
+Usage: ./scripts/update.sh [deploy options]
 
-echo "================================================"
-echo "🔄 Verificando atualizações..."
-echo "================================================"
-echo ""
+Supported options:
+  --skip-dependencies
+  --skip-tests
+  --force-restart
+  --health-timeout SECONDS
+  --stability-seconds SECONDS
+  --retain-venvs COUNT
 
-# Salva o HEAD atual antes do pull
-OLD_HEAD=$(git rev-parse HEAD 2>/dev/null)
-
-if [ -z "$OLD_HEAD" ]; then
-    echo "❌ Erro: Não é um repositório git válido."
-    exit 1
-fi
-
-# Faz o pull
-echo "📥 Executando git pull..."
-git pull --ff-only
-# Instala/atualiza as dependencias do bot no venv
-# (usa python -m pip por causa do shebang quebrado de bin/pip)
-echo "📦 Instalando dependencias do bot (pip install)..."
-if [ -f "apps/telegram_bot/requirements.txt" ]; then
-    venv/bin/python -m pip install -r apps/telegram_bot/requirements.txt
-else
-    echo "  ⚠️  requirements.txt nao encontrado"
-fi
-echo ""
-
-# Pega o novo HEAD
-NEW_HEAD=$(git rev-parse HEAD 2>/dev/null)
-
-# Verifica se houve mudanças
-if [ "$OLD_HEAD" = "$NEW_HEAD" ]; then
-    echo ""
-    echo "✅ Nenhuma atualização encontrada. Tudo está atualizado!"
-    echo ""
-    
-    # Pergunta se quer reiniciar mesmo assim
-    read -p "Deseja reiniciar os bots mesmo assim? (s/N) " resposta
-    if [ "$resposta" = "s" ] || [ "$resposta" = "S" ]; then
-        echo "🔄 Reiniciando serviços..."
-        sudo systemctl restart "$SUPERBOT_SERVICE" 2>/dev/null
-        sudo systemctl restart "$COMANDOS_SERVICE" 2>/dev/null
-        echo "✅ Bots reiniciados!"
-    fi
-    exit 0
-fi
-
-echo ""
-echo "🆕 Atualizações detectadas!"
-echo ""
-
-# Mostra os commits novos no terminal
-echo "📋 Commits novos:"
-git log --oneline --no-merges ${OLD_HEAD}..${NEW_HEAD}
-echo ""
-
-# Gera os arquivos de changelog
-CHANGELOG=$(git log --oneline --no-merges ${OLD_HEAD}..${NEW_HEAD})
-
-# Verifica quais arquivos mudaram para notificar apenas o bot correto
-CHANGED_FILES=$(git diff --name-only ${OLD_HEAD}..${NEW_HEAD})
-
-export MUDOU_SUPERBOT=false
-export MUDOU_COMANDOS=false
-
-if echo "$CHANGED_FILES" | grep -qE "apps/telegram_bot|packages/|assets/|scripts/|data/"; then
-    export MUDOU_SUPERBOT=true
-fi
-
-if echo "$CHANGED_FILES" | grep -qE "apps/comandos"; then
-    export MUDOU_COMANDOS=true
-fi
-
-# Se nada específico bateu, notifica o principal por padrão
-if [ "$MUDOU_SUPERBOT" = "false" ] && [ "$MUDOU_COMANDOS" = "false" ]; then
-    export MUDOU_SUPERBOT=true
-fi
-
-echo "$CHANGELOG" | python3 -c "
-import json, sys, os
-from datetime import datetime, timezone, timedelta
-
-commits = []
-for line in sys.stdin:
-    line = line.strip()
-    if line:
-        parts = line.split(' ', 1)
-        commits.append({
-            'hash': parts[0],
-            'message': parts[1] if len(parts) > 1 else '(sem mensagem)'
-        })
-
-tz_br = timezone(timedelta(hours=-3))
-data = {
-    'commits': commits,
-    'updated_at': datetime.now(tz_br).strftime('%d/%m/%Y às %H:%M')
+REPO_DIR, DEPLOY_BRANCH and SUPERBOT_SERVICE may be set in the environment.
+EOF
 }
 
-if os.environ.get('MUDOU_SUPERBOT') == 'true':
-    with open('data/update_superbot.json', 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+EXTRA_ARGS=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --skip-dependencies|--skip-tests|--force-restart)
+            EXTRA_ARGS+=("$1")
+            shift
+            ;;
+        --health-timeout|--stability-seconds|--retain-venvs)
+            [[ $# -ge 2 ]] || { echo "Missing value for $1" >&2; exit 64; }
+            EXTRA_ARGS+=("$1" "$2")
+            shift 2
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "Unknown argument: $1" >&2
+            usage >&2
+            exit 64
+            ;;
+    esac
+done
 
-if os.environ.get('MUDOU_COMANDOS') == 'true':
-    with open('data/update_comandos.json', 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+[[ "$REPO_DIR" == /* && "$REPO_DIR" =~ ^/[A-Za-z0-9._/-]+$ ]] \
+    || { echo "Invalid REPO_DIR: $REPO_DIR" >&2; exit 64; }
+[[ "$BRANCH" =~ ^[A-Za-z0-9._/-]+$ ]] \
+    || { echo "Invalid DEPLOY_BRANCH: $BRANCH" >&2; exit 64; }
+[[ "$SERVICE" =~ ^[A-Za-z0-9_.@-]+\.service$ ]] \
+    || { echo "Invalid SUPERBOT_SERVICE: $SERVICE" >&2; exit 64; }
 
-print(f'📋 {len(commits)} commit(s) processado(s). SuperBot={os.environ.get(\"MUDOU_SUPERBOT\")}, Comandos={os.environ.get(\"MUDOU_COMANDOS\")}')
-"
+cd "$REPO_DIR"
+[[ -d .git ]] || { echo "$REPO_DIR is not a Git worktree" >&2; exit 1; }
 
-# Reinicia os serviços
-echo "🔄 Reiniciando serviços..."
-sudo systemctl restart "$SUPERBOT_SERVICE" 2>/dev/null && echo "  ✅ $SUPERBOT_SERVICE reiniciado" || echo "  ⚠️  $SUPERBOT_SERVICE não encontrado ou falhou"
-sudo systemctl restart "$COMANDOS_SERVICE" 2>/dev/null && echo "  ✅ $COMANDOS_SERVICE reiniciado" || echo "  ⚠️  $COMANDOS_SERVICE não encontrado ou falhou"
+echo "[update] Fetching origin/$BRANCH (the bot remains online)..."
+git fetch --prune origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH"
+TARGET=$(git rev-parse --verify "refs/remotes/origin/$BRANCH^{commit}")
+git cat-file -e "${TARGET}:scripts/deploy_remote.sh"
 
-echo ""
-echo "================================================"
-echo "✅ Atualização concluída com sucesso!"
-echo "================================================"
-echo ""
-echo "Os bots enviarão a notificação de atualização"
-echo "nos grupos automaticamente ao iniciar."
-echo ""
+echo "[update] Starting transactional deploy of $TARGET..."
+git show "${TARGET}:scripts/deploy_remote.sh" | bash -s -- \
+    --repo "$REPO_DIR" \
+    --service "$SERVICE" \
+    --branch "$BRANCH" \
+    --target "$TARGET" \
+    "${EXTRA_ARGS[@]}"

@@ -2,7 +2,6 @@
 """Login to Instagram using instaloader and generate cookies.txt for yt-dlp."""
 import instaloader
 import os
-import uuid
 
 SESSION_FILE = "/home/juanl/bot/data/instaloader_session"
 COOKIE_FILE = "/home/juanl/bot/data/instagram_cookies.txt"

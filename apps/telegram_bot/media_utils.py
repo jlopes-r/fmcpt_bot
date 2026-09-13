@@ -36,7 +36,7 @@ def detectar_extensao(url: str, content_type: str = "") -> str:
 
 def progresso_upload(msg_espera):
     """Cria um callback de progresso para upload de vídeo."""
-    estado = {"ultimo_pct": 0, "ultimo_tempo": 0}
+    estado: dict[str, float] = {"ultimo_pct": 0, "ultimo_tempo": 0}
 
     async def _callback(current, total):
         if total == 0:

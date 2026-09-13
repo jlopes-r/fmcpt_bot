@@ -1,1 +1,6 @@
 -r apps/telegram_bot/requirements.txt
+
+# Ferramentas locais de qualidade; nao fazem parte do ambiente de producao.
+ruff==0.16.7
+mypy==2.3.1
+pip-audit==2.10.1

@@ -165,11 +165,26 @@ python scripts/renew_ig_cookies.py
 .\scripts\deploy.ps1
 ```
 
-### Testes
+### Qualidade e testes locais
+
 ```powershell
 python -m pip install -r requirements-dev.txt
-python -m unittest discover -s tests -v
+python tools/check_quality.py
 ```
+
+Esse comando executa Ruff, a verificacao gradual de tipos com mypy e todos os
+testes. Nada depende de GitHub Actions. Para consultar tambem a base publica de
+vulnerabilidades (requer internet), use:
+
+```powershell
+python tools/check_quality.py --audit
+```
+
+As dependencias de runtime estao fixadas em
+`apps/telegram_bot/requirements.txt`. Atualizacoes devem ser deliberadas e
+validadas pelos mesmos comandos. A auditoria registra uma excecao explicita para
+`PYSEC-2022-252`: a release maliciosa de `deep-translator` foi a 1.8.5, enquanto
+este projeto fixa a 1.11.4.
 
 O deploy busca o branch `main` pela VM configurada no script. Cookies e `.env`
 permanecem apenas no servidor.

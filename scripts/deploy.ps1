@@ -3,45 +3,73 @@ param(
     [string]$Zone = "us-west1-a",
     [string]$Project = "superbot-project",
     [string]$RemoteRoot = "/home/juanl/bot",
-    [switch]$SkipDependencies
+    [string]$Branch = "main",
+    [string]$Service = "superbot.service",
+    [ValidateRange(10, 300)]
+    [int]$HealthTimeout = 45,
+    [ValidateRange(3, 120)]
+    [int]$StabilitySeconds = 12,
+    [ValidateRange(2, 20)]
+    [int]$RetainVenvs = 4,
+    [switch]$SkipDependencies,
+    [switch]$SkipTests,
+    [switch]$ForceRestart
 )
 
 $ErrorActionPreference = "Stop"
+Set-StrictMode -Version Latest
 
-function Invoke-Remote([string]$Command) {
+function Assert-Matches([string]$Name, [string]$Value, [string]$Pattern) {
+    if ($Value -notmatch $Pattern) {
+        throw "Invalid $Name value: $Value"
+    }
+}
+
+function Invoke-Remote([string]$Command, [switch]$CaptureOutput) {
+    if ($CaptureOutput) {
+        $output = & gcloud compute ssh $Instance --zone=$Zone --project=$Project --command=$Command
+        if ($LASTEXITCODE -ne 0) {
+            throw "Remote command failed with exit code $LASTEXITCODE."
+        }
+        return ($output -join "`n").Trim()
+    }
+
     & gcloud compute ssh $Instance --zone=$Zone --project=$Project --command=$Command
     if ($LASTEXITCODE -ne 0) {
-        throw "Remote command failed: $Command"
+        throw "Remote deploy failed with exit code $LASTEXITCODE."
     }
 }
 
-Write-Host "Deploying Super Bot from Git..."
-$serviceStopped = $false
+Assert-Matches "instance" $Instance '^[A-Za-z0-9._-]+$'
+Assert-Matches "zone" $Zone '^[A-Za-z0-9._-]+$'
+Assert-Matches "project" $Project '^[A-Za-z0-9._:-]+$'
+Assert-Matches "remote root" $RemoteRoot '^/[A-Za-z0-9._/-]+$'
+Assert-Matches "branch" $Branch '^[A-Za-z0-9._/-]+$'
+Assert-Matches "service" $Service '^[A-Za-z0-9_.@-]+\.service$'
 
-try {
-    Invoke-Remote "sudo systemctl stop superbot.service"
-    $serviceStopped = $true
-
-    Invoke-Remote "cd $RemoteRoot && git pull --ff-only origin main"
-
-    if (-not $SkipDependencies) {
-        Invoke-Remote "cd $RemoteRoot && venv/bin/python -m pip install -q -r apps/telegram_bot/requirements.txt"
-    }
-
-    Invoke-Remote "sudo systemctl daemon-reload && sudo systemctl start superbot.service"
-    $serviceStopped = $false
-
-    $status = (& gcloud compute ssh $Instance --zone=$Zone --project=$Project --command="sudo systemctl is-active superbot.service").Trim()
-    if ($LASTEXITCODE -ne 0 -or $status -ne "active") {
-        throw "superbot.service did not become active."
-    }
-
-    Write-Host "SUCCESS - Bot is running!" -ForegroundColor Green
-    Invoke-Remote "sudo journalctl -u superbot.service --no-pager -n 20"
+Write-Host "Fetching the deployment candidate (the running bot stays online)..."
+$fetchCommand = "cd '$RemoteRoot' && git fetch --prune origin '+refs/heads/${Branch}:refs/remotes/origin/${Branch}' && git rev-parse 'refs/remotes/origin/${Branch}'"
+$target = Invoke-Remote $fetchCommand -CaptureOutput
+if ($target -notmatch '^[0-9a-f]{40,64}$') {
+    throw "The VM returned an invalid deployment revision: $target"
 }
-finally {
-    if ($serviceStopped) {
-        Write-Warning "Restarting superbot.service after an interrupted deploy."
-        & gcloud compute ssh $Instance --zone=$Zone --project=$Project --command="sudo systemctl start superbot.service"
-    }
-}
+
+$arguments = @(
+    "--repo '$RemoteRoot'",
+    "--service '$Service'",
+    "--branch '$Branch'",
+    "--target '$target'",
+    "--health-timeout '$HealthTimeout'",
+    "--stability-seconds '$StabilitySeconds'",
+    "--retain-venvs '$RetainVenvs'"
+)
+if ($SkipDependencies) { $arguments += "--skip-dependencies" }
+if ($SkipTests) { $arguments += "--skip-tests" }
+if ($ForceRestart) { $arguments += "--force-restart" }
+
+$remoteArguments = $arguments -join " "
+$deployCommand = "cd '$RemoteRoot' && git cat-file -e '${target}:scripts/deploy_remote.sh' && git show '${target}:scripts/deploy_remote.sh' | bash -s -- $remoteArguments"
+
+Write-Host "Deploying commit $target with preflight tests and automatic rollback..."
+Invoke-Remote $deployCommand
+Write-Host "SUCCESS - the new release passed the VM health check." -ForegroundColor Green

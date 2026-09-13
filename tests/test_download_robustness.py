@@ -70,7 +70,9 @@ class MetadataTests(unittest.TestCase):
         self.assertIn("ImpersonateTarget.from_str", source)
 
     def test_safe_options_disable_native_progress_output(self):
-        self.assertTrue(dl._aplicar_opcoes_seguras({})['noprogress'])
+        options = dl._aplicar_opcoes_seguras({})
+        self.assertTrue(options['noprogress'])
+        self.assertNotIn('nocheckcertificate', options)
 
     def test_facebook_ids_and_case_are_preserved(self):
         self.assertNotEqual(normalizar_link_social('https://facebook.com/watch/?v=1'), normalizar_link_social('https://facebook.com/watch/?v=2'))

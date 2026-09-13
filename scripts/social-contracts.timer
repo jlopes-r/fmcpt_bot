@@ -1,0 +1,12 @@
+[Unit]
+Description=Agenda testes reais dos contratos das redes sociais
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 07:35:00 America/Sao_Paulo
+RandomizedDelaySec=30m
+Persistent=true
+Unit=social-contracts.service
+
+[Install]
+WantedBy=timers.target
+

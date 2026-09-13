@@ -1,0 +1,16 @@
+# Dependencias diretas do runtime. Ao atualizar uma versao, regenere e valide
+# requirements.txt antes do deploy.
+Pyrogram==2.0.106
+TgCrypto==1.2.5
+yt-dlp==2026.8.19
+curl-cffi==0.16.3
+aiohttp==3.14.3
+psutil==7.2.2
+python-dotenv==1.2.3
+requests==2.34.2
+httpx==0.28.1
+Pillow==12.3.0
+instaloader==4.15.3
+deep-translator==1.11.4
+langdetect==1.0.9
+beautifulsoup4==4.15.0
