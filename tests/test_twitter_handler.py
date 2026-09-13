@@ -34,6 +34,7 @@ class TwitterHandlerTests(unittest.IsolatedAsyncioTestCase):
         sender = SimpleNamespace(send=AsyncMock(side_effect=[main, quote]))
         status = SimpleNamespace(delete=AsyncMock())
         message = SimpleNamespace(reply_text=AsyncMock())
+        upload_started = AsyncMock()
         outcome = await deliver_twitter_post(
             client=object(),
             message=message,
@@ -44,6 +45,7 @@ class TwitterHandlerTests(unittest.IsolatedAsyncioTestCase):
             sender=sender,
             duration_limit=600,
             long_video_callback=AsyncMock(),
+            upload_started=upload_started,
         )
         self.assertEqual(outcome.main_items, 2)
         self.assertEqual(outcome.quote_items, 2)

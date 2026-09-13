@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 import logging
 
@@ -99,6 +100,7 @@ async def deliver_twitter_post(
     duration_limit: float,
     long_video_callback,
     extraction_context: ExtractionContext | None = None,
+    upload_started: Callable[[], Awaitable[None]] | None = None,
 ) -> TwitterDelivery:
     if extraction_context is None:
         bundle = await extractor.extract(url)
@@ -129,7 +131,13 @@ async def deliver_twitter_post(
             emoji="📸",
         )
         try:
-            prepared = await sender.send(message, bundle, caption=caption, status=status)
+            prepared = await sender.send(
+                message,
+                bundle,
+                caption=caption,
+                status=status,
+                upload_started=upload_started,
+            )
             main_count = len(prepared.items)
         except TelegramUploadFailed as exc:
             cause = exc.__cause__ or exc
@@ -148,6 +156,8 @@ async def deliver_twitter_post(
             )
             main_text_fallback = True
     else:
+        if upload_started is not None:
+            await upload_started()
         text_message = (
             f"📝 {bundle.author or 'Autor'}:\n{main_text}\n\n"
             f"👤 Enviado por: {requested_by}"
@@ -173,6 +183,7 @@ async def deliver_twitter_post(
                     quote,
                     caption=quote_caption,
                     status=status,
+                    upload_started=upload_started,
                 )
                 quote_count = len(prepared_quote.items)
             except TelegramUploadFailed as exc:

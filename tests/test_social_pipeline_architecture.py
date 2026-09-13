@@ -68,13 +68,18 @@ class SocialPipelineTests(unittest.IsolatedAsyncioTestCase):
                 ),
                 registry=registry,
             )
-            pipeline.sender.send = AsyncMock(return_value=bundle)
+            async def send_bundle(*_args, **kwargs):
+                await kwargs["upload_started"]()
+                return bundle
+
+            pipeline.sender.send = AsyncMock(side_effect=send_bundle)
             message = SimpleNamespace(
                 chat=SimpleNamespace(id=1),
                 id=2,
                 reply_text=AsyncMock(),
             )
             status = SimpleNamespace(delete=AsyncMock())
+            upload_started = AsyncMock()
 
             with patch(
                 "apps.telegram_bot.handlers.social.traduzir_se_necessario",
@@ -86,11 +91,44 @@ class SocialPipelineTests(unittest.IsolatedAsyncioTestCase):
                     requested_by="Juan",
                     status=status,
                     long_video_callback=AsyncMock(),
+                    upload_started=upload_started,
                 )
 
             self.assertEqual(result.item_count, 1)
             self.assertFalse(media_path.exists())
             extractor.extract.assert_awaited_once()
+            upload_started.assert_awaited_once()
+
+    async def test_long_media_does_not_enter_uploading_state(self):
+        bundle = MediaBundle(
+            "instagram",
+            (MediaItem("long.mp4", "video", duration=601),),
+        )
+        extractor = SimpleNamespace(extract=AsyncMock(return_value=bundle))
+        pipeline = SocialMediaPipeline(
+            client=SimpleNamespace(),
+            session=SimpleNamespace(),
+            config=SocialPipelineConfig(
+                download_root=Path(tempfile.gettempdir()),
+                max_media_bytes=10_000,
+                download_timeout=30,
+                duration_limit=600,
+            ),
+            registry=SimpleNamespace(resolve=lambda _url: extractor),
+        )
+        upload_started = AsyncMock()
+
+        result = await pipeline.deliver(
+            message=SimpleNamespace(),
+            url="https://instagram.com/p/long/",
+            requested_by="Juan",
+            status=SimpleNamespace(),
+            long_video_callback=AsyncMock(),
+            upload_started=upload_started,
+        )
+
+        self.assertTrue(result.skipped)
+        upload_started.assert_not_awaited()
 
 
 class EntrypointArchitectureTests(unittest.TestCase):
@@ -101,6 +139,9 @@ class EntrypointArchitectureTests(unittest.TestCase):
         self.assertNotIn("async def processar_facebook_pipeline", source)
         self.assertIn("SocialMediaPipeline(", source)
         self.assertIn("pipeline.deliver(", source)
+        self.assertIn("_job_runtime.submit(", source)
+        self.assertIn("_job_runtime.recover_startup(", source)
+        self.assertIn("await verificar_rate_limit(user_id)", source)
 
 
 if __name__ == "__main__":

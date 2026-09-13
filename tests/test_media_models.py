@@ -42,6 +42,36 @@ class MediaModelTests(unittest.TestCase):
 
 
 class MediaSenderTests(unittest.IsolatedAsyncioTestCase):
+    async def test_upload_transition_happens_after_prepare_and_before_telegram(self):
+        events = []
+        prepared = MediaBundle("x", (MediaItem("photo.jpg", "photo"),))
+
+        async def prepare(*_args):
+            events.append("prepared")
+            return prepared
+
+        async def upload_started():
+            events.append("uploading")
+
+        async def send_photo(*_args, **_kwargs):
+            events.append("sent")
+
+        client = SimpleNamespace(
+            send_photo=AsyncMock(side_effect=send_photo),
+            send_video=AsyncMock(),
+            send_media_group=AsyncMock(),
+        )
+        sender = MediaSender(client)
+        with patch.object(sender, "prepare", new=AsyncMock(side_effect=prepare)):
+            await sender.send(
+                SimpleNamespace(chat=SimpleNamespace(id=1), id=2),
+                prepared,
+                caption="caption",
+                upload_started=upload_started,
+            )
+
+        self.assertEqual(events, ["prepared", "uploading", "sent"])
+
     async def test_single_item_uses_individual_send(self):
         client = SimpleNamespace(
             send_photo=AsyncMock(),

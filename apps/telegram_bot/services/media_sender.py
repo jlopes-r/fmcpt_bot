@@ -36,6 +36,7 @@ from packages.observability import redact_sensitive
 
 log = logging.getLogger(__name__)
 ProgressCallback = Callable[[int, int], Awaitable[None]]
+UploadStartedCallback = Callable[[], Awaitable[None]]
 _MAX_UPLOAD_RETRY_DELAY = 10.0
 
 
@@ -401,10 +402,20 @@ class MediaSender:
             for item in batch:
                 await self._send_one(chat_id, reply_to, item, status)
 
-    async def send(self, message, bundle: MediaBundle, *, caption: str, status=None) -> MediaBundle:
+    async def send(
+        self,
+        message,
+        bundle: MediaBundle,
+        *,
+        caption: str,
+        status=None,
+        upload_started: UploadStartedCallback | None = None,
+    ) -> MediaBundle:
         root = Path(tempfile.mkdtemp(prefix="media-send-"))
         try:
             prepared = await self.prepare(bundle.require_media(), root)
+            if upload_started is not None:
+                await upload_started()
             telegram_items = [
                 self._input_media(item, caption if index == 0 else "")
                 for index, item in enumerate(prepared.items)

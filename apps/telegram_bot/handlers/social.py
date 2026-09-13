@@ -23,6 +23,7 @@ from apps.telegram_bot.translator import traduzir_se_necessario
 
 log = logging.getLogger(__name__)
 LongVideoCallback = Callable[..., Awaitable[None]]
+UploadStartedCallback = Callable[[], Awaitable[None]]
 
 
 @dataclass(frozen=True)
@@ -118,6 +119,7 @@ class SocialMediaPipeline:
         bundle: MediaBundle,
         requested_by: str,
         status,
+        upload_started: UploadStartedCallback | None = None,
     ) -> int:
         text = limpar_texto(bundle.text or bundle.title)
         text = await asyncio.to_thread(traduzir_se_necessario, text)
@@ -133,9 +135,12 @@ class SocialMediaPipeline:
                 bundle,
                 caption=caption,
                 status=status,
+                upload_started=upload_started,
             )
             return len(prepared.items)
         if text:
+            if upload_started is not None:
+                await upload_started()
             for part in dividir_texto_longo(text):
                 await message.reply_text(part, parse_mode=None)
         return 0
@@ -151,6 +156,7 @@ class SocialMediaPipeline:
         reply_markup=None,
         force_long: bool = False,
         long_video_callback: LongVideoCallback,
+        upload_started: UploadStartedCallback | None = None,
     ) -> SocialDelivery:
         extractor = self.registry.resolve(url)
         context = self.context(
@@ -174,6 +180,7 @@ class SocialMediaPipeline:
                 ),
                 long_video_callback=long_video_callback,
                 extraction_context=context,
+                upload_started=upload_started,
             )
             try:
                 return SocialDelivery(
@@ -209,6 +216,7 @@ class SocialMediaPipeline:
                 bundle=bundle,
                 requested_by=requested_by,
                 status=status,
+                upload_started=upload_started,
             )
             text_only = not bundle.items and bool(bundle.text or bundle.title)
             if item_count or text_only:
@@ -227,4 +235,9 @@ class SocialMediaPipeline:
             self._cleanup_local_sources(bundle)
 
 
-__all__ = ["SocialDelivery", "SocialMediaPipeline", "SocialPipelineConfig"]
+__all__ = [
+    "SocialDelivery",
+    "SocialMediaPipeline",
+    "SocialPipelineConfig",
+    "UploadStartedCallback",
+]

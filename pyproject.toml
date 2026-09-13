@@ -36,6 +36,7 @@ files = [
     "apps/telegram_bot/handlers/social.py",
     "apps/telegram_bot/handlers/twitter.py",
     "apps/telegram_bot/services/download_manager.py",
+    "apps/telegram_bot/services/job_runtime.py",
     "apps/telegram_bot/services/media_sender.py",
 ]
 follow_imports = "skip"

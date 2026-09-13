@@ -14,6 +14,10 @@ por solicitante e prazo de duas horas. O worker reserva 768 MiB livres no disco 
 serializa as transferências pesadas. O limite configurado de 5 GB é um teto de
 download, não uma garantia de espaço disponível ou de upload aceito pelo Telegram.
 Arquivos temporários da operação são removidos após o envio ou falha.
+Solicitações de mídia são registradas como jobs no SQLite antes de entrar na
+fila. A mesma URL não roda duas vezes simultaneamente no mesmo chat, o limite
+por usuário sobrevive a reinícios e jobs interrompidos são retomados a partir
+da mensagem original quando o serviço volta.
 - **Detecção de links duplicados** com "Boca de Leite" 🥛
 - **Rate limiting** e segurança por grupo
 - **Estatísticas** de uso em tempo real
@@ -87,6 +91,10 @@ MINI_APP_URL=https://sua-url-do-mini-app
 ```env
 # Limita concorrencia e uso de disco/RAM nos downloads do Instagram.
 MAX_DOWNLOADS=3
+RATE_LIMIT=10
+RATE_WINDOW_SECONDS=60
+JOB_HEARTBEAT_INTERVAL=30
+JOB_RECOVERY_LIMIT=1000
 IG_MEDIA_DOWNLOAD_CONCURRENCY=3
 IG_MAX_CAROUSEL_ITEMS=20
 MAX_MEDIA_BYTES=5000000000

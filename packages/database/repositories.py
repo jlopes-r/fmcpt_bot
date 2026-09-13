@@ -35,7 +35,12 @@ TERMINAL_JOB_STATUSES = (JobStatus.COMPLETED, JobStatus.FAILED)
 _ALLOWED_TRANSITIONS: dict[JobStatus, frozenset[JobStatus]] = {
     JobStatus.QUEUED: frozenset({JobStatus.DOWNLOADING, JobStatus.FAILED}),
     JobStatus.DOWNLOADING: frozenset(
-        {JobStatus.QUEUED, JobStatus.UPLOADING, JobStatus.FAILED}
+        {
+            JobStatus.QUEUED,
+            JobStatus.UPLOADING,
+            JobStatus.COMPLETED,
+            JobStatus.FAILED,
+        }
     ),
     JobStatus.UPLOADING: frozenset(
         {JobStatus.QUEUED, JobStatus.COMPLETED, JobStatus.FAILED}
@@ -513,6 +518,29 @@ class RateLimitRepository(_Repository):
             cursor = conn.execute(
                 "DELETE FROM rate_limit_events WHERE scope = ? AND subject_key = ?",
                 (scope, subject_key),
+            )
+            return max(0, cursor.rowcount)
+
+    def cleanup(
+        self,
+        *,
+        older_than: float,
+        scope: str | None = None,
+        now: float | None = None,
+    ) -> int:
+        """Remove eventos que ja nao participam de nenhuma janela ativa."""
+
+        timestamp = float(time.time() if now is None else now)
+        cutoff = timestamp - max(0, float(older_than))
+        params: list[object] = [cutoff]
+        scope_filter = ""
+        if scope is not None:
+            scope_filter = " AND scope = ?"
+            params.append(scope)
+        with self._connection(write=True) as conn:
+            cursor = conn.execute(
+                f"DELETE FROM rate_limit_events WHERE occurred_at <= ?{scope_filter}",  # noqa: S608
+                params,
             )
             return max(0, cursor.rowcount)
 

@@ -60,6 +60,7 @@ RAIZ = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 sys.path.insert(0, RAIZ)
 
 from packages.database import database_manager as db
+from packages.database.repositories import JobRecord, JobRepository, RateLimitRepository
 from packages.command_catalog import SUPER_COMMANDS, command_names
 from packages.config import (
     DOWNLOADS_DIR,
@@ -111,9 +112,10 @@ from apps.telegram_bot.errors import (
 from apps.telegram_bot.handlers.social import SocialMediaPipeline, SocialPipelineConfig
 from apps.telegram_bot.handlers.callbacks import ExpiringRegistry
 from apps.telegram_bot.handlers.commands import build_admin_only
-from apps.telegram_bot.handlers.links import InFlightLinks, extract_supported_url
+from apps.telegram_bot.handlers.links import InFlightLinks, extract_supported_url, is_supported_url
 from apps.telegram_bot.handlers.moderation import SlidingWindowLimiter
 from apps.telegram_bot.services.download_manager import detect_platform
+from apps.telegram_bot.services.job_runtime import DurableJobRuntime
 
 load_environment()
 ensure_runtime_dirs()
@@ -129,11 +131,13 @@ DOWNLOAD_COUNT_LOCK = asyncio.Lock()
 LIMITE_DURACAO = 600
 LIMITE_TAMANHO = max(1, get_int_env("MAX_MEDIA_BYTES", 5_000_000_000))
 MAX_DOWNLOADS = max(1, get_int_env("MAX_DOWNLOADS", 3))
-RATE_LIMIT = 10
-RATE_JANELA = 60
+RATE_LIMIT = max(1, get_int_env("RATE_LIMIT", 10))
+RATE_JANELA = max(1, get_int_env("RATE_WINDOW_SECONDS", 60))
 IG_MEDIA_DOWNLOAD_CONCURRENCY = max(1, get_int_env("IG_MEDIA_DOWNLOAD_CONCURRENCY", 3))
 PROFILE_PICTURE_MAX_BYTES = max(1, get_int_env("PROFILE_PICTURE_MAX_BYTES", 10 * 1024 * 1024))
 PROCESSING_URL_TTL = max(60, get_int_env("PROCESSING_URL_TTL", 2 * 60 * 60))
+JOB_HEARTBEAT_INTERVAL = max(5, get_int_env("JOB_HEARTBEAT_INTERVAL", 30))
+JOB_RECOVERY_LIMIT = max(1, min(get_int_env("JOB_RECOVERY_LIMIT", 1000), 1000))
 
 AUDIO_BOCA_LEITE_DIR = os.path.join(RAIZ, "assets", "audios")
 PASTA_DOWNLOADS = DOWNLOADS_DIR
@@ -214,6 +218,11 @@ _inflight_links = InFlightLinks(ttl=PROCESSING_URL_TTL)
 _processing_urls = _inflight_links.entries
 _processing_lock = _inflight_links.lock
 _rate_limiter = SlidingWindowLimiter(limit=RATE_LIMIT, window_seconds=RATE_JANELA)
+_job_runtime = DurableJobRuntime(
+    JobRepository(),
+    RateLimitRepository(),
+    heartbeat_interval=JOB_HEARTBEAT_INTERVAL,
+)
 _usuarios_bloqueados = {}  # user_id -> timestamp (cooldown de castigo de 5min)
 _uso_bloq = defaultdict(list)  # admin_id -> [timestamps dos blocks aplicados hoje]
 _ultimo_link_por_usuario = {}  # user_id -> {"url_norm": str, "url_raw": str, "timestamp": float}
@@ -303,8 +312,23 @@ async def metralhadora_stickers(client, chat_id):
 # -----------------------------------------
 # UTILITÁRIOS
 # -----------------------------------------
-def verificar_rate_limit(user_id: int) -> bool:
-    return _rate_limiter.allow(user_id)
+async def verificar_rate_limit(user_id: int) -> bool:
+    """Aplica a janela persistente; a memoria fica apenas como contingencia."""
+
+    try:
+        decision = await _job_runtime.allow(
+            str(user_id),
+            limit=RATE_LIMIT,
+            window_seconds=RATE_JANELA,
+        )
+        return decision.allowed
+    except Exception as exc:
+        log.warning(
+            "rate limit persistente indisponivel; usando contingencia local "
+            "error_type=%s",
+            type(exc).__name__,
+        )
+        return _rate_limiter.allow(user_id)
 
 def chat_autorizado(chat_id: int) -> bool:
     if not GRUPOS_AUTORIZADOS:
@@ -1043,6 +1067,39 @@ async def callback_long_video(client, callback_query):
     if action == 'cancellong':
         await callback_query.message.edit_text('🛑 Download cancelado.')
         return
+    platform = detect_platform(url)
+    url_norm = normalizar_link_social(url)
+    requester_name = (
+        getattr(getattr(original_message, "from_user", None), "first_name", None)
+        or "Membro"
+    )
+    try:
+        job_claim = await _job_runtime.submit(
+            chat_id=original_message.chat.id,
+            user_id=owner,
+            url_norm=url_norm,
+            platform=platform,
+            metadata={
+                "message_id": original_message.id,
+                "url": url,
+                "requested_by": usuario_orig,
+                "requester_name": requester_name,
+                "force_long": True,
+            },
+        )
+    except Exception as exc:
+        log.exception(
+            "falha ao persistir confirmacao de video longo error_type=%s",
+            type(exc).__name__,
+        )
+        await callback_query.message.edit_text(erro_aleatorio(ERROS_INESPERADO))
+        return
+    if job_claim.reused:
+        await callback_query.message.edit_text(
+            erro_aleatorio(ERROS_LINK_PROCESSANDO)
+        )
+        return
+    job_id = job_claim.job.job_id
     try:
         outcome = await executar_pipeline_social(
             client,
@@ -1051,15 +1108,32 @@ async def callback_long_video(client, callback_query):
             usuario_orig,
             callback_query.message,
             force_long=True,
+            job_id=job_id,
         )
         if outcome.item_count > 0 or outcome.text_only:
             async with DOWNLOAD_COUNT_LOCK:
                 DOWNLOAD_COUNT += 1
-    except DownloadCancelled:
+            await _job_runtime.complete(
+                job_id,
+                metadata={
+                    "item_count": outcome.item_count,
+                    "text_only": outcome.text_only,
+                    "forced_long": True,
+                },
+            )
+        else:
+            await _job_runtime.fail(
+                job_id,
+                RuntimeError("pipeline confirmado sem conteudo utilizavel"),
+            )
+    except DownloadCancelled as exc:
+        await _job_runtime.fail(job_id, exc)
         await callback_query.message.edit_text("🛑 Download cancelado.")
     except SocialMediaError as exc:
+        await _job_runtime.fail(job_id, exc)
         await callback_query.message.edit_text(exc.public_message)
-    except Exception:
+    except Exception as exc:
+        await _job_runtime.fail(job_id, exc)
         log.exception("Erro ao processar confirmacao de video longo")
         await callback_query.message.edit_text(erro_aleatorio(ERROS_INESPERADO))
     return
@@ -1118,6 +1192,14 @@ async def limpeza_periodica():
             agora = time.time()
             _rate_limiter.prune(now=agora)
             _retry_cache.prune()
+            await asyncio.to_thread(
+                _job_runtime.rate_limits.cleanup,
+                older_than=86_400,
+            )
+            await asyncio.to_thread(
+                _job_runtime.jobs.cleanup_terminal,
+                older_than=30 * 86_400,
+            )
                 
             # Nao libera downloads ativos apenas pelo volume: remove so locks velhos.
             agora_monotonic = time.monotonic()
@@ -1196,6 +1278,7 @@ async def executar_pipeline_social(
     status,
     *,
     force_long=False,
+    job_id=None,
 ):
     """Adapta estado do Telegram ao pipeline modular de redes sociais."""
     global _fila_espera
@@ -1212,6 +1295,7 @@ async def executar_pipeline_social(
         callback_data=f"canceldownload_{token}",
     )]])
     entrou_fila = False
+    heartbeat_task = None
     if semaforo.locked():
         async with _fila_lock:
             _fila_espera += 1
@@ -1224,6 +1308,12 @@ async def executar_pipeline_social(
                 async with _fila_lock:
                     _fila_espera = max(0, _fila_espera - 1)
                 entrou_fila = False
+            if job_id:
+                await _job_runtime.claim(job_id)
+                heartbeat_task = asyncio.create_task(
+                    _job_runtime.keep_alive(job_id),
+                    name=f"job-heartbeat-{job_id[:8]}",
+                )
             await status.edit_text(
                 "⬇️ Preparando extração...",
                 reply_markup=cancel_markup,
@@ -1243,8 +1333,16 @@ async def executar_pipeline_social(
                 reply_markup=cancel_markup,
                 force_long=force_long,
                 long_video_callback=avisar_video_longo,
+                upload_started=(
+                    (lambda: _job_runtime.mark_uploading(job_id))
+                    if job_id
+                    else None
+                ),
             )
     finally:
+        if heartbeat_task is not None:
+            heartbeat_task.cancel()
+            await asyncio.gather(heartbeat_task, return_exceptions=True)
         _downloads_cancelaveis.pop(token, None)
         if entrou_fila:
             async with _fila_lock:
@@ -1258,15 +1356,19 @@ COMANDOS = set(command_names(SUPER_COMMANDS))
 
 @app.on_message(filters.text & ~filters.command(list(COMANDOS)))
 @managed_downloads
-async def processar_links(client, message):
+async def processar_links(client, message, *, _resume_job: JobRecord | None = None):
     global DOWNLOAD_COUNT
     texto = message.text
-    if not texto:
+    if not texto and _resume_job is None:
         return
     if not chat_autorizado(message.chat.id):
         return
 
-    if message.from_user:
+    if _resume_job is not None:
+        nome = str(_resume_job.metadata.get("requester_name") or "Membro")
+        usuario = str(_resume_job.metadata.get("requested_by") or nome)
+        user_id = _resume_job.user_id
+    elif message.from_user:
         nome = message.from_user.first_name or "Membro"
         u_name = message.from_user.username
         usuario = f"{nome} (@{u_name})" if u_name else nome
@@ -1277,13 +1379,22 @@ async def processar_links(client, message):
         user_id = 0
 
     # Aceita URL completa ou nua, mas somente em hosts sociais permitidos.
-    url_raw = extract_supported_url(texto, DOMINIOS_PERMITIDOS)
+    if _resume_job is not None:
+        url_raw = str(_resume_job.metadata.get("url") or "").strip()
+        if not url_raw or not is_supported_url(url_raw, DOMINIOS_PERMITIDOS):
+            await _job_runtime.fail(
+                _resume_job.job_id,
+                ValueError("job recuperado sem URL valida"),
+            )
+            return
+    else:
+        url_raw = extract_supported_url(texto or "", DOMINIOS_PERMITIDOS)
     repetido_db = False
     info_db = {}
 
     if url_raw:
         agora_atual = time.time()
-        if user_id in _usuarios_bloqueados:
+        if _resume_job is None and user_id in _usuarios_bloqueados:
             if agora_atual < _usuarios_bloqueados[user_id]:
                 tr = int(_usuarios_bloqueados[user_id] - agora_atual)
                 tempo_str = f"{tr // 60}min {tr % 60}s"
@@ -1293,7 +1404,7 @@ async def processar_links(client, message):
             else:
                 del _usuarios_bloqueados[user_id]
 
-        if user_id and not verificar_rate_limit(user_id):
+        if user_id and _resume_job is None and not await verificar_rate_limit(user_id):
             aviso = await message.reply_text(erro_aleatorio(ERROS_RATE_LIMIT))
             await asyncio.sleep(5)
             try:
@@ -1303,7 +1414,11 @@ async def processar_links(client, message):
             return
 
         # Apenas CHECA se é duplicado (sem registrar). Registro acontece só após sucesso.
-        url_norm = normalizar_link_social(url_raw)
+        url_norm = (
+            _resume_job.url_norm
+            if _resume_job is not None
+            else normalizar_link_social(url_raw)
+        )
 
         repetido_db, info_db = await asyncio.to_thread(db.checar_link, url_norm, message.chat.id)
 
@@ -1314,13 +1429,6 @@ async def processar_links(client, message):
             "timestamp": time.time()
         }
 
-        # Race condition lock
-        async with _processing_lock:
-            if url_norm in _processing_urls:
-                await message.reply_text(erro_aleatorio(ERROS_LINK_PROCESSANDO))
-                return
-            _processing_urls[url_norm] = time.monotonic()
-
     if not url_raw:
         return
 
@@ -1328,19 +1436,23 @@ async def processar_links(client, message):
 
     # Perfis possuem respostas proprias; o registro recebe apenas conteudo.
     if platform == "twitter" and not match_tweet_url(url_raw) and match_profile_url(url_raw):
+        if not await _inflight_links.claim(url_norm):
+            await message.reply_text(erro_aleatorio(ERROS_LINK_PROCESSANDO))
+            return
         try:
             await responder_perfil_x(client, message, url_raw)
         finally:
-            async with _processing_lock:
-                _processing_urls.pop(url_norm, None)
+            await _inflight_links.release(url_norm)
         return
 
     if platform == "instagram" and get_profile_username(url_raw):
+        if not await _inflight_links.claim(url_norm):
+            await message.reply_text(erro_aleatorio(ERROS_LINK_PROCESSANDO))
+            return
         try:
             await responder_perfil_instagram(client, message, url_raw)
         finally:
-            async with _processing_lock:
-                _processing_urls.pop(url_norm, None)
+            await _inflight_links.release(url_norm)
         return
 
     if platform == "instagram":
@@ -1349,16 +1461,47 @@ async def processar_links(client, message):
             restante = int(300 - (agora_ts - _failed_url_cache[url_norm]))
             tempo_str = f"{restante // 60}min {restante % 60}s"
             await message.reply_text(erro_aleatorio(ERROS_COOLDOWN, tempo=tempo_str))
-            async with _processing_lock:
-                _processing_urls.pop(url_norm, None)
             return
+
+    if _resume_job is not None:
+        job_id = _resume_job.job_id
+    else:
+        try:
+            job_claim = await _job_runtime.submit(
+                chat_id=message.chat.id,
+                user_id=user_id,
+                url_norm=url_norm,
+                platform=platform,
+                metadata={
+                    "message_id": message.id,
+                    "url": url_raw,
+                    "requested_by": usuario,
+                    "requester_name": nome,
+                },
+            )
+        except Exception as exc:
+            log.exception(
+                "falha ao persistir job platform=%s error_type=%s",
+                platform,
+                type(exc).__name__,
+            )
+            await message.reply_text(erro_aleatorio(ERROS_INESPERADO))
+            return
+        if job_claim.reused:
+            await message.reply_text(erro_aleatorio(ERROS_LINK_PROCESSANDO))
+            return
+        job_id = job_claim.job.job_id
 
     status_text = {
         "twitter": "🐦 Puxando dados do X...",
         "instagram": "⏳ Baixando do Instagram...",
         "facebook": "📘 Carregando publicação do Facebook...",
     }.get(platform, "⏳ Puxando mídia original...")
-    status = await message.reply_text(status_text)
+    try:
+        status = await message.reply_text(status_text)
+    except Exception as exc:
+        await _job_runtime.fail(job_id, exc)
+        raise
     try:
         outcome = await executar_pipeline_social(
             client,
@@ -1366,11 +1509,20 @@ async def processar_links(client, message):
             url_raw,
             usuario,
             status,
+            job_id=job_id,
         )
         if outcome.skipped:
+            await _job_runtime.complete(
+                job_id,
+                metadata={"result": "awaiting_confirmation"},
+            )
             return
         delivered = outcome.item_count > 0 or outcome.text_only
         if not delivered:
+            await _job_runtime.fail(
+                job_id,
+                RuntimeError("pipeline sem conteudo utilizavel"),
+            )
             await status.edit_text(UNAVAILABLE_NOTICE)
             return
 
@@ -1393,24 +1545,43 @@ async def processar_links(client, message):
             outcome.text_only,
             outcome.partial,
         )
+        await _job_runtime.complete(
+            job_id,
+            metadata={
+                "item_count": outcome.item_count,
+                "text_only": outcome.text_only,
+                "partial": outcome.partial,
+            },
+        )
 
         if platform != "youtube":
-            repetido_db, info_db = await asyncio.to_thread(
-                db.registrar_link_e_checar,
-                url_norm,
-                message.chat.id,
-                nome,
-                user_id,
-            )
-            if repetido_db:
-                await enviar_aviso_duplicado(
-                    client, message, {}, info_db, usuario
+            try:
+                repetido_db, info_db = await asyncio.to_thread(
+                    db.registrar_link_e_checar,
+                    url_norm,
+                    message.chat.id,
+                    nome,
+                    user_id,
                 )
-    except DownloadCancelled:
+                if repetido_db:
+                    await enviar_aviso_duplicado(
+                        client, message, {}, info_db, usuario
+                    )
+            except Exception as exc:
+                log.warning(
+                    "midia entregue, mas registro de duplicidade falhou "
+                    "job_id=%s error_type=%s",
+                    job_id,
+                    type(exc).__name__,
+                )
+    except DownloadCancelled as exc:
+        await _job_runtime.fail(job_id, exc)
         await status.edit_text("🛑 Download cancelado.")
-    except MediaTooLong:
+    except MediaTooLong as exc:
+        await _job_runtime.fail(job_id, exc)
         await avisar_video_longo(status, url_raw, usuario, message)
     except AuthenticationRequired as exc:
+        await _job_runtime.fail(job_id, exc)
         if platform == "facebook":
             await status.edit_text(ACCESS_NOTICE)
         elif platform == "instagram":
@@ -1423,9 +1594,11 @@ async def processar_links(client, message):
         if platform == "instagram":
             _failed_url_cache[url_norm] = time.time()
     except MediaTooLarge as exc:
+        await _job_runtime.fail(job_id, exc)
         await status.edit_text(exc.public_message)
         _retry_cache[status.id] = (url_raw, usuario, message.chat.id, message.id)
     except SocialMediaError as exc:
+        await _job_runtime.fail(job_id, exc)
         log.warning(
             "pipeline social falhou platform=%s stage=%s error_type=%s",
             platform,
@@ -1442,6 +1615,7 @@ async def processar_links(client, message):
         if platform == "instagram":
             _failed_url_cache[url_norm] = time.time()
     except Exception as exc:
+        await _job_runtime.fail(job_id, exc)
         log.exception(
             "erro inesperado no pipeline social platform=%s error_type=%s",
             platform,
@@ -1451,9 +1625,6 @@ async def processar_links(client, message):
         _retry_cache[status.id] = (url_raw, usuario, message.chat.id, message.id)
         if platform == "instagram":
             _failed_url_cache[url_norm] = time.time()
-    finally:
-        async with _processing_lock:
-            _processing_urls.pop(url_norm, None)
 
 # -----------------------------------------
 # NOTIFICAÇÃO DE ATUALIZAÇÃO
@@ -1502,6 +1673,62 @@ async def notificar_atualizacao():
         log.info(f"Notificação de atualização enviada para {enviados} chat(s).")
     except Exception as e:
         log.error(f"Erro ao processar changelog de atualização: {e}")
+
+
+async def _retomar_job_persistido(client, job: JobRecord) -> None:
+    """Reconstroi a solicitacao do Telegram e continua um job recuperado."""
+
+    message_id = int(job.metadata.get("message_id") or 0)
+    if message_id <= 0:
+        error = ValueError("job recuperado sem message_id")
+        await _job_runtime.fail(job.job_id, error)
+        log.error(
+            "job persistido irrecuperavel job_id=%s reason=missing_message_id",
+            job.job_id,
+        )
+        return
+    try:
+        message = await client.get_messages(job.chat_id, message_id)
+        if message is None or getattr(message, "empty", False):
+            raise LookupError("mensagem original nao encontrada")
+        log.info(
+            "retomando job persistido job_id=%s platform=%s attempt=%d",
+            job.job_id,
+            job.platform,
+            job.attempt_count + 1,
+        )
+        await processar_links(client, message, _resume_job=job)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        await _job_runtime.fail(job.job_id, exc)
+        log.exception(
+            "falha ao retomar job persistido job_id=%s error_type=%s",
+            job.job_id,
+            type(exc).__name__,
+        )
+
+
+async def iniciar_recuperacao_persistente(client) -> list[asyncio.Task]:
+    """Recupera a fila do processo anterior sem bloquear a conexao do bot."""
+
+    report = await _job_runtime.recover_startup(limit=JOB_RECOVERY_LIMIT)
+    log.info(
+        "fila persistente pronta queued=%d recovered=%d removed_jobs=%d "
+        "removed_rate_events=%d worker_id=%s",
+        len(report.pending),
+        len(report.recovered_ids),
+        report.removed_jobs,
+        report.removed_rate_events,
+        _job_runtime.worker_id,
+    )
+    return [
+        asyncio.create_task(
+            _retomar_job_persistido(client, job),
+            name=f"recover-job-{job.job_id[:8]}",
+        )
+        for job in report.pending
+    ]
 
 # -----------------------------------------
 # INICIALIZACAO
@@ -1562,10 +1789,12 @@ if __name__ == "__main__":
 
     async def _rodar_with_canario():
         await app.start()
+        recovery_tasks = await iniciar_recuperacao_persistente(app)
         tarefas_fundo = [
             asyncio.create_task(_canario_conectividade(), name="canario-conectividade"),
             asyncio.create_task(notificar_atualizacao(), name="notificar-atualizacao"),
             asyncio.create_task(limpeza_periodica(), name="limpeza-periodica"),
+            *recovery_tasks,
         ]
         try:
             await idle()

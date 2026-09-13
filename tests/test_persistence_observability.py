@@ -205,6 +205,16 @@ class RateLimitRepositoryTest(PersistenceTestCase):
         denied = repo.consume("long", limit=1, window_seconds=3_600, now=101)
         self.assertFalse(denied.allowed)
 
+    def test_cleanup_removes_only_expired_events(self):
+        repo = RateLimitRepository(self.db_path)
+        repo.consume("old", limit=2, window_seconds=100, now=1)
+        repo.consume("new", limit=2, window_seconds=100, now=90)
+
+        self.assertEqual(repo.cleanup(older_than=50, now=100), 1)
+        self.assertFalse(
+            repo.consume("new", limit=1, window_seconds=100, now=100).allowed
+        )
+
 
 class MetricsAndLoggingTest(PersistenceTestCase):
     def test_metrics_cover_success_fallback_http_disk_queue_and_cookies(self):
