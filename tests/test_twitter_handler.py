@@ -99,18 +99,20 @@ class TwitterHandlerTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(outcome.skipped)
         callback.assert_awaited_once()
 
-    async def test_rejected_news_card_sends_only_source_link(self):
+    async def test_rejected_news_card_sends_tweet_text_article_and_requester(self):
+        article_url = "https://www1.folha.uol.com.br/noticia"
         bundle = MediaBundle(
             "twitter",
             (MediaItem("article-card.jpg", "photo"),),
-            text="Notícia da Folha https://www1.folha.uol.com.br/noticia",
+            text=f"Notícia da Folha {article_url}",
             author="Folha de S.Paulo",
             source_url="https://x.com/folha/status/123",
             source_id="123",
             metadata={
                 "raw": {
-                    "text": "Notícia da Folha https://www1.folha.uol.com.br/noticia",
+                    "text": f"Notícia da Folha {article_url}",
                     "lang": "pt",
+                    "card": {"url": article_url},
                 }
             },
         )
@@ -138,7 +140,11 @@ class TwitterHandlerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(outcome.main_items, 0)
         self.assertTrue(outcome.text_only)
         fallback = message.reply_text.await_args.args[0]
-        self.assertEqual(fallback, "https://x.com/folha/status/123")
+        self.assertIn("Folha de S.Paulo:\nNotícia da Folha", fallback)
+        self.assertIn(f"🔗 {article_url}", fallback)
+        self.assertEqual(fallback.count(article_url), 1)
+        self.assertNotIn("https://x.com/folha/status/123", fallback)
+        self.assertIn("Enviado por: User", fallback)
         self.assertEqual(
             message.reply_text.await_args.kwargs["parse_mode"],
             enums.ParseMode.DISABLED,

@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 import logging
+import re
 from urllib.parse import urlsplit
 
 from pyrogram import enums
@@ -21,6 +22,9 @@ from apps.telegram_bot.twitter import traduzir_texto_tweet
 
 
 log = logging.getLogger(__name__)
+
+_URL_RE = re.compile(r"https?://[^\s<>]+")
+_TWITTER_HOSTS = {"x.com", "twitter.com", "www.x.com", "www.twitter.com"}
 
 
 @dataclass(frozen=True)
@@ -40,6 +44,30 @@ def _translated_text(bundle: MediaBundle) -> str:
     return traduzir_se_necessario(bundle.text or bundle.title)
 
 
+def _is_external_http_url(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    parsed = urlsplit(value)
+    return (
+        parsed.scheme in {"http", "https"}
+        and bool(parsed.netloc)
+        and (parsed.hostname or "").lower() not in _TWITTER_HOSTS
+    )
+
+
+def _article_url(bundle: MediaBundle, text: str) -> str:
+    raw = bundle.metadata.get("raw")
+    if isinstance(raw, dict):
+        card = raw.get("card")
+        if isinstance(card, dict) and _is_external_http_url(card.get("url")):
+            return str(card["url"])
+
+    for candidate in _URL_RE.findall(text):
+        if _is_external_http_url(candidate):
+            return candidate
+    return ""
+
+
 async def _send_text_fallback(
     message,
     bundle: MediaBundle,
@@ -48,21 +76,20 @@ async def _send_text_fallback(
     *,
     reason: str,
 ) -> None:
-    if bundle.source_url:
-        parsed_source = urlsplit(bundle.source_url)
-        if parsed_source.scheme in {"http", "https"} and parsed_source.netloc:
-            await message.reply_text(
-                bundle.source_url,
-                parse_mode=enums.ParseMode.DISABLED,
-            )
-            return
+    article_url = _article_url(bundle, text)
+    displayed_text = text.replace(article_url, "").strip() if article_url else text
 
     sections = [
         f"📝 {reason}",
-        f"{bundle.author or 'Autor'}:\n{text}" if text else bundle.author or "Autor",
+        (
+            f"{bundle.author or 'Autor'}:\n{displayed_text}"
+            if displayed_text
+            else bundle.author or "Autor"
+        ),
     ]
-    if bundle.source_url:
-        sections.append(f"🔗 {bundle.source_url}")
+    fallback_url = article_url or bundle.source_url
+    if fallback_url:
+        sections.append(f"🔗 {fallback_url}")
     sections.append(f"👤 Enviado por: {requested_by}")
     for part in dividir_texto_longo("\n\n".join(sections)):
         await message.reply_text(part, parse_mode=enums.ParseMode.DISABLED)
