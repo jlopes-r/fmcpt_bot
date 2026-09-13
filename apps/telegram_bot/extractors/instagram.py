@@ -55,11 +55,13 @@ class InstagramExtractor(SocialExtractor):
         *,
         cookie_path: str = "",
         secondary_cookie_path: str = "",
+        duration_limit: float | None = None,
         legacy_download: InstagramDownload = download_instagram,
     ) -> None:
         self.download_manager = download_manager
         self.cookie_path = cookie_path
         self.secondary_cookie_path = secondary_cookie_path
+        self.duration_limit = duration_limit
         self.legacy_download = legacy_download
 
     def supports(self, url: str) -> bool:
@@ -103,12 +105,14 @@ class InstagramExtractor(SocialExtractor):
             )
 
         try:
-            fallback = await self.download_manager.download(
-                url,
-                platform="instagram",
-                allow_playlist=instagram_content_type(url) in {"story", "highlight"},
-                playlist_limit=20,
-            )
+            options = {
+                "platform": "instagram",
+                "allow_playlist": instagram_content_type(url) in {"story", "highlight"},
+                "playlist_limit": 20,
+            }
+            if self.duration_limit is not None:
+                options["duration_limit"] = self.duration_limit
+            fallback = await self.download_manager.download(url, **options)
             return replace(
                 fallback,
                 source_id=fallback.source_id or _instagram_source_id(url),

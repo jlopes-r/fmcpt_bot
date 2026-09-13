@@ -10,7 +10,7 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, TypedDict
 from urllib.parse import urlparse
 
 import aiohttp
@@ -28,6 +28,15 @@ from apps.telegram_bot.models.media import MediaBundle, MediaItem
 
 log = logging.getLogger(__name__)
 ProgressCallback = Callable[[int, int], Awaitable[None]]
+
+
+class VideoProbe(TypedDict):
+    width: int
+    height: int
+    duration: int
+    video_codec: str
+    audio_codec: str
+    format: str
 
 
 def sniff_media(path: Path) -> tuple[str, str]:
@@ -62,7 +71,7 @@ def sniff_media(path: Path) -> tuple[str, str]:
     )
 
 
-def probe_video(path: Path, timeout: float = 15.0) -> dict[str, object]:
+def probe_video(path: Path, timeout: float = 15.0) -> VideoProbe:
     completed = subprocess.run(
         [
             "ffprobe", "-v", "error", "-show_entries",

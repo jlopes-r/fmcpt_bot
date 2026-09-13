@@ -86,7 +86,7 @@ from packages.telegram_ui import (
     set_bot_commands_menu_button_via_bot_api,
 )
 from packages.url_utils import normalizar_url, preparar_url_download_generico, is_facebook_url
-from apps.telegram_bot.facebook import fetch_public_post, FacebookAccessRestricted, ACCESS_NOTICE, UNAVAILABLE_NOTICE
+from apps.telegram_bot.facebook import ACCESS_NOTICE, UNAVAILABLE_NOTICE
 from apps.telegram_bot.downloaders import (
     limite_duracao_filter,
     FORMATO_MP4_H264 as _FORMATO_MP4_H264,
@@ -124,6 +124,8 @@ from apps.telegram_bot.errors import (
     SocialMediaError,
 )
 from apps.telegram_bot.extractors.twitter import TwitterExtractor
+from apps.telegram_bot.extractors.instagram import InstagramExtractor
+from apps.telegram_bot.extractors.facebook import FacebookExtractor
 from apps.telegram_bot.handlers.twitter import deliver_twitter_post
 from apps.telegram_bot.handlers.callbacks import ExpiringRegistry
 from apps.telegram_bot.handlers.commands import build_admin_only
@@ -882,6 +884,171 @@ async def processar_instagram(client, message, url, usuario, msg_espera, link_du
                     except Exception as e:
                         log.error(f"Erro ao deletar arquivo temporário {p}: {e}")
             arquivos_para_deletar.clear()
+    return False
+
+
+def _limpar_midias_locais(bundle) -> None:
+    """Remove somente fontes criadas dentro da pasta de downloads do bot."""
+    raiz = PASTA_DOWNLOADS.resolve()
+    for item in bundle.items:
+        if item.is_remote:
+            continue
+        try:
+            caminho = Path(item.source).resolve()
+            caminho.relative_to(raiz)
+            caminho.unlink(missing_ok=True)
+        except (OSError, ValueError):
+            log.warning("Nao foi possivel limpar midia local: %s", item.source)
+
+
+async def _enviar_bundle_social(
+    client,
+    message,
+    bundle,
+    usuario,
+    status,
+    *,
+    emoji,
+) -> bool:
+    """Envia texto/midias de um extrator pelo pipeline comum."""
+    texto = limpar_texto(bundle.text or bundle.title)
+    texto = await asyncio.to_thread(traduzir_se_necessario, texto)
+    if bundle.items:
+        legenda = montar_legenda(
+            texto,
+            bundle.author or "Autor",
+            usuario,
+            emoji=emoji,
+        )
+        sender = MediaSender(
+            client,
+            session=await get_http_session(),
+            max_media_bytes=LIMITE_TAMANHO,
+            download_concurrency=IG_MEDIA_DOWNLOAD_CONCURRENCY,
+            progress=_progresso_upload(status),
+        )
+        await sender.send(message, bundle, caption=legenda, status=status)
+    elif texto:
+        for parte in dividir_texto_longo(texto):
+            await message.reply_text(parte, parse_mode=None)
+    else:
+        return False
+    return True
+
+
+async def processar_instagram_pipeline(client, message, url, usuario, status):
+    """Extrai posts, reels, stories e destaques e os envia em ordem."""
+    global DOWNLOAD_COUNT
+    manager = DownloadManager(
+        PASTA_DOWNLOADS,
+        max_filesize=LIMITE_TAMANHO,
+        timeout=max(30, get_int_env("YTDLP_DOWNLOAD_TIMEOUT", 7200)),
+    )
+    extractor = InstagramExtractor(
+        manager,
+        cookie_path=COOKIE_PATH,
+        secondary_cookie_path=SECONDARY_COOKIE_PATH,
+        duration_limit=LIMITE_DURACAO,
+    )
+    bundle = None
+    try:
+        await status.edit_text("⏳ Extraindo mídias do Instagram...")
+        bundle = await extractor.extract(url)
+        if (
+            bundle.metadata.get("_primary_cookie_failed")
+            and bundle.metadata.get("_cookie_source") == "secondary"
+        ):
+            await avisar_admin_cookies(
+                client,
+                "com falha; a conta secundaria assumiu o download",
+            )
+        enviado = await _enviar_bundle_social(
+            client, message, bundle, usuario, status, emoji="📸"
+        )
+        if not enviado:
+            raise SocialMediaError(
+                "Instagram nao retornou conteudo",
+                platform="instagram",
+                stage="extract",
+            )
+        async with DOWNLOAD_COUNT_LOCK:
+            DOWNLOAD_COUNT += 1
+        try:
+            await status.delete()
+        except Exception:
+            pass
+        return True
+    except MediaTooLong:
+        await avisar_video_longo(status, url, usuario, message)
+    except SocialMediaError as exc:
+        log.warning(
+            "Instagram falhou stage=%s error=%s",
+            exc.stage,
+            type(exc).__name__,
+        )
+        mensagem = exc.public_message
+        if isinstance(exc, AuthenticationRequired) or not cookies_are_valid():
+            motivo = get_cookie_failure_reason()
+            await avisar_admin_cookies(client, f"expirados ou invalidos ({motivo})")
+            mensagem = f"{erro_aleatorio(ERROS_INSTAGRAM)}\n\n🔒 {motivo}"
+        await status.edit_text(mensagem)
+        _retry_cache[status.id] = (url, usuario, message.chat.id, message.id)
+    except Exception as exc:
+        log.exception("Erro inesperado no pipeline Instagram: %s", type(exc).__name__)
+        await status.edit_text(erro_aleatorio(ERROS_INSTAGRAM))
+        _retry_cache[status.id] = (url, usuario, message.chat.id, message.id)
+    finally:
+        if bundle is not None:
+            _limpar_midias_locais(bundle)
+    return False
+
+
+async def processar_facebook_pipeline(client, message, url, usuario, status):
+    """Extrai publicacoes do Facebook e envia texto/fotos/videos juntos."""
+    global DOWNLOAD_COUNT
+    manager = DownloadManager(
+        PASTA_DOWNLOADS,
+        max_filesize=LIMITE_TAMANHO,
+        timeout=max(30, get_int_env("YTDLP_DOWNLOAD_TIMEOUT", 7200)),
+    )
+    extractor = FacebookExtractor(
+        await get_http_session(),
+        manager,
+        duration_limit=LIMITE_DURACAO,
+    )
+    bundle = None
+    try:
+        bundle = await extractor.extract(url)
+        enviado = await _enviar_bundle_social(
+            client, message, bundle, usuario, status, emoji="📘"
+        )
+        if not enviado:
+            await status.edit_text(UNAVAILABLE_NOTICE)
+            return False
+        async with DOWNLOAD_COUNT_LOCK:
+            DOWNLOAD_COUNT += 1
+        try:
+            await status.delete()
+        except Exception:
+            pass
+        return True
+    except MediaTooLong:
+        await avisar_video_longo(status, url, usuario, message)
+    except AuthenticationRequired:
+        await status.edit_text(ACCESS_NOTICE)
+    except SocialMediaError as exc:
+        log.warning(
+            "Facebook falhou stage=%s error=%s",
+            exc.stage,
+            type(exc).__name__,
+        )
+        await status.edit_text(UNAVAILABLE_NOTICE)
+    except Exception as exc:
+        log.exception("Erro inesperado no pipeline Facebook: %s", type(exc).__name__)
+        await status.edit_text(UNAVAILABLE_NOTICE)
+    finally:
+        if bundle is not None:
+            _limpar_midias_locais(bundle)
     return False
 
 
@@ -1902,7 +2069,9 @@ async def processar_links(client, message):
             return
             
         msg_espera = await message.reply_text("⏳ *Baixando do Instagram...*")
-        sucesso = await processar_instagram(client, message, url_raw, usuario, msg_espera)
+        sucesso = await processar_instagram_pipeline(
+            client, message, url_raw, usuario, msg_espera
+        )
 
         if sucesso:
             _failed_url_cache.pop(url_norm, None)
@@ -1919,30 +2088,9 @@ async def processar_links(client, message):
     if url_raw and is_facebook_url(url_raw):
         status = await message.reply_text('📘 Carregando publicação do Facebook...')
         try:
-            try:
-                post = await fetch_public_post(await get_http_session(), url_raw)
-            except FacebookAccessRestricted:
-                await status.edit_text(ACCESS_NOTICE)
-                return
-            except (aiohttp.ClientError, ValueError, asyncio.TimeoutError) as exc:
-                log.info('Facebook: dados públicos indisponíveis: %s', type(exc).__name__)
-                post = None
-            delivered = False
-            if post:
-                if post['text']:
-                    for part in dividir_texto_longo(post['text']):
-                        await message.reply_text(part, parse_mode=None)
-                    delivered = True
-                for photo in post['photos'][:20]:
-                    await client.send_photo(message.chat.id, photo, reply_to_message_id=message.id)
-                    delivered = True
-            if not post or post['has_video']:
-                delivered_video = await extrair_e_enviar_midia(client, message, url_raw, usuario, status)
-                delivered = delivered or delivered_video
-            elif delivered:
-                await status.delete()
-            else:
-                await status.edit_text(UNAVAILABLE_NOTICE)
+            delivered = await processar_facebook_pipeline(
+                client, message, url_raw, usuario, status
+            )
             if delivered:
                 await asyncio.to_thread(db.registrar_link_e_checar, url_norm, message.chat.id, usuario, user_id)
         finally:

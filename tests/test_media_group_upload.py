@@ -5,6 +5,8 @@ from unittest.mock import AsyncMock, patch
 
 from pyrogram.types import InputMediaPhoto, InputMediaVideo
 
+from apps.telegram_bot.models.media import MediaBundle, MediaItem
+
 
 class MediaGroupUploadTest(unittest.IsolatedAsyncioTestCase):
     @classmethod
@@ -69,6 +71,44 @@ class MediaGroupUploadTest(unittest.IsolatedAsyncioTestCase):
         report = '\n'.join(call.args[0] for call in message.reply_text.await_args_list)
         self.assertIn('Conta principal', report)
         self.assertIn('Conta secundaria', report)
+
+    async def test_common_social_pipeline_sends_mixed_bundle_once_in_order(self):
+        super_bot = self._load_super_bot()
+        message = SimpleNamespace(
+            chat=SimpleNamespace(id=123),
+            id=456,
+            reply_text=AsyncMock(),
+        )
+        status = SimpleNamespace(edit_text=AsyncMock())
+        bundle = MediaBundle(
+            "instagram",
+            (
+                MediaItem("first.jpg", "photo", index=0),
+                MediaItem("middle.mp4", "video", index=1),
+                MediaItem("last.jpg", "photo", index=2),
+            ),
+            text="Legenda",
+            author="Ada",
+        )
+        send = AsyncMock(return_value=bundle)
+
+        with (
+            patch.object(super_bot, "get_http_session", new=AsyncMock(return_value=object())),
+            patch.object(super_bot, "traduzir_se_necessario", side_effect=lambda text: text),
+            patch.object(super_bot.MediaSender, "send", new=send),
+        ):
+            delivered = await super_bot._enviar_bundle_social(
+                SimpleNamespace(), message, bundle, "Juan", status, emoji="📸"
+            )
+
+        self.assertTrue(delivered)
+        sent_bundle = send.await_args.args[1]
+        self.assertEqual(
+            [item.source for item in sent_bundle.items],
+            ["first.jpg", "middle.mp4", "last.jpg"],
+        )
+        self.assertIn("Legenda", send.await_args.kwargs["caption"])
+        message.reply_text.assert_not_awaited()
 
 
 if __name__ == '__main__':

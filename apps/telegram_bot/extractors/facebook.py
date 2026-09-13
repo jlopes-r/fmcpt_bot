@@ -137,9 +137,16 @@ def _merge_html_and_downloaded(
 class FacebookExtractor(SocialExtractor):
     platform = "facebook"
 
-    def __init__(self, session: aiohttp.ClientSession, download_manager: DownloadManager) -> None:
+    def __init__(
+        self,
+        session: aiohttp.ClientSession,
+        download_manager: DownloadManager,
+        *,
+        duration_limit: float | None = None,
+    ) -> None:
         self.session = session
         self.download_manager = download_manager
+        self.duration_limit = duration_limit
 
     def supports(self, url: str) -> bool:
         target = parse_facebook_target(url)
@@ -169,12 +176,14 @@ class FacebookExtractor(SocialExtractor):
         return public_post_to_bundle(post, source_url=url, target=target)
 
     async def _extract_ytdlp(self, url: str, target: FacebookTarget) -> MediaBundle:
-        return await self.download_manager.download(
-            url,
-            platform="facebook",
-            allow_playlist=target.kind in {"post", "story"},
-            playlist_limit=20,
-        )
+        options = {
+            "platform": "facebook",
+            "allow_playlist": target.kind in {"post", "story"},
+            "playlist_limit": 20,
+        }
+        if self.duration_limit is not None:
+            options["duration_limit"] = self.duration_limit
+        return await self.download_manager.download(url, **options)
 
     async def extract(self, url: str) -> MediaBundle:
         target = parse_facebook_target(url)
