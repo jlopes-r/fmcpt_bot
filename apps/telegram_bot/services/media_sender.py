@@ -15,6 +15,13 @@ from urllib.parse import urlparse
 
 import aiohttp
 from PIL import Image
+from pyrogram import enums
+from pyrogram.errors import (
+    FloodWait,
+    InternalServerError,
+    ServiceUnavailable,
+    Timeout as TelegramTimeout,
+)
 from pyrogram.types import InputMediaPhoto, InputMediaVideo
 
 from apps.telegram_bot.downloaders import baixar_url_limitado
@@ -24,10 +31,38 @@ from apps.telegram_bot.errors import (
     TelegramUploadFailed,
 )
 from apps.telegram_bot.models.media import MediaBundle, MediaItem
+from packages.observability import redact_sensitive
 
 
 log = logging.getLogger(__name__)
 ProgressCallback = Callable[[int, int], Awaitable[None]]
+_MAX_UPLOAD_RETRY_DELAY = 10.0
+
+
+def _safe_error_details(exc: BaseException) -> str:
+    return redact_sensitive(exc).replace("\n", " ")[:300]
+
+
+def _upload_retry_delay(exc: BaseException) -> float | None:
+    """Retorna uma espera curta apenas para falhas seguramente transitorias."""
+    if isinstance(exc, FloodWait):
+        try:
+            delay = max(0.0, float(exc.value))
+        except (TypeError, ValueError):
+            return None
+        return delay if delay <= _MAX_UPLOAD_RETRY_DELAY else None
+    if isinstance(
+        exc,
+        (
+            asyncio.TimeoutError,
+            OSError,
+            InternalServerError,
+            ServiceUnavailable,
+            TelegramTimeout,
+        ),
+    ):
+        return 1.0
+    return None
 
 
 class VideoProbe(TypedDict):
@@ -277,11 +312,16 @@ class MediaSender:
     @staticmethod
     def _input_media(item: MediaItem, caption: str):
         if item.kind == "photo":
-            return InputMediaPhoto(item.source, caption=caption)
+            return InputMediaPhoto(
+                item.source,
+                caption=caption,
+                parse_mode=enums.ParseMode.DISABLED,
+            )
         if item.kind == "video":
             return InputMediaVideo(
                 item.source,
                 caption=caption,
+                parse_mode=enums.ParseMode.DISABLED,
                 width=item.width or 0,
                 height=item.height or 0,
                 duration=int(item.duration or 0),
@@ -290,28 +330,56 @@ class MediaSender:
         raise ContentUnavailable("tipo nao aceito em album", stage="upload")
 
     async def _send_one(self, chat_id: int, reply_to: int, item, status=None) -> None:
-        try:
-            if isinstance(item, InputMediaPhoto):
-                await self.client.send_photo(
-                    chat_id,
-                    item.media,
-                    caption=item.caption,
-                    reply_to_message_id=reply_to,
+        media_kind = "photo" if isinstance(item, InputMediaPhoto) else "video"
+        for attempt in range(2):
+            try:
+                if isinstance(item, InputMediaPhoto):
+                    await self.client.send_photo(
+                        chat_id,
+                        item.media,
+                        caption=item.caption,
+                        parse_mode=enums.ParseMode.DISABLED,
+                        reply_to_message_id=reply_to,
+                    )
+                else:
+                    await self.client.send_video(
+                        chat_id,
+                        item.media,
+                        caption=item.caption,
+                        parse_mode=enums.ParseMode.DISABLED,
+                        width=item.width,
+                        height=item.height,
+                        duration=item.duration,
+                        supports_streaming=True,
+                        reply_to_message_id=reply_to,
+                        progress=self.progress,
+                    )
+                return
+            except Exception as exc:
+                retry_delay = _upload_retry_delay(exc)
+                if attempt == 0 and retry_delay is not None:
+                    log.warning(
+                        "upload Telegram transitorio; nova tentativa "
+                        "kind=%s error_type=%s error=%s delay=%.1fs",
+                        media_kind,
+                        type(exc).__name__,
+                        _safe_error_details(exc),
+                        retry_delay,
+                    )
+                    await asyncio.sleep(retry_delay)
+                    continue
+                log.warning(
+                    "upload Telegram rejeitado kind=%s attempt=%d "
+                    "error_type=%s error=%s",
+                    media_kind,
+                    attempt + 1,
+                    type(exc).__name__,
+                    _safe_error_details(exc),
                 )
-            else:
-                await self.client.send_video(
-                    chat_id,
-                    item.media,
-                    caption=item.caption,
-                    width=item.width,
-                    height=item.height,
-                    duration=item.duration,
-                    supports_streaming=True,
-                    reply_to_message_id=reply_to,
-                    progress=self.progress,
-                )
-        except Exception as exc:
-            raise TelegramUploadFailed("Telegram rejeitou a midia", stage="upload") from exc
+                raise TelegramUploadFailed(
+                    f"Telegram rejeitou a midia ({type(exc).__name__})",
+                    stage="upload",
+                ) from exc
 
     async def _send_batch(self, chat_id: int, reply_to: int, batch: list, status=None) -> None:
         if len(batch) == 1:
@@ -324,7 +392,12 @@ class MediaSender:
                 reply_to_message_id=reply_to,
             )
         except Exception as exc:
-            log.warning("album rejeitado; enviando itens individualmente: %s", type(exc).__name__)
+            log.warning(
+                "album rejeitado; enviando itens individualmente "
+                "error_type=%s error=%s",
+                type(exc).__name__,
+                _safe_error_details(exc),
+            )
             for item in batch:
                 await self._send_one(chat_id, reply_to, item, status)
 

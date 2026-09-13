@@ -2,6 +2,9 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+from pyrogram import enums
+
+from apps.telegram_bot.errors import TelegramUploadFailed
 from apps.telegram_bot.handlers.twitter import deliver_twitter_post
 from apps.telegram_bot.models.media import MediaBundle, MediaItem
 
@@ -93,3 +96,50 @@ class TwitterHandlerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(outcome.skipped)
         callback.assert_awaited_once()
+
+    async def test_rejected_news_card_falls_back_to_plain_text_and_link(self):
+        bundle = MediaBundle(
+            "twitter",
+            (MediaItem("article-card.jpg", "photo"),),
+            text="Notícia da Folha https://www1.folha.uol.com.br/noticia",
+            author="Folha de S.Paulo",
+            source_url="https://x.com/folha/status/123",
+            source_id="123",
+            metadata={
+                "raw": {
+                    "text": "Notícia da Folha https://www1.folha.uol.com.br/noticia",
+                    "lang": "pt",
+                }
+            },
+        )
+        message = SimpleNamespace(reply_text=AsyncMock())
+        status = SimpleNamespace(delete=AsyncMock())
+        outcome = await deliver_twitter_post(
+            client=object(),
+            message=message,
+            url="https://x.com/folha/status/123",
+            requested_by="User",
+            status=status,
+            extractor=SimpleNamespace(extract=AsyncMock(return_value=bundle)),
+            sender=SimpleNamespace(
+                send=AsyncMock(
+                    side_effect=TelegramUploadFailed(
+                        "Telegram rejeitou a midia (PhotoInvalidDimensions)",
+                        stage="upload",
+                    )
+                )
+            ),
+            duration_limit=600,
+            long_video_callback=AsyncMock(),
+        )
+
+        self.assertEqual(outcome.main_items, 0)
+        self.assertTrue(outcome.text_only)
+        fallback = message.reply_text.await_args.args[0]
+        self.assertIn("Notícia da Folha", fallback)
+        self.assertIn("https://x.com/folha/status/123", fallback)
+        self.assertEqual(
+            message.reply_text.await_args.kwargs["parse_mode"],
+            enums.ParseMode.DISABLED,
+        )
+        status.delete.assert_awaited_once()

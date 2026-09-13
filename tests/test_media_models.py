@@ -1,10 +1,13 @@
+import asyncio
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from apps.telegram_bot.errors import ContentUnavailable
+from pyrogram import enums
+
+from apps.telegram_bot.errors import ContentUnavailable, TelegramUploadFailed
 from apps.telegram_bot.models.media import MediaBundle, MediaItem
 from apps.telegram_bot.services.media_sender import MediaSender, sniff_media
 
@@ -55,6 +58,10 @@ class MediaSenderTests(unittest.IsolatedAsyncioTestCase):
             )
         client.send_photo.assert_awaited_once()
         client.send_media_group.assert_not_awaited()
+        self.assertEqual(
+            client.send_photo.await_args.kwargs["parse_mode"],
+            enums.ParseMode.DISABLED,
+        )
 
     async def test_mixed_album_preserves_order_and_caption(self):
         client = SimpleNamespace(
@@ -80,6 +87,9 @@ class MediaSenderTests(unittest.IsolatedAsyncioTestCase):
         sent = client.send_media_group.await_args.args[1]
         self.assertEqual([item.media for item in sent], ["one.jpg", "two.mp4", "three.jpg"])
         self.assertEqual([item.caption for item in sent], ["caption", "", ""])
+        self.assertTrue(
+            all(item.parse_mode == enums.ParseMode.DISABLED for item in sent)
+        )
 
     async def test_rejected_album_falls_back_in_original_order(self):
         client = SimpleNamespace(
@@ -107,3 +117,54 @@ class MediaSenderTests(unittest.IsolatedAsyncioTestCase):
             [client.send_photo.await_args.args[1], client.send_video.await_args.args[1]],
             ["one.jpg", "two.mp4"],
         )
+
+    async def test_transient_single_upload_is_retried_once(self):
+        client = SimpleNamespace(
+            send_photo=AsyncMock(side_effect=[asyncio.TimeoutError(), None]),
+            send_video=AsyncMock(),
+            send_media_group=AsyncMock(),
+        )
+        sender = MediaSender(client)
+        prepared = MediaBundle("twitter", (MediaItem("photo.jpg", "photo"),))
+        with (
+            patch.object(sender, "prepare", new=AsyncMock(return_value=prepared)),
+            patch(
+                "apps.telegram_bot.services.media_sender.asyncio.sleep",
+                new=AsyncMock(),
+            ) as sleep,
+        ):
+            await sender.send(
+                SimpleNamespace(chat=SimpleNamespace(id=1), id=2),
+                prepared,
+                caption="caption",
+            )
+
+        self.assertEqual(client.send_photo.await_count, 2)
+        sleep.assert_awaited_once_with(1.0)
+
+    async def test_permanent_upload_failure_keeps_original_cause(self):
+        original = RuntimeError("PHOTO_INVALID_DIMENSIONS")
+        client = SimpleNamespace(
+            send_photo=AsyncMock(side_effect=original),
+            send_video=AsyncMock(),
+            send_media_group=AsyncMock(),
+        )
+        sender = MediaSender(client)
+        prepared = MediaBundle("twitter", (MediaItem("photo.jpg", "photo"),))
+        with (
+            patch.object(sender, "prepare", new=AsyncMock(return_value=prepared)),
+            self.assertLogs(
+                "apps.telegram_bot.services.media_sender",
+                level="WARNING",
+            ) as captured,
+            self.assertRaises(TelegramUploadFailed) as raised,
+        ):
+            await sender.send(
+                SimpleNamespace(chat=SimpleNamespace(id=1), id=2),
+                prepared,
+                caption="caption",
+            )
+
+        self.assertIs(raised.exception.__cause__, original)
+        self.assertIn("PHOTO_INVALID_DIMENSIONS", "\n".join(captured.output))
+        self.assertEqual(client.send_photo.await_count, 1)

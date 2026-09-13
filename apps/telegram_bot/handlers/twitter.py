@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+import logging
 
-from apps.telegram_bot.errors import SocialMediaError
+from pyrogram import enums
+
+from apps.telegram_bot.errors import SocialMediaError, TelegramUploadFailed
 from apps.telegram_bot.extractors.base import ExtractionContext
 from apps.telegram_bot.extractors.twitter import TwitterExtractor
 from apps.telegram_bot.models.media import MediaBundle
@@ -13,6 +16,9 @@ from apps.telegram_bot.services.media_sender import MediaSender
 from apps.telegram_bot.text_utils import dividir_texto_longo, montar_legenda
 from apps.telegram_bot.translator import traduzir_se_necessario
 from apps.telegram_bot.twitter import traduzir_texto_tweet
+
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -30,6 +36,25 @@ def _translated_text(bundle: MediaBundle) -> str:
     if isinstance(raw, dict):
         return traduzir_texto_tweet(raw)
     return traduzir_se_necessario(bundle.text or bundle.title)
+
+
+async def _send_text_fallback(
+    message,
+    bundle: MediaBundle,
+    text: str,
+    requested_by: str,
+    *,
+    reason: str,
+) -> None:
+    sections = [
+        f"📝 {reason}",
+        f"{bundle.author or 'Autor'}:\n{text}" if text else bundle.author or "Autor",
+    ]
+    if bundle.source_url:
+        sections.append(f"🔗 {bundle.source_url}")
+    sections.append(f"👤 Enviado por: {requested_by}")
+    for part in dividir_texto_longo("\n\n".join(sections)):
+        await message.reply_text(part, parse_mode=enums.ParseMode.DISABLED)
 
 
 async def _complete_quote(
@@ -95,6 +120,7 @@ async def deliver_twitter_post(
             main_text += f"\n\n🔁 [Quote - {quote.author or 'Autor'}]:\n{quote_text}"
 
     main_count = 0
+    main_text_fallback = False
     if bundle.items:
         caption = montar_legenda(
             main_text,
@@ -102,15 +128,32 @@ async def deliver_twitter_post(
             requested_by,
             emoji="📸",
         )
-        prepared = await sender.send(message, bundle, caption=caption, status=status)
-        main_count = len(prepared.items)
+        try:
+            prepared = await sender.send(message, bundle, caption=caption, status=status)
+            main_count = len(prepared.items)
+        except TelegramUploadFailed as exc:
+            cause = exc.__cause__ or exc
+            log.warning(
+                "midia principal do X rejeitada; usando texto "
+                "source_id=%s cause_type=%s",
+                bundle.source_id,
+                type(cause).__name__,
+            )
+            await _send_text_fallback(
+                message,
+                bundle,
+                main_text,
+                requested_by,
+                reason="Prévia indisponível; conteúdo enviado em texto",
+            )
+            main_text_fallback = True
     else:
         text_message = (
             f"📝 {bundle.author or 'Autor'}:\n{main_text}\n\n"
             f"👤 Enviado por: {requested_by}"
         )
         for part in dividir_texto_longo(text_message):
-            await message.reply_text(part)
+            await message.reply_text(part, parse_mode=enums.ParseMode.DISABLED)
 
     quote_count = 0
     if quote_has_media and quote is not None:
@@ -124,13 +167,29 @@ async def deliver_twitter_post(
                 requested_by,
                 emoji="🔁",
             )
-            prepared_quote = await sender.send(
-                message,
-                quote,
-                caption=quote_caption,
-                status=status,
-            )
-            quote_count = len(prepared_quote.items)
+            try:
+                prepared_quote = await sender.send(
+                    message,
+                    quote,
+                    caption=quote_caption,
+                    status=status,
+                )
+                quote_count = len(prepared_quote.items)
+            except TelegramUploadFailed as exc:
+                cause = exc.__cause__ or exc
+                log.warning(
+                    "midia citada do X rejeitada; usando texto "
+                    "source_id=%s cause_type=%s",
+                    quote.source_id,
+                    type(cause).__name__,
+                )
+                await _send_text_fallback(
+                    message,
+                    quote,
+                    quote_text,
+                    requested_by,
+                    reason="Mídia citada indisponível; conteúdo enviado em texto",
+                )
 
     try:
         await status.delete()
@@ -139,7 +198,7 @@ async def deliver_twitter_post(
     return TwitterDelivery(
         main_count,
         quote_count,
-        not bundle.items,
+        not bundle.items or main_text_fallback,
         bundle,
         quote_bundle=quote,
     )
