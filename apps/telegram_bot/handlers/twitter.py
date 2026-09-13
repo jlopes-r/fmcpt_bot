@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 import logging
+from urllib.parse import urlsplit
 
 from pyrogram import enums
 
@@ -47,6 +48,15 @@ async def _send_text_fallback(
     *,
     reason: str,
 ) -> None:
+    if bundle.source_url:
+        parsed_source = urlsplit(bundle.source_url)
+        if parsed_source.scheme in {"http", "https"} and parsed_source.netloc:
+            await message.reply_text(
+                bundle.source_url,
+                parse_mode=enums.ParseMode.DISABLED,
+            )
+            return
+
     sections = [
         f"📝 {reason}",
         f"{bundle.author or 'Autor'}:\n{text}" if text else bundle.author or "Autor",
@@ -142,7 +152,7 @@ async def deliver_twitter_post(
         except TelegramUploadFailed as exc:
             cause = exc.__cause__ or exc
             log.warning(
-                "midia principal do X rejeitada; usando texto "
+                "midia principal do X rejeitada; usando fallback "
                 "source_id=%s cause_type=%s",
                 bundle.source_id,
                 type(cause).__name__,
@@ -189,7 +199,7 @@ async def deliver_twitter_post(
             except TelegramUploadFailed as exc:
                 cause = exc.__cause__ or exc
                 log.warning(
-                    "midia citada do X rejeitada; usando texto "
+                    "midia citada do X rejeitada; usando fallback "
                     "source_id=%s cause_type=%s",
                     quote.source_id,
                     type(cause).__name__,

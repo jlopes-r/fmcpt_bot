@@ -99,7 +99,7 @@ class TwitterHandlerTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(outcome.skipped)
         callback.assert_awaited_once()
 
-    async def test_rejected_news_card_falls_back_to_plain_text_and_link(self):
+    async def test_rejected_news_card_sends_only_source_link(self):
         bundle = MediaBundle(
             "twitter",
             (MediaItem("article-card.jpg", "photo"),),
@@ -138,10 +138,43 @@ class TwitterHandlerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(outcome.main_items, 0)
         self.assertTrue(outcome.text_only)
         fallback = message.reply_text.await_args.args[0]
-        self.assertIn("Notícia da Folha", fallback)
-        self.assertIn("https://x.com/folha/status/123", fallback)
+        self.assertEqual(fallback, "https://x.com/folha/status/123")
         self.assertEqual(
             message.reply_text.await_args.kwargs["parse_mode"],
             enums.ParseMode.DISABLED,
         )
         status.delete.assert_awaited_once()
+
+    async def test_rejected_media_without_source_link_keeps_text_fallback(self):
+        bundle = MediaBundle(
+            "twitter",
+            (MediaItem("card.jpg", "photo"),),
+            text="Texto ainda disponivel",
+            author="Autor",
+            source_id="123",
+            metadata={"raw": {"text": "Texto ainda disponivel", "lang": "pt"}},
+        )
+        message = SimpleNamespace(reply_text=AsyncMock())
+
+        await deliver_twitter_post(
+            client=object(),
+            message=message,
+            url="https://x.com/autor/status/123",
+            requested_by="User",
+            status=SimpleNamespace(delete=AsyncMock()),
+            extractor=SimpleNamespace(extract=AsyncMock(return_value=bundle)),
+            sender=SimpleNamespace(
+                send=AsyncMock(
+                    side_effect=TelegramUploadFailed(
+                        "Telegram rejeitou a midia",
+                        stage="upload",
+                    )
+                )
+            ),
+            duration_limit=600,
+            long_video_callback=AsyncMock(),
+        )
+
+        fallback = message.reply_text.await_args.args[0]
+        self.assertIn("Texto ainda disponivel", fallback)
+        self.assertIn("Enviado por: User", fallback)
