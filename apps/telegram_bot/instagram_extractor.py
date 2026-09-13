@@ -1442,35 +1442,53 @@ async def _extract_via_api(shortcode: str, cookies: dict = None) -> dict | None:
 
 
 async def _extract_via_api_media_id(media_id: str, cookies: dict) -> dict | None:
-    """Extrai Story pela API autenticada usando o media_id ja conhecido."""
+    """Extrai Story pelo endpoint web e, depois, pelo endpoint movel."""
     if not media_id or not cookies:
         return None
     try:
         await _ig_wait_pacing()
-        headers = {**BROWSER_HEADERS, **IG_APP_HEADERS}
+        headers = {
+            **BROWSER_HEADERS,
+            **IG_APP_HEADERS,
+            'X-Requested-With': 'XMLHttpRequest',
+        }
         csrf = cookies.get('csrftoken', '')
         if csrf:
             headers['X-CSRFToken'] = csrf
         headers['Cookie'] = _build_cookie_header(cookies)
-        api_url = f'https://i.instagram.com/api/v1/media/{media_id}/info/'
+        api_urls = (
+            f'https://www.instagram.com/api/v1/media/{media_id}/info/',
+            f'https://i.instagram.com/api/v1/media/{media_id}/info/',
+        )
         async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
-            resp = await client.get(api_url, headers=headers)
-        log.info("   Story API status: %d", resp.status_code)
-        failure = _observe_instagram_response(resp, "Story por media_id")
-        if failure in {
-            InstagramFailure.IP_RATE_LIMITED,
-            InstagramFailure.COOKIE_INVALID,
-            InstagramFailure.CHALLENGE,
-        }:
-            return None
-        if resp.status_code != 200:
-            return None
-        data = resp.json()
-        items = data.get('items') or []
-        return _parse_api_item(items[0]) if items else None
+            for api_url in api_urls:
+                host = urllib.parse.urlparse(api_url).hostname or 'instagram'
+                resp = await client.get(api_url, headers=headers)
+                log.info("   Story API status: %d (%s)", resp.status_code, host)
+                failure = _observe_instagram_response(
+                    resp,
+                    f"Story por media_id ({host})",
+                )
+                if failure is InstagramFailure.IP_RATE_LIMITED:
+                    continue
+                if failure in {
+                    InstagramFailure.COOKIE_INVALID,
+                    InstagramFailure.CHALLENGE,
+                }:
+                    return None
+                if resp.status_code != 200:
+                    continue
+                try:
+                    data = resp.json()
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                items = data.get('items') or []
+                result = _parse_api_item(items[0]) if items else None
+                if result:
+                    return result
     except Exception as e:
         log.info("   Story API falhou: %s", str(e)[:200])
-        return None
+    return None
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1893,10 +1911,35 @@ def _story_reels_from_payload(data: dict) -> list[dict]:
     return reels
 
 
-def _parse_story_reels(data: dict, username: str = "") -> dict | None:
+def _parse_story_reels(
+    data: dict,
+    username: str = "",
+    media_id: str = "",
+) -> dict | None:
     """Converte uma sequência completa de stories, preservando a ordem da API."""
     reels = _story_reels_from_payload(data)
     if not reels:
+        return None
+
+    if media_id:
+        for reel in reels:
+            reel_user = reel.get('user') or reel.get('owner') or {}
+            reel_username = str(reel_user.get('username') or '')
+            if username and reel_username and reel_username.casefold() != username.casefold():
+                continue
+            for item in reel.get('items') or []:
+                if not isinstance(item, dict):
+                    continue
+                item_id = str(item.get('pk') or item.get('id') or '')
+                if item_id != str(media_id):
+                    continue
+                parsed = _parse_api_item(item)
+                if not parsed:
+                    return None
+                parsed['_expected_items'] = len(parsed['urls'])
+                parsed['_complete'] = True
+                parsed['_story_sequence'] = False
+                return parsed
         return None
 
     urls: list[str] = []
@@ -1954,8 +1997,12 @@ def _parse_story_reels(data: dict, username: str = "") -> dict | None:
     }
 
 
-async def _extract_via_stories_api(username: str, cookies: dict) -> dict | None:
-    """Busca diretamente todos os stories ativos de um perfil autenticado."""
+async def _extract_via_stories_api(
+    username: str,
+    cookies: dict,
+    media_id: str = "",
+) -> dict | None:
+    """Busca os stories ativos e, opcionalmente, seleciona um media_id."""
     user_id = await _resolve_instagram_user_id(username, cookies)
     if not user_id:
         return None
@@ -1966,24 +2013,36 @@ async def _extract_via_stories_api(username: str, cookies: dict) -> dict | None:
     csrf = cookies.get('csrftoken', '')
     if csrf:
         headers['X-CSRFToken'] = csrf
-    api_url = (
-        'https://i.instagram.com/api/v1/feed/reels_media/'
-        f'?reel_ids={urllib.parse.quote(user_id)}&reel_flag=1'
+    query = f'?reel_ids={urllib.parse.quote(user_id)}&reel_flag=1'
+    api_urls = (
+        f'https://www.instagram.com/api/v1/feed/reels_media/{query}',
+        f'https://i.instagram.com/api/v1/feed/reels_media/{query}',
     )
     try:
         async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
-            resp = await client.get(api_url, headers=headers)
-        failure = _observe_instagram_response(resp, "Sequência de stories")
-        if failure in {
-            InstagramFailure.IP_RATE_LIMITED,
-            InstagramFailure.COOKIE_INVALID,
-            InstagramFailure.CHALLENGE,
-        } or resp.status_code != 200:
-            return None
-        return _parse_story_reels(resp.json(), username)
+            for api_url in api_urls:
+                host = urllib.parse.urlparse(api_url).hostname or 'instagram'
+                resp = await client.get(api_url, headers=headers)
+                log.info("   Stories API status: %d (%s)", resp.status_code, host)
+                failure = _observe_instagram_response(
+                    resp,
+                    f"Sequência de stories ({host})",
+                )
+                if failure is InstagramFailure.IP_RATE_LIMITED:
+                    continue
+                if failure in {
+                    InstagramFailure.COOKIE_INVALID,
+                    InstagramFailure.CHALLENGE,
+                }:
+                    return None
+                if resp.status_code != 200:
+                    continue
+                parsed = _parse_story_reels(resp.json(), username, media_id)
+                if parsed:
+                    return parsed
     except (httpx.HTTPError, json.JSONDecodeError, ValueError, TypeError) as exc:
         log.info("   Stories API falhou: %s", str(exc)[:200])
-        return None
+    return None
 
 
 async def _extract_via_highlights_api(highlight_id: str, cookies: dict = None) -> dict | None:
@@ -2148,6 +2207,15 @@ async def download_instagram(
                     story_media_id,
                     cookies,
                 )
+                if not result and story_info:
+                    result = await _run_account_endpoint(
+                        account_id,
+                        'stories_api_exact',
+                        _extract_via_stories_api,
+                        story_info[0],
+                        cookies,
+                        story_media_id,
+                    )
             else:
                 result = await _run_account_endpoint(
                     account_id,
