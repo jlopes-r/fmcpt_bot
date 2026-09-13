@@ -5,6 +5,8 @@ from collections import Counter
 
 from langdetect import detect_langs, DetectorFactory
 
+from packages.observability import redact_sensitive
+
 try:
     from deep_translator import GoogleTranslator, MyMemoryTranslator
 except Exception:  # pragma: no cover
@@ -43,9 +45,62 @@ MIN_PALAVRAS_LATINAS = 4
 # fallback quando o endpoint gratuito do Google usado pelo deep-translator
 # estiver indisponivel.
 _MYMEMORY_LANG = {
-    "zh": "zh-CN",
+    "af": "af-ZA",
+    "ar": "ar-SA",
+    "bg": "bg-BG",
+    "bn": "bn-IN",
+    "ca": "ca-ES",
+    "cs": "cs-CZ",
+    "cy": "cy-GB",
+    "da": "da-DK",
+    "de": "de-DE",
+    "el": "el-GR",
+    "en": "en-GB",
+    "es": "es-ES",
+    "et": "et-EE",
+    "fa": "fa-IR",
+    "fi": "fi-FI",
+    "fr": "fr-FR",
+    "gu": "gu-IN",
     "he": "he-IL",
+    "hi": "hi-IN",
+    "hr": "hr-HR",
+    "hu": "hu-HU",
+    "id": "id-ID",
+    "it": "it-IT",
+    "ja": "ja-JP",
+    "kn": "kn-IN",
+    "ko": "ko-KR",
+    "lt": "lt-LT",
+    "lv": "lv-LV",
+    "mk": "mk-MK",
+    "ml": "ml-IN",
+    "mr": "mr-IN",
+    "ne": "ne-NP",
+    "nl": "nl-NL",
+    "no": "nb-NO",
+    "pa": "pa-IN",
+    "pl": "pl-PL",
     "pt": "pt-BR",
+    "ro": "ro-RO",
+    "ru": "ru-RU",
+    "sk": "sk-SK",
+    "sl": "sl-SI",
+    "so": "so-SO",
+    "sq": "sq-AL",
+    "sv": "sv-SE",
+    "sw": "sw-KE",
+    "ta": "ta-IN",
+    "te": "te-IN",
+    "th": "th-TH",
+    "tl": "tl-PH",
+    "tr": "tr-TR",
+    "uk": "uk-UA",
+    "ur": "ur-PK",
+    "vi": "vi-VN",
+    "zh": "zh-CN",
+    "zh-cn": "zh-CN",
+    "zh-tw": "zh-TW",
 }
 
 # Placeholder para entidades que NÃO devem ser traduzidas (@usuarios e emojis).
@@ -114,6 +169,25 @@ def _normalizar_idioma(codigo: str | None) -> str | None:
         return None
     codigo = codigo.strip().lower().replace("_", "-")
     return codigo.split("-")[0]
+
+
+def _codigo_mymemory(codigo: str | None) -> str | None:
+    """Converte ISO curto para o locale exigido pelo MyMemory."""
+    if not isinstance(codigo, str) or not codigo.strip():
+        return None
+    normalizado = codigo.strip().lower().replace("_", "-")
+    return _MYMEMORY_LANG.get(normalizado) or _MYMEMORY_LANG.get(
+        normalizado.split("-")[0]
+    )
+
+
+def _resumir_erro_traducao(exc: BaseException) -> str:
+    detalhe = redact_sensitive(exc).replace("\n", " ")
+    if "No support for the provided language" in detalhe:
+        return "codigo de idioma recusado pelo provedor"
+    if len(detalhe) > 240:
+        return detalhe[:237] + "..."
+    return detalhe or type(exc).__name__
 
 
 def _detectar_idioma(texto: str) -> str | None:
@@ -301,13 +375,16 @@ def traduzir_com_detalhes(
     try:
         origem_tradutor = {"zh": "zh-CN", "zh-cn": "zh-CN", "zh-tw": "zh-TW", "he": "iw"}.get(idioma, idioma)
         tradutor = GoogleTranslator(source=origem_tradutor, target=alvo)
-        falha_google = False
         for tentativa in range(1, MAX_TENTATIVAS_TRADUCAO + 1):
             try:
                 traducao = tradutor.translate(texto_isolado)
             except Exception as e:
-                falha_google = True
-                log.warning(f"Falha na tradução automática (tentativa {tentativa}/{MAX_TENTATIVAS_TRADUCAO}): {e}")
+                log.warning(
+                    "Falha na tradução automática (tentativa %d/%d): %s",
+                    tentativa,
+                    MAX_TENTATIVAS_TRADUCAO,
+                    _resumir_erro_traducao(e),
+                )
                 traducao = None
 
             if traducao and not _parece_erro_traducao(traducao):
@@ -329,10 +406,18 @@ def traduzir_com_detalhes(
         # O endpoint do Google pode recusar temporariamente textos validos com
         # "No translation was found". Tenta um provedor independente uma vez,
         # mantendo as mesmas validacoes de placeholders e pagina de erro.
-        if not resultado["foi_traduzido"] and falha_google and MyMemoryTranslator is not None:
+        if not resultado["foi_traduzido"] and MyMemoryTranslator is not None:
             try:
-                origem_mm = _MYMEMORY_LANG.get(_normalizar_idioma(idioma), idioma)
-                alvo_mm = _MYMEMORY_LANG.get(_normalizar_idioma(alvo), alvo)
+                origem_mm = _codigo_mymemory(idioma)
+                alvo_mm = _codigo_mymemory(alvo)
+                if not origem_mm or not alvo_mm:
+                    log.warning(
+                        "Fallback de traducao ignorado: idioma sem locale "
+                        "compativel source=%s target=%s",
+                        idioma,
+                        alvo,
+                    )
+                    return resultado
                 traducao = MyMemoryTranslator(source=origem_mm, target=alvo_mm).translate(texto_isolado)
                 if traducao and not _parece_erro_traducao(traducao):
                     if Counter(_PLACEHOLDER_RE.findall(traducao)) == tokens_esperados:
@@ -342,9 +427,15 @@ def traduzir_com_detalhes(
                             resultado["idioma_origem"] = idioma
                             resultado["foi_traduzido"] = True
             except Exception as e:
-                log.warning("Fallback de traducao indisponivel: %s", e)
+                log.warning(
+                    "Fallback de traducao indisponivel: %s",
+                    _resumir_erro_traducao(e),
+                )
     except Exception as e:
-        log.warning(f"Erro inesperado na tradução automática: {e}")
+        log.warning(
+            "Erro inesperado na tradução automática: %s",
+            _resumir_erro_traducao(e),
+        )
     return resultado
 
 

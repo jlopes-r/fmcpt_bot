@@ -110,6 +110,7 @@ class TwitterTranslationTest(unittest.TestCase):
         translator.assert_called_once_with(source="de", target="pt")
         translator.return_value.translate.assert_called_once_with(self.TEXTO_ALEMAO)
 
+    @patch("apps.telegram_bot.translator.MyMemoryTranslator", None)
     @patch("apps.telegram_bot.translator.time.sleep")
     @patch("apps.telegram_bot.translator.GoogleTranslator")
     def test_falha_na_traducao_preserva_original_sem_aviso(self, translator, sleep):

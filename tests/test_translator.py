@@ -3,10 +3,12 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from apps.telegram_bot.translator import (
+    _codigo_mymemory,
     _detectar_idioma,
     _eh_ruido_laughing,
     _isolar_entidades,
     _parece_erro_traducao,
+    _resumir_erro_traducao,
     nome_idioma,
     traduzir_com_detalhes,
     traduzir_se_necessario,
@@ -42,6 +44,7 @@ class TranslatorTest(unittest.TestCase):
         self.assertEqual(resultado, "Confira esta atualização")
         mock_gt.assert_called_once_with(source="de", target="pt")
 
+    @patch("apps.telegram_bot.translator.MyMemoryTranslator", None)
     @patch("apps.telegram_bot.translator.time.sleep")
     @patch("apps.telegram_bot.translator._detectar_idioma", return_value="de")
     @patch("apps.telegram_bot.translator.GoogleTranslator")
@@ -51,6 +54,7 @@ class TranslatorTest(unittest.TestCase):
         original = "Schauen Sie sich dieses Update an"
         self.assertEqual(traduzir_se_necessario(original), original)
 
+    @patch("apps.telegram_bot.translator.MyMemoryTranslator", None)
     @patch("apps.telegram_bot.translator.time.sleep")
     @patch("apps.telegram_bot.translator._detectar_idioma", return_value="de")
     @patch("apps.telegram_bot.translator.GoogleTranslator")
@@ -102,6 +106,7 @@ class TraduzirComDetalhesTest(unittest.TestCase):
         self.assertEqual(r["idioma_origem"], "es")
         self.assertTrue(r["foi_traduzido"])
 
+    @patch("apps.telegram_bot.translator.MyMemoryTranslator", None)
     @patch("apps.telegram_bot.translator.time.sleep")
     @patch("apps.telegram_bot.translator._detectar_idioma", return_value="es")
     @patch("apps.telegram_bot.translator.GoogleTranslator")
@@ -129,6 +134,7 @@ class TraduzirComDetalhesTest(unittest.TestCase):
         # backoff exponencial: 2s (somente 1 espera antes da 2ª tentativa)
         self.assertEqual(mock_sleep.call_count, 1)
 
+    @patch("apps.telegram_bot.translator.MyMemoryTranslator", None)
     @patch("apps.telegram_bot.translator.time.sleep")
     @patch("apps.telegram_bot.translator._detectar_idioma", return_value="es")
     @patch("apps.telegram_bot.translator.GoogleTranslator")
@@ -203,6 +209,7 @@ class DeteccaoConservadoraTest(unittest.TestCase):
         self.assertEqual(r["traduzido"], original.replace("Schauen Sie sich dieses Update an", "Confira esta atualização"))
         mock_detect.assert_called_once_with("Schauen Sie sich dieses Update an")
 
+    @patch("apps.telegram_bot.translator.MyMemoryTranslator", None)
     @patch("apps.telegram_bot.translator.time.sleep")
     @patch("apps.telegram_bot.translator.GoogleTranslator")
     @patch("apps.telegram_bot.translator._detectar_idioma", return_value="de")
@@ -258,7 +265,71 @@ class DeteccaoConservadoraTest(unittest.TestCase):
         mock_memory.return_value.translate.return_value = "Confira esta atualizacao"
         resultado = traduzir_com_detalhes("Mira esta actualizacion de nuestro equipo")
         self.assertTrue(resultado["foi_traduzido"])
-        mock_memory.assert_called_once_with(source="es", target="pt-BR")
+        mock_memory.assert_called_once_with(source="es-ES", target="pt-BR")
+
+    @patch("apps.telegram_bot.translator.MyMemoryTranslator")
+    @patch("apps.telegram_bot.translator.time.sleep")
+    @patch("apps.telegram_bot.translator.GoogleTranslator")
+    @patch("apps.telegram_bot.translator._detectar_idioma")
+    def test_fallback_normaliza_idiomas_observados_nos_logs(
+        self,
+        mock_detect,
+        mock_google,
+        mock_sleep,
+        mock_memory,
+    ):
+        mock_google.return_value.translate.side_effect = RuntimeError("indisponivel")
+        mock_memory.return_value.translate.return_value = "Texto traduzido"
+
+        for codigo, locale in {
+            "es": "es-ES",
+            "it": "it-IT",
+            "nl": "nl-NL",
+            "lv": "lv-LV",
+            "ja": "ja-JP",
+        }.items():
+            with self.subTest(codigo=codigo):
+                mock_detect.return_value = codigo
+                resultado = traduzir_com_detalhes(
+                    "Uma frase estrangeira suficientemente longa para detectar"
+                )
+                self.assertTrue(resultado["foi_traduzido"])
+                mock_memory.assert_called_with(source=locale, target="pt-BR")
+
+    @patch("apps.telegram_bot.translator.MyMemoryTranslator")
+    @patch("apps.telegram_bot.translator.time.sleep")
+    @patch("apps.telegram_bot.translator.GoogleTranslator")
+    @patch("apps.telegram_bot.translator._detectar_idioma", return_value="es")
+    def test_fallback_tambem_roda_quando_google_retorna_resposta_invalida(
+        self,
+        mock_detect,
+        mock_google,
+        mock_sleep,
+        mock_memory,
+    ):
+        mock_google.return_value.translate.return_value = None
+        mock_memory.return_value.translate.return_value = "Texto traduzido"
+
+        resultado = traduzir_com_detalhes(
+            "Una frase suficientemente larga para permitir la traduccion"
+        )
+
+        self.assertTrue(resultado["foi_traduzido"])
+        mock_memory.assert_called_once_with(source="es-ES", target="pt-BR")
+
+    def test_codigos_mymemory_e_erros_resumidos(self):
+        self.assertEqual(_codigo_mymemory("ES"), "es-ES")
+        self.assertEqual(_codigo_mymemory("zh_TW"), "zh-TW")
+        self.assertEqual(_codigo_mymemory("no"), "nb-NO")
+        self.assertIsNone(_codigo_mymemory("xx"))
+        erro = ValueError(
+            "No support for the provided language. Please select one: "
+            + "idioma, " * 1_000
+        )
+        self.assertEqual(
+            _resumir_erro_traducao(erro),
+            "codigo de idioma recusado pelo provedor",
+        )
 
 
 class PareceErroTraducaoTest(unittest.TestCase):
