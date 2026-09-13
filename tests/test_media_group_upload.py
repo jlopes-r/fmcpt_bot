@@ -1,10 +1,11 @@
 import unittest
 import importlib
+import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from pyrogram.types import InputMediaPhoto, InputMediaVideo
-
+from apps.telegram_bot.handlers.social import SocialMediaPipeline, SocialPipelineConfig
 from apps.telegram_bot.models.media import MediaBundle, MediaItem
 
 
@@ -15,31 +16,6 @@ class MediaGroupUploadTest(unittest.IsolatedAsyncioTestCase):
 
     def _load_super_bot(self):
         return self.super_bot
-
-    async def test_mixed_album_is_sent_once_in_original_order(self):
-        super_bot = self._load_super_bot()
-        client = SimpleNamespace(send_media_group=AsyncMock())
-        message = SimpleNamespace(chat=SimpleNamespace(id=123), id=456)
-        status = SimpleNamespace(edit_text=AsyncMock())
-        album = [
-            InputMediaPhoto('first.jpg', caption='caption'),
-            InputMediaVideo('middle.mp4', supports_streaming=True),
-            InputMediaPhoto('last.jpg'),
-        ]
-
-        with patch.object(super_bot, '_probe_video_attrs', return_value=(1080, 1920, 12)):
-            await super_bot._enviar_album_com_progresso(client, message, album, status)
-
-        client.send_media_group.assert_awaited_once()
-        sent = client.send_media_group.await_args.args[1]
-        self.assertEqual([type(item) for item in sent], [
-            InputMediaPhoto, InputMediaVideo, InputMediaPhoto,
-        ])
-        self.assertEqual([item.media for item in sent], [
-            'first.jpg', 'middle.mp4', 'last.jpg',
-        ])
-        self.assertEqual(sent[0].caption, 'caption')
-        self.assertEqual((sent[1].width, sent[1].height, sent[1].duration), (1080, 1920, 12))
 
     async def test_instagram_status_checks_both_cookie_accounts(self):
         super_bot = self._load_super_bot()
@@ -73,13 +49,12 @@ class MediaGroupUploadTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn('Conta secundaria', report)
 
     async def test_common_social_pipeline_sends_mixed_bundle_once_in_order(self):
-        super_bot = self._load_super_bot()
         message = SimpleNamespace(
             chat=SimpleNamespace(id=123),
             id=456,
             reply_text=AsyncMock(),
         )
-        status = SimpleNamespace(edit_text=AsyncMock())
+        status = SimpleNamespace(edit_text=AsyncMock(), delete=AsyncMock())
         bundle = MediaBundle(
             "instagram",
             (
@@ -90,18 +65,35 @@ class MediaGroupUploadTest(unittest.IsolatedAsyncioTestCase):
             text="Legenda",
             author="Ada",
         )
+        extractor = SimpleNamespace(extract=AsyncMock(return_value=bundle))
+        registry = SimpleNamespace(resolve=lambda _url: extractor)
         send = AsyncMock(return_value=bundle)
-
-        with (
-            patch.object(super_bot, "get_http_session", new=AsyncMock(return_value=object())),
-            patch.object(super_bot, "traduzir_se_necessario", side_effect=lambda text: text),
-            patch.object(super_bot.MediaSender, "send", new=send),
-        ):
-            delivered = await super_bot._enviar_bundle_social(
-                SimpleNamespace(), message, bundle, "Juan", status, emoji="📸"
+        with tempfile.TemporaryDirectory() as folder:
+            pipeline = SocialMediaPipeline(
+                client=SimpleNamespace(),
+                session=SimpleNamespace(),
+                config=SocialPipelineConfig(
+                    download_root=Path(folder),
+                    max_media_bytes=10_000,
+                    download_timeout=30,
+                    duration_limit=600,
+                ),
+                registry=registry,
             )
+            pipeline.sender.send = send
+            with patch(
+                "apps.telegram_bot.handlers.social.traduzir_se_necessario",
+                side_effect=lambda text: text,
+            ):
+                delivered = await pipeline.deliver(
+                    message=message,
+                    url="https://instagram.com/p/ABC/",
+                    requested_by="Juan",
+                    status=status,
+                    long_video_callback=AsyncMock(),
+                )
 
-        self.assertTrue(delivered)
+        self.assertEqual(delivered.item_count, 3)
         sent_bundle = send.await_args.args[1]
         self.assertEqual(
             [item.source for item in sent_bundle.items],
@@ -109,6 +101,7 @@ class MediaGroupUploadTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("Legenda", send.await_args.kwargs["caption"])
         message.reply_text.assert_not_awaited()
+        extractor.extract.assert_awaited_once()
 
 
 if __name__ == '__main__':

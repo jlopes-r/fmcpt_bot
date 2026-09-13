@@ -9,7 +9,7 @@ from typing import Any, Awaitable, Callable
 from urllib.parse import urlparse
 
 from apps.telegram_bot.errors import AuthenticationRequired, ContentUnavailable, UnsupportedUrl
-from apps.telegram_bot.extractors.base import SocialExtractor
+from apps.telegram_bot.extractors.base import ExtractionContext, SocialExtractor
 from apps.telegram_bot.instagram import download_instagram
 from apps.telegram_bot.models.media import MediaBundle
 from apps.telegram_bot.services.download_manager import DownloadManager
@@ -70,7 +70,12 @@ class InstagramExtractor(SocialExtractor):
         valid_host = host == "instagr.am" or host == "instagram.com" or host.endswith(".instagram.com")
         return bool(valid_host and _CONTENT_RE.search(parsed.path))
 
-    async def extract(self, url: str) -> MediaBundle:
+    async def extract(
+        self,
+        url: str,
+        *,
+        context: ExtractionContext | None = None,
+    ) -> MediaBundle:
         if not self.supports(url):
             raise UnsupportedUrl("URL de conteudo do Instagram invalida", platform="instagram")
         legacy_error = ""
@@ -110,8 +115,20 @@ class InstagramExtractor(SocialExtractor):
                 "allow_playlist": instagram_content_type(url) in {"story", "highlight"},
                 "playlist_limit": 20,
             }
-            if self.duration_limit is not None:
-                options["duration_limit"] = self.duration_limit
+            duration_limit = (
+                context.duration_limit
+                if context is not None
+                else self.duration_limit
+            )
+            if duration_limit is not None:
+                options["duration_limit"] = duration_limit
+            if context is not None:
+                options.update(
+                    status=context.status,
+                    cancel_event=context.cancel_event,
+                    reply_markup=context.reply_markup,
+                    playlist_limit=context.playlist_limit,
+                )
             fallback = await self.download_manager.download(url, **options)
             return replace(
                 fallback,

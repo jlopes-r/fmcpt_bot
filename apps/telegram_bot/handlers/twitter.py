@@ -6,6 +6,7 @@ import asyncio
 from dataclasses import dataclass
 
 from apps.telegram_bot.errors import SocialMediaError
+from apps.telegram_bot.extractors.base import ExtractionContext
 from apps.telegram_bot.extractors.twitter import TwitterExtractor
 from apps.telegram_bot.models.media import MediaBundle
 from apps.telegram_bot.services.media_sender import MediaSender
@@ -21,6 +22,7 @@ class TwitterDelivery:
     text_only: bool
     bundle: MediaBundle
     skipped: bool = False
+    quote_bundle: MediaBundle | None = None
 
 
 def _translated_text(bundle: MediaBundle) -> str:
@@ -33,6 +35,7 @@ def _translated_text(bundle: MediaBundle) -> str:
 async def _complete_quote(
     extractor: TwitterExtractor,
     bundle: MediaBundle,
+    context: ExtractionContext | None = None,
 ) -> MediaBundle | None:
     quote = bundle.metadata.get("quote")
     if not isinstance(quote, MediaBundle):
@@ -43,7 +46,8 @@ async def _complete_quote(
     if not isinstance(raw, dict):
         return quote
     quote_id = str(raw.get("id") or raw.get("tweetID") or "")
-    author = raw.get("author") if isinstance(raw.get("author"), dict) else {}
+    raw_author = raw.get("author")
+    author: dict = raw_author if isinstance(raw_author, dict) else {}
     username = str(raw.get("user_screen_name") or author.get("screen_name") or "")
     quote_url = str(raw.get("tweetURL") or raw.get("url") or "")
     if not quote_url and quote_id:
@@ -51,7 +55,9 @@ async def _complete_quote(
     if not quote_url:
         return quote
     try:
-        return await extractor.extract(quote_url)
+        if context is None:
+            return await extractor.extract(quote_url)
+        return await extractor.extract(quote_url, context=context)
     except SocialMediaError:
         return quote
 
@@ -67,14 +73,18 @@ async def deliver_twitter_post(
     sender: MediaSender,
     duration_limit: float,
     long_video_callback,
+    extraction_context: ExtractionContext | None = None,
 ) -> TwitterDelivery:
-    bundle = await extractor.extract(url)
-    quote = await _complete_quote(extractor, bundle)
+    if extraction_context is None:
+        bundle = await extractor.extract(url)
+    else:
+        bundle = await extractor.extract(url, context=extraction_context)
+    quote = await _complete_quote(extractor, bundle, extraction_context)
     main_text = await asyncio.to_thread(_translated_text, bundle)
 
     if any((item.duration or 0) > duration_limit for item in bundle.items):
         await long_video_callback(status, url, requested_by, message)
-        return TwitterDelivery(0, 0, False, bundle, skipped=True)
+        return TwitterDelivery(0, 0, False, bundle, skipped=True, quote_bundle=quote)
 
     quote_has_media = bool(quote and quote.items)
     if quote:
@@ -126,4 +136,10 @@ async def deliver_twitter_post(
         await status.delete()
     except Exception:
         pass
-    return TwitterDelivery(main_count, quote_count, not bundle.items, bundle)
+    return TwitterDelivery(
+        main_count,
+        quote_count,
+        not bundle.items,
+        bundle,
+        quote_bundle=quote,
+    )

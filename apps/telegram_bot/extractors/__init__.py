@@ -1,4 +1,4 @@
-from apps.telegram_bot.extractors.base import SocialExtractor
+from apps.telegram_bot.extractors.base import ExtractionContext, SocialExtractor
 from apps.telegram_bot.extractors.facebook import FacebookExtractor, public_post_to_bundle
 from apps.telegram_bot.extractors.generic import GenericExtractor, GenericYtDlpExtractor
 from apps.telegram_bot.extractors.instagram import InstagramExtractor
@@ -7,6 +7,7 @@ from apps.telegram_bot.extractors.twitter import TwitterExtractor, normalize_twe
 
 __all__ = [
     "ExtractorRegistry",
+    "ExtractionContext",
     "FacebookExtractor",
     "GenericExtractor",
     "GenericYtDlpExtractor",

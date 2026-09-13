@@ -13,7 +13,7 @@ from apps.telegram_bot.errors import (
     SocialMediaError,
     UnsupportedUrl,
 )
-from apps.telegram_bot.extractors.base import SocialExtractor
+from apps.telegram_bot.extractors.base import ExtractionContext, SocialExtractor
 from apps.telegram_bot.facebook import (
     FacebookAccessRestricted,
     FacebookTarget,
@@ -175,17 +175,35 @@ class FacebookExtractor(SocialExtractor):
             )
         return public_post_to_bundle(post, source_url=url, target=target)
 
-    async def _extract_ytdlp(self, url: str, target: FacebookTarget) -> MediaBundle:
+    async def _extract_ytdlp(
+        self,
+        url: str,
+        target: FacebookTarget,
+        context: ExtractionContext | None = None,
+    ) -> MediaBundle:
         options = {
             "platform": "facebook",
             "allow_playlist": target.kind in {"post", "story"},
             "playlist_limit": 20,
         }
-        if self.duration_limit is not None:
-            options["duration_limit"] = self.duration_limit
+        duration_limit = context.duration_limit if context else self.duration_limit
+        if duration_limit is not None:
+            options["duration_limit"] = duration_limit
+        if context is not None:
+            options.update(
+                status=context.status,
+                cancel_event=context.cancel_event,
+                reply_markup=context.reply_markup,
+                playlist_limit=context.playlist_limit,
+            )
         return await self.download_manager.download(url, **options)
 
-    async def extract(self, url: str) -> MediaBundle:
+    async def extract(
+        self,
+        url: str,
+        *,
+        context: ExtractionContext | None = None,
+    ) -> MediaBundle:
         target = parse_facebook_target(url)
         if target is None or target.kind == "unknown":
             raise UnsupportedUrl("URL do Facebook sem conteudo reconhecido", platform="facebook")
@@ -206,7 +224,7 @@ class FacebookExtractor(SocialExtractor):
                 html_error = exc
 
         try:
-            downloaded = await self._extract_ytdlp(url, target)
+            downloaded = await self._extract_ytdlp(url, target, context)
             if html_bundle is not None:
                 return _merge_html_and_downloaded(html_bundle, downloaded)
             return _annotate(downloaded, "yt-dlp")

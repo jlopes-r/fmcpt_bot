@@ -8,7 +8,7 @@ from collections.abc import Iterable
 import aiohttp
 
 from apps.telegram_bot.errors import UnsupportedUrl
-from apps.telegram_bot.extractors.base import SocialExtractor
+from apps.telegram_bot.extractors.base import ExtractionContext, SocialExtractor
 from apps.telegram_bot.extractors.facebook import FacebookExtractor
 from apps.telegram_bot.extractors.generic import GenericYtDlpExtractor
 from apps.telegram_bot.extractors.instagram import InstagramExtractor
@@ -42,8 +42,16 @@ class ExtractorRegistry:
                 continue
         raise UnsupportedUrl("Nenhum extrator reconheceu a URL", stage="routing")
 
-    async def extract(self, url: str) -> MediaBundle:
-        return await self.resolve(url).extract(url)
+    async def extract(
+        self,
+        url: str,
+        *,
+        context: ExtractionContext | None = None,
+    ) -> MediaBundle:
+        extractor = self.resolve(url)
+        if context is None:
+            return await extractor.extract(url)
+        return await extractor.extract(url, context=context)
 
 
 def build_default_registry(

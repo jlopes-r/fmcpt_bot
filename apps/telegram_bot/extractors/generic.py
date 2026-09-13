@@ -6,7 +6,7 @@ import re
 from urllib.parse import urlparse
 
 from apps.telegram_bot.errors import UnsupportedUrl
-from apps.telegram_bot.extractors.base import SocialExtractor
+from apps.telegram_bot.extractors.base import ExtractionContext, SocialExtractor
 from apps.telegram_bot.models.media import MediaBundle
 from apps.telegram_bot.services.download_manager import DownloadManager, detect_platform
 from packages.url_utils import preparar_url_download_generico
@@ -47,17 +47,30 @@ class GenericYtDlpExtractor(SocialExtractor):
     def supports(self, url: str) -> bool:
         return is_generic_content_url(url)
 
-    async def extract(self, url: str) -> MediaBundle:
+    async def extract(
+        self,
+        url: str,
+        *,
+        context: ExtractionContext | None = None,
+    ) -> MediaBundle:
         if not self.supports(url):
             raise UnsupportedUrl("URL generica nao suportada", platform=detect_platform(url))
         platform = detect_platform(url)
         normalized = preparar_url_download_generico(url)
-        return await self.download_manager.download(
-            normalized,
-            platform=platform,
-            allow_playlist=platform in _PLAYLIST_PLATFORMS,
-            playlist_limit=20,
-        )
+        options = {
+            "platform": platform,
+            "allow_playlist": platform in _PLAYLIST_PLATFORMS,
+            "playlist_limit": 20,
+        }
+        if context is not None:
+            options.update(
+                playlist_limit=context.playlist_limit,
+                duration_limit=context.duration_limit,
+                status=context.status,
+                cancel_event=context.cancel_event,
+                reply_markup=context.reply_markup,
+            )
+        return await self.download_manager.download(normalized, **options)
 
 
 GenericExtractor = GenericYtDlpExtractor

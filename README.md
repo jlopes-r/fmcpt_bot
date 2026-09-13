@@ -167,6 +167,9 @@ python scripts/renew_ig_cookies.py
 
 ### Qualidade e testes locais
 
+A separacao entre entrypoint, extratores, pipeline e envio esta documentada em
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+
 ```powershell
 python -m pip install -r requirements-dev.txt
 python tools/check_quality.py

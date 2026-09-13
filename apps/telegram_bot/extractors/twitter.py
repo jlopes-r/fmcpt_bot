@@ -8,7 +8,7 @@ from typing import Any
 import aiohttp
 
 from apps.telegram_bot.errors import ContentUnavailable, RateLimited, UnsupportedUrl
-from apps.telegram_bot.extractors.base import SocialExtractor
+from apps.telegram_bot.extractors.base import ExtractionContext, SocialExtractor
 from apps.telegram_bot.models.media import MediaBundle, MediaItem
 from apps.telegram_bot.services.download_manager import DownloadManager
 from apps.telegram_bot.twitter import build_fxtwitter_url, build_vxtwitter_url, match_tweet_url
@@ -84,7 +84,8 @@ def normalize_tweet_payload(
     tweet = payload.get("tweet") if isinstance(payload.get("tweet"), dict) else payload
     if not isinstance(tweet, dict):
         raise ContentUnavailable("resposta do X nao contem tweet", platform="twitter", stage="normalize")
-    author_data = tweet.get("author") if isinstance(tweet.get("author"), dict) else {}
+    raw_author = tweet.get("author")
+    author_data: dict = raw_author if isinstance(raw_author, dict) else {}
     source_id = str(
         tweet.get("tweetID")
         or tweet.get("id")
@@ -202,15 +203,28 @@ class TwitterExtractor(SocialExtractor):
             stage="metadata",
         )
 
-    async def extract(self, url: str) -> MediaBundle:
+    async def extract(
+        self,
+        url: str,
+        *,
+        context: ExtractionContext | None = None,
+    ) -> MediaBundle:
         try:
             return await self._fetch(url)
         except ContentUnavailable:
             # Uma unica chamada baixa todas as entradas do tweet; nunca uma
             # chamada por video, evitando repetir sempre a primeira entrada.
-            return await self.download_manager.download(
-                url,
-                platform="twitter",
-                allow_playlist=True,
-                playlist_limit=20,
-            )
+            options = {
+                "platform": "twitter",
+                "allow_playlist": True,
+                "playlist_limit": 20,
+            }
+            if context is not None:
+                options.update(
+                    playlist_limit=context.playlist_limit,
+                    duration_limit=context.duration_limit,
+                    status=context.status,
+                    cancel_event=context.cancel_event,
+                    reply_markup=context.reply_markup,
+                )
+            return await self.download_manager.download(url, **options)

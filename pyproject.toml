@@ -26,6 +26,17 @@ files = [
     "packages/url_utils.py",
     "apps/telegram_bot/media_utils.py",
     "apps/telegram_bot/text_utils.py",
+    "apps/telegram_bot/models/media.py",
+    "apps/telegram_bot/extractors/base.py",
+    "apps/telegram_bot/extractors/generic.py",
+    "apps/telegram_bot/extractors/instagram.py",
+    "apps/telegram_bot/extractors/facebook.py",
+    "apps/telegram_bot/extractors/twitter.py",
+    "apps/telegram_bot/extractors/registry.py",
+    "apps/telegram_bot/handlers/social.py",
+    "apps/telegram_bot/handlers/twitter.py",
+    "apps/telegram_bot/services/download_manager.py",
+    "apps/telegram_bot/services/media_sender.py",
 ]
 follow_imports = "skip"
 ignore_missing_imports = true
