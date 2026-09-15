@@ -246,6 +246,9 @@ bash scripts/install_social_contracts.sh \
   --repo /home/juanl/fmcpt_bot --user juanl
 ```
 
+A unit limita CPU, memória, quantidade de processos e prioridade de I/O para que
+um fallback travado não pressione o bot principal em VMs pequenas.
+
 Use publicações pequenas e estáveis. Stories comuns expiram e precisam ser
 renovados na configuração; contas privadas só passam quando os cookies usados
 pelo bot possuem acesso.

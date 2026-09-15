@@ -6,6 +6,7 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 TimeoutStartSec=30min
+TimeoutStopSec=20s
 User=juanl
 WorkingDirectory=@REPO_DIR@
 Environment=ENV_FILE=@REPO_DIR@/apps/telegram_bot/.env
@@ -16,3 +17,9 @@ PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
 ReadWritePaths=@REPO_DIR@/data
+KillMode=control-group
+Nice=10
+CPUQuota=50%
+MemoryMax=512M
+TasksMax=64
+IOSchedulingClass=idle
