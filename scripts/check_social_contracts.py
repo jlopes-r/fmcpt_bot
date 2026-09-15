@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+import sys
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -12,7 +13,14 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from apps.telegram_bot.social_contracts import parse_contract_targets, run_contract_checks
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from apps.telegram_bot.social_contracts import (  # noqa: E402
+    parse_contract_targets,
+    run_contract_checks,
+)
 
 
 def _notify_admin(message: str) -> bool:

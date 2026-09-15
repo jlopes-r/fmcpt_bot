@@ -1,3 +1,5 @@
+import subprocess
+import sys
 import unittest
 from pathlib import Path
 
@@ -41,6 +43,19 @@ class DeployScriptTests(unittest.TestCase):
         )
         self.assertIn('s|@REPO_DIR@|$REPO_DIR|g', installer)
         self.assertIn("systemctl enable --now social-contracts.timer", installer)
+
+    def test_contract_cli_can_run_directly_outside_repo(self):
+        script = ROOT / "scripts" / "check_social_contracts.py"
+        completed = subprocess.run(
+            [sys.executable, str(script), "--help"],
+            cwd=ROOT.parent,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("--no-notify", completed.stdout)
 
 
 if __name__ == "__main__":
