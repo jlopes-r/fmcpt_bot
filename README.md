@@ -213,6 +213,39 @@ venv/bin/python scripts/observability_report.py --hours 24
 Para integrar o resultado a outra ferramenta, acrescente `--json`. Eventos de
 métrica e jobs concluídos são retidos por 30 dias.
 
+### Contratos reais das redes sociais
+
+Os contratos reais usam o mesmo registro de extratores e a mesma preparação de
+arquivos do bot. Eles validam não apenas se a página responde, mas também a
+plataforma, o tipo do conteúdo, a quantidade mínima, fotos/vídeos esperados,
+texto, carrossel completo e tweet citado. Configure `SOCIAL_CONTRACT_URLS` no
+`.env`; o formato simples `{"nome":"https://..."}` continua aceito.
+
+Exemplo com expectativas explícitas:
+
+```env
+SOCIAL_CONTRACT_URLS={"instagram_carousel":{"url":"https://www.instagram.com/p/.../","content_type":"post","min_items":2,"kinds":["photo","video"]},"x_quote":{"url":"https://x.com/.../status/...","min_items":0,"require_text":true,"quote":{"min_items":1,"kinds":["video"]}}}
+SOCIAL_CONTRACT_TIMEOUT=180
+```
+
+Para testar manualmente sem enviar alerta ao administrador:
+
+```bash
+.deploy/current-venv/bin/python scripts/check_social_contracts.py \
+  --require-config --no-notify
+```
+
+Na VM, instale o timer de dias úteis informando o caminho real do repositório:
+
+```bash
+bash scripts/install_social_contracts.sh \
+  --repo /home/juanl/fmcpt_bot --user juanl
+```
+
+Use publicações pequenas e estáveis. Stories comuns expiram e precisam ser
+renovados na configuração; contas privadas só passam quando os cookies usados
+pelo bot possuem acesso.
+
 O deploy busca o branch `main` pela VM configurada no script. Cookies e `.env`
 permanecem apenas no servidor.
 

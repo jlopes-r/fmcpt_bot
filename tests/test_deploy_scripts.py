@@ -32,8 +32,16 @@ class DeployScriptTests(unittest.TestCase):
         self.assertIn("check_social_contracts.py", service)
         self.assertIn("RandomizedDelaySec=30m", timer)
         self.assertIn("Persistent=true", timer)
+        self.assertIn("@REPO_DIR@", service)
+        self.assertIn("--require-config", service)
+
+    def test_contract_installer_renders_and_enables_units(self):
+        installer = (ROOT / "scripts" / "install_social_contracts.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('s|@REPO_DIR@|$REPO_DIR|g', installer)
+        self.assertIn("systemctl enable --now social-contracts.timer", installer)
 
 
 if __name__ == "__main__":
     unittest.main()
-

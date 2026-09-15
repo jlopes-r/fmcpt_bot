@@ -46,6 +46,11 @@ def _arguments() -> argparse.Namespace:
         action="store_true",
         help="falha quando SOCIAL_CONTRACT_URLS nao estiver configurado",
     )
+    parser.add_argument(
+        "--no-notify",
+        action="store_true",
+        help="nao envia alerta ao administrador (util para execucao manual)",
+    )
     return parser.parse_args()
 
 
@@ -68,12 +73,19 @@ async def _run(args: argparse.Namespace) -> int:
         return 2
 
     results = await run_contract_checks(targets, timeout=timeout)
+    coverage = sorted(
+        {
+            f"{target.platform}/{target.content_type or 'conteudo'}"
+            for target in targets
+        }
+    )
+    print("Cobertura configurada: " + ", ".join(coverage))
     for result in results:
         marker = "OK" if result.ok else "FALHA"
         print(f"[{marker}] {result.name}: {result.detail}")
     failures = sum(not result.ok for result in results)
     print(f"Contratos: {len(results) - failures}/{len(results)} passaram.")
-    if failures:
+    if failures and not args.no_notify:
         summary = "\n".join(
             f"- {result.name}: {result.detail}"
             for result in results
@@ -81,9 +93,13 @@ async def _run(args: argparse.Namespace) -> int:
         )
         notified = await asyncio.to_thread(
             _notify_admin,
-            "⚠️ Testes reais das redes sociais falharam:\n" + summary,
+            "ALERTA: testes reais das redes sociais falharam:\n" + summary,
         )
-        print("Administrador avisado pelo Telegram." if notified else "Aviso Telegram nao enviado.")
+        print(
+            "Administrador avisado pelo Telegram."
+            if notified
+            else "Aviso Telegram nao enviado."
+        )
     return 1 if failures else 0
 
 
