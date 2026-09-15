@@ -23,6 +23,8 @@ files = [
     "packages/command_catalog.py",
     "packages/config.py",
     "packages/private_access.py",
+    "packages/observability.py",
+    "packages/logging_config.py",
     "packages/url_utils.py",
     "apps/telegram_bot/media_utils.py",
     "apps/telegram_bot/text_utils.py",
@@ -38,6 +40,7 @@ files = [
     "apps/telegram_bot/services/download_manager.py",
     "apps/telegram_bot/services/job_runtime.py",
     "apps/telegram_bot/services/media_sender.py",
+    "apps/telegram_bot/services/observability.py",
 ]
 follow_imports = "skip"
 ignore_missing_imports = true

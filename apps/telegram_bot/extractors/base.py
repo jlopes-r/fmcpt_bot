@@ -18,6 +18,7 @@ class ExtractionContext:
     cancel_event: Any = None
     reply_markup: Any = None
     playlist_limit: int = 20
+    job_id: str | None = None
 
 
 class SocialExtractor(ABC):

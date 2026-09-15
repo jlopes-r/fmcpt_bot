@@ -197,6 +197,22 @@ validadas pelos mesmos comandos. A auditoria registra uma excecao explicita para
 `PYSEC-2022-252`: a release maliciosa de `deep-translator` foi a 1.8.5, enquanto
 este projeto fixa a 1.11.4.
 
+### Observabilidade
+
+Cada processamento social propaga um `job_id` pelos estágios de extração,
+download e envio. Logs saem em JSON e as métricas ficam no mesmo SQLite dos
+jobs, incluindo duração e falha por estágio, fallbacks, respostas HTTP, saúde
+dos cookies, profundidade da fila, espaço em disco e decisões de rate limit.
+
+Na VM, consulte o resumo das últimas 24 horas sem depender de serviço externo:
+
+```bash
+venv/bin/python scripts/observability_report.py --hours 24
+```
+
+Para integrar o resultado a outra ferramenta, acrescente `--json`. Eventos de
+métrica e jobs concluídos são retidos por 30 dias.
+
 O deploy busca o branch `main` pela VM configurada no script. Cookies e `.env`
 permanecem apenas no servidor.
 

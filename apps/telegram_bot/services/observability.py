@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import shutil
 import sqlite3
 import time
-from collections.abc import Iterator
-from contextlib import contextmanager
+from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +35,10 @@ class PipelineObserver:
         self.metrics = metrics
         self.jobs = jobs
         self.log = logger or get_logger("social_pipeline")
+
+    @staticmethod
+    def _job_id(job_id: str | None) -> str | None:
+        return job_id or str(get_log_context().get("job_id", "")) or None
 
     def _record_metric(self, name: str, **fields: Any) -> None:
         try:
@@ -122,7 +127,79 @@ class PipelineObserver:
                     },
                 )
 
+    @asynccontextmanager
+    async def async_stage(
+        self,
+        stage: str,
+        *,
+        platform: str | None = None,
+        account: str | None = None,
+    ) -> AsyncIterator[None]:
+        """Versao nao bloqueante de ``stage`` para o pipeline assincrono."""
+
+        context = get_log_context()
+        resolved_platform = platform or str(context.get("platform", ""))
+        resolved_account = account or str(context.get("account", ""))
+        job_id = str(context.get("job_id", "")) or None
+        started = time.perf_counter()
+        with bind_log_context(
+            stage=stage,
+            platform=resolved_platform,
+            account=resolved_account,
+        ):
+            self.log.info(
+                "etapa iniciada",
+                extra={"event": "stage_started", "status": "started"},
+            )
+            try:
+                yield
+            except BaseException as exc:
+                elapsed_ms = (time.perf_counter() - started) * 1_000
+                await asyncio.to_thread(
+                    self._record_metric,
+                    "pipeline_stage_duration_ms",
+                    kind="timing",
+                    value=elapsed_ms,
+                    platform=resolved_platform,
+                    stage=stage,
+                    account=resolved_account,
+                    status="failed",
+                    job_id=job_id,
+                )
+                await asyncio.to_thread(
+                    self.record_error,
+                    exc,
+                    platform=resolved_platform,
+                    stage=stage,
+                    account=resolved_account,
+                    job_id=job_id,
+                    duration_ms=elapsed_ms,
+                )
+                raise
+            else:
+                elapsed_ms = (time.perf_counter() - started) * 1_000
+                await asyncio.to_thread(
+                    self._record_metric,
+                    "pipeline_stage_duration_ms",
+                    kind="timing",
+                    value=elapsed_ms,
+                    platform=resolved_platform,
+                    stage=stage,
+                    account=resolved_account,
+                    status="success",
+                    job_id=job_id,
+                )
+                self.log.info(
+                    "etapa concluida",
+                    extra={
+                        "event": "stage_completed",
+                        "status": "success",
+                        "duration_ms": round(elapsed_ms, 3),
+                    },
+                )
+
     def record_job(self, status: str, *, platform: str, job_id: str | None = None) -> None:
+        job_id = self._job_id(job_id)
         self._record_metric(
             "pipeline_jobs_total",
             kind="counter",
@@ -132,8 +209,84 @@ class PipelineObserver:
         )
         self.log.info(
             "estado do job alterado",
-            extra={"event": "job_status", "status": status, "job_id": job_id},
+            extra={
+                "event": "job_status",
+                "platform": platform,
+                "status": status,
+                "job_id": job_id,
+            },
         )
+
+    def record_delivery(
+        self,
+        *,
+        platform: str,
+        item_count: int,
+        text_only: bool,
+        partial: bool,
+        job_id: str | None = None,
+    ) -> None:
+        job_id = self._job_id(job_id)
+        status = "partial" if partial else "success"
+        self._record_metric(
+            "pipeline_deliveries_total",
+            kind="counter",
+            platform=platform,
+            stage="upload",
+            status=status,
+            job_id=job_id,
+            labels={"text_only": bool(text_only)},
+        )
+        if item_count > 0:
+            self._record_metric(
+                "pipeline_media_items_total",
+                kind="counter",
+                value=item_count,
+                platform=platform,
+                stage="upload",
+                status=status,
+                job_id=job_id,
+            )
+        self.log.info(
+            "pipeline social concluido",
+            extra={
+                "event": "pipeline_completed",
+                "platform": platform,
+                "stage": "upload",
+                "status": status,
+                "job_id": job_id,
+                "item_count": item_count,
+                "text_only": bool(text_only),
+                "partial": bool(partial),
+            },
+        )
+
+    def record_rate_limit(
+        self,
+        *,
+        allowed: bool,
+        remaining: int,
+        retry_after: float,
+        scope: str,
+    ) -> None:
+        status = "allowed" if allowed else "limited"
+        self._record_metric(
+            "rate_limit_decisions_total",
+            kind="counter",
+            stage="admission",
+            status=status,
+            labels={"scope": scope, "remaining": max(0, remaining)},
+        )
+        if not allowed:
+            self.log.warning(
+                "solicitacao limitada",
+                extra={
+                    "event": "rate_limited",
+                    "stage": "admission",
+                    "status": status,
+                    "retry_after": round(max(0.0, retry_after), 3),
+                },
+            )
 
     def record_error(
         self,
@@ -145,6 +298,7 @@ class PipelineObserver:
         job_id: str | None = None,
         duration_ms: float | None = None,
     ) -> None:
+        job_id = self._job_id(job_id)
         fields: dict[str, object] = {
             "event": "pipeline_error",
             "platform": platform,
@@ -182,6 +336,7 @@ class PipelineObserver:
         stage: str = "extract",
         job_id: str | None = None,
     ) -> None:
+        job_id = self._job_id(job_id)
         self._record_metric(
             "pipeline_fallback_total",
             kind="counter",
@@ -210,6 +365,7 @@ class PipelineObserver:
         account: str = "",
         job_id: str | None = None,
     ) -> None:
+        job_id = self._job_id(job_id)
         self._record_metric(
             "social_http_responses_total",
             kind="counter",

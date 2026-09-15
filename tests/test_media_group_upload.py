@@ -1,5 +1,7 @@
+import asyncio
 import unittest
 import importlib
+import sys
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,6 +15,15 @@ class MediaGroupUploadTest(unittest.IsolatedAsyncioTestCase):
     @classmethod
     def setUpClass(cls):
         cls.super_bot = importlib.import_module('apps.telegram_bot.super_bot')
+
+    @classmethod
+    def tearDownClass(cls):
+        runtime_loop = cls.super_bot._runtime_loop
+        del cls.super_bot
+        sys.modules.pop("apps.telegram_bot.super_bot", None)
+        if not runtime_loop.is_running() and not runtime_loop.is_closed():
+            runtime_loop.close()
+        asyncio.set_event_loop(None)
 
     def _load_super_bot(self):
         return self.super_bot

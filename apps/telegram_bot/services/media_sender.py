@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 import json
 import logging
 import mimetypes
@@ -10,7 +12,7 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Awaitable, Callable, TypedDict
+from typing import TYPE_CHECKING, Awaitable, Callable, TypedDict
 from urllib.parse import urlparse
 
 import aiohttp
@@ -32,6 +34,9 @@ from apps.telegram_bot.errors import (
 )
 from apps.telegram_bot.models.media import MediaBundle, MediaItem
 from packages.observability import redact_sensitive
+
+if TYPE_CHECKING:
+    from apps.telegram_bot.services.observability import PipelineObserver
 
 
 log = logging.getLogger(__name__)
@@ -156,12 +161,27 @@ class MediaSender:
         max_media_bytes: int = 2_000_000_000,
         download_concurrency: int = 3,
         progress: ProgressCallback | None = None,
+        observer: PipelineObserver | None = None,
     ) -> None:
         self.client = client
         self.session = session
         self.max_media_bytes = max_media_bytes
         self.download_concurrency = max(1, download_concurrency)
         self.progress = progress
+        self.observer = observer
+
+    @asynccontextmanager
+    async def _observe_stage(
+        self,
+        stage: str,
+        *,
+        platform: str,
+    ) -> AsyncIterator[None]:
+        if self.observer is None:
+            yield
+            return
+        async with self.observer.async_stage(stage, platform=platform):
+            yield
 
     async def _download_remote(self, item: MediaItem, directory: Path) -> Path:
         if self.session is None:
@@ -382,7 +402,15 @@ class MediaSender:
                     stage="upload",
                 ) from exc
 
-    async def _send_batch(self, chat_id: int, reply_to: int, batch: list, status=None) -> None:
+    async def _send_batch(
+        self,
+        chat_id: int,
+        reply_to: int,
+        batch: list,
+        status=None,
+        *,
+        platform: str = "",
+    ) -> None:
         if len(batch) == 1:
             await self._send_one(chat_id, reply_to, batch[0], status)
             return
@@ -399,6 +427,13 @@ class MediaSender:
                 type(exc).__name__,
                 _safe_error_details(exc),
             )
+            if self.observer is not None:
+                await asyncio.to_thread(
+                    self.observer.record_fallback,
+                    "individual_upload",
+                    platform=platform,
+                    stage="upload",
+                )
             for item in batch:
                 await self._send_one(chat_id, reply_to, item, status)
 
@@ -413,24 +448,32 @@ class MediaSender:
     ) -> MediaBundle:
         root = Path(tempfile.mkdtemp(prefix="media-send-"))
         try:
-            prepared = await self.prepare(bundle.require_media(), root)
-            if upload_started is not None:
-                await upload_started()
-            telegram_items = [
-                self._input_media(item, caption if index == 0 else "")
-                for index, item in enumerate(prepared.items)
-            ]
-            for offset in range(0, len(telegram_items), 10):
-                batch = telegram_items[offset:offset + 10]
-                if status is not None:
-                    try:
-                        await status.edit_text(
-                            f"📤 Enviando {offset + 1}-{offset + len(batch)} "
-                            f"de {len(telegram_items)}..."
-                        )
-                    except Exception:
-                        pass
-                await self._send_batch(message.chat.id, message.id, batch, status)
+            async with self._observe_stage("download", platform=bundle.platform):
+                prepared = await self.prepare(bundle.require_media(), root)
+            async with self._observe_stage("upload", platform=bundle.platform):
+                if upload_started is not None:
+                    await upload_started()
+                telegram_items = [
+                    self._input_media(item, caption if index == 0 else "")
+                    for index, item in enumerate(prepared.items)
+                ]
+                for offset in range(0, len(telegram_items), 10):
+                    batch = telegram_items[offset:offset + 10]
+                    if status is not None:
+                        try:
+                            await status.edit_text(
+                                f"📤 Enviando {offset + 1}-{offset + len(batch)} "
+                                f"de {len(telegram_items)}..."
+                            )
+                        except Exception:
+                            pass
+                    await self._send_batch(
+                        message.chat.id,
+                        message.id,
+                        batch,
+                        status,
+                        platform=bundle.platform,
+                    )
             return prepared
         finally:
             shutil.rmtree(root, ignore_errors=True)

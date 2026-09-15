@@ -60,7 +60,12 @@ RAIZ = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 sys.path.insert(0, RAIZ)
 
 from packages.database import database_manager as db
-from packages.database.repositories import JobRecord, JobRepository, RateLimitRepository
+from packages.database.repositories import (
+    JobRecord,
+    JobRepository,
+    MetricsRepository,
+    RateLimitRepository,
+)
 from packages.command_catalog import SUPER_COMMANDS, command_names
 from packages.config import (
     DOWNLOADS_DIR,
@@ -75,6 +80,7 @@ from packages.config import (
     parse_chat_ids,
 )
 from packages.logging_config import configure_rotating_logging
+from packages.observability import get_log_context
 from packages.private_access import guard_authorized_group_chat, guard_private_chat_access
 from packages.telegram_ui import (
     build_bot_commands,
@@ -94,6 +100,7 @@ from apps.telegram_bot.instagram import (
     get_profile_username,
     detect_profile_privado as _detect_profile_privado,
     get_cookie_failure_reason,
+    get_instagram_account_health,
     _auto_login_and_save_cookies,
     inspect_cookie_health,
     validate_cookie_health,
@@ -116,6 +123,7 @@ from apps.telegram_bot.handlers.links import InFlightLinks, extract_supported_ur
 from apps.telegram_bot.handlers.moderation import SlidingWindowLimiter
 from apps.telegram_bot.services.download_manager import detect_platform
 from apps.telegram_bot.services.job_runtime import DurableJobRuntime
+from apps.telegram_bot.services.observability import PipelineObserver
 
 load_environment()
 ensure_runtime_dirs()
@@ -167,15 +175,36 @@ DOMINIOS_PERMITIDOS = [
 # -----------------------------------------
 _http_session: aiohttp.ClientSession | None = None
 _http_session_lock = asyncio.Lock()
+
+
+async def _trace_social_http_response(_session, _trace_context, params) -> None:
+    context = get_log_context()
+    platform = str(context.get("platform") or detect_platform(str(params.url)))
+    stage = str(context.get("stage") or "http")
+    account = str(context.get("account") or "")
+    job_id = str(context.get("job_id") or "") or None
+    await asyncio.to_thread(
+        _pipeline_observer.record_http,
+        params.response.status,
+        platform=platform,
+        stage=stage,
+        account=account,
+        job_id=job_id,
+    )
+
+
 async def get_http_session() -> aiohttp.ClientSession:
     """Retorna uma sessão aiohttp compartilhada, criada sob demanda."""
     global _http_session
     if _http_session is None or _http_session.closed:
         async with _http_session_lock:
             if _http_session is None or _http_session.closed:
+                trace_config = aiohttp.TraceConfig()
+                trace_config.on_request_end.append(_trace_social_http_response)
                 _http_session = aiohttp.ClientSession(
                     timeout=aiohttp.ClientTimeout(total=10),
                     raise_for_status=False,
+                    trace_configs=[trace_config],
                 )
     return _http_session
 
@@ -218,10 +247,16 @@ _inflight_links = InFlightLinks(ttl=PROCESSING_URL_TTL)
 _processing_urls = _inflight_links.entries
 _processing_lock = _inflight_links.lock
 _rate_limiter = SlidingWindowLimiter(limit=RATE_LIMIT, window_seconds=RATE_JANELA)
+_job_repository = JobRepository()
+_pipeline_observer = PipelineObserver(
+    MetricsRepository(),
+    jobs=_job_repository,
+)
 _job_runtime = DurableJobRuntime(
-    JobRepository(),
+    _job_repository,
     RateLimitRepository(),
     heartbeat_interval=JOB_HEARTBEAT_INTERVAL,
+    observer=_pipeline_observer,
 )
 _usuarios_bloqueados = {}  # user_id -> timestamp (cooldown de castigo de 5min)
 _uso_bloq = defaultdict(list)  # admin_id -> [timestamps dos blocks aplicados hoje]
@@ -329,6 +364,26 @@ async def verificar_rate_limit(user_id: int) -> bool:
             type(exc).__name__,
         )
         return _rate_limiter.allow(user_id)
+
+
+async def _record_instagram_health_metrics() -> None:
+    snapshot = get_instagram_account_health()
+    accounts = snapshot.get("accounts")
+    if not isinstance(accounts, dict):
+        return
+    writes = []
+    for account in accounts.values():
+        label = str(getattr(account, "label", "") or "unknown")
+        state = str(getattr(account, "state", "unknown") or "unknown")
+        writes.append(
+            asyncio.to_thread(
+                _pipeline_observer.record_cookie_health,
+                label,
+                state,
+            )
+        )
+    if writes:
+        await asyncio.gather(*writes)
 
 def chat_autorizado(chat_id: int) -> bool:
     if not GRUPOS_AUTORIZADOS:
@@ -1113,6 +1168,14 @@ async def callback_long_video(client, callback_query):
         if outcome.item_count > 0 or outcome.text_only:
             async with DOWNLOAD_COUNT_LOCK:
                 DOWNLOAD_COUNT += 1
+            await asyncio.to_thread(
+                _pipeline_observer.record_delivery,
+                platform=outcome.platform,
+                item_count=outcome.item_count,
+                text_only=outcome.text_only,
+                partial=outcome.partial,
+                job_id=job_id,
+            )
             await _job_runtime.complete(
                 job_id,
                 metadata={
@@ -1200,6 +1263,24 @@ async def limpeza_periodica():
                 _job_runtime.jobs.cleanup_terminal,
                 older_than=30 * 86_400,
             )
+            removed_metrics = await asyncio.to_thread(
+                _pipeline_observer.metrics.cleanup,
+                older_than=30 * 86_400,
+            )
+            health = await asyncio.to_thread(
+                _pipeline_observer.record_runtime_health,
+                PASTA_DOWNLOADS,
+            )
+            log.info(
+                "manutencao periodica concluida",
+                extra={
+                    "event": "runtime_maintenance",
+                    "stage": "maintenance",
+                    "status": "success",
+                    "removed_metrics": removed_metrics,
+                    **health,
+                },
+            )
                 
             # Nao libera downloads ativos apenas pelo volume: remove so locks velhos.
             agora_monotonic = time.monotonic()
@@ -1280,6 +1361,34 @@ async def executar_pipeline_social(
     force_long=False,
     job_id=None,
 ):
+    """Propaga o contexto duravel por toda a extracao e entrega."""
+
+    platform = detect_platform(url)
+    with _pipeline_observer.job_scope(
+        str(job_id or ""),
+        platform=platform,
+    ):
+        return await _executar_pipeline_social_impl(
+            client,
+            message,
+            url,
+            usuario,
+            status,
+            force_long=force_long,
+            job_id=job_id,
+        )
+
+
+async def _executar_pipeline_social_impl(
+    client,
+    message,
+    url,
+    usuario,
+    status,
+    *,
+    force_long=False,
+    job_id=None,
+):
     """Adapta estado do Telegram ao pipeline modular de redes sociais."""
     global _fila_espera
     cancel_event = threading.Event()
@@ -1323,22 +1432,28 @@ async def executar_pipeline_social(
                 session=await get_http_session(),
                 config=_social_pipeline_config(),
                 progress=_progresso_upload(status),
+                observer=_pipeline_observer,
             )
-            return await pipeline.deliver(
-                message=message,
-                url=url,
-                requested_by=usuario,
-                status=status,
-                cancel_event=cancel_event,
-                reply_markup=cancel_markup,
-                force_long=force_long,
-                long_video_callback=avisar_video_longo,
-                upload_started=(
-                    (lambda: _job_runtime.mark_uploading(job_id))
-                    if job_id
-                    else None
-                ),
-            )
+            try:
+                return await pipeline.deliver(
+                    message=message,
+                    url=url,
+                    requested_by=usuario,
+                    status=status,
+                    cancel_event=cancel_event,
+                    reply_markup=cancel_markup,
+                    force_long=force_long,
+                    long_video_callback=avisar_video_longo,
+                    upload_started=(
+                        (lambda: _job_runtime.mark_uploading(job_id))
+                        if job_id
+                        else None
+                    ),
+                    job_id=job_id,
+                )
+            finally:
+                if detect_platform(url) == "instagram":
+                    await _record_instagram_health_metrics()
     finally:
         if heartbeat_task is not None:
             heartbeat_task.cancel()
@@ -1538,12 +1653,13 @@ async def processar_links(client, message, *, _resume_job: JobRecord | None = No
                     client,
                     "com falha; a conta secundaria assumiu o download",
                 )
-        log.info(
-            "pipeline social concluido platform=%s items=%d text_only=%s partial=%s",
-            outcome.platform,
-            outcome.item_count,
-            outcome.text_only,
-            outcome.partial,
+        await asyncio.to_thread(
+            _pipeline_observer.record_delivery,
+            platform=outcome.platform,
+            item_count=outcome.item_count,
+            text_only=outcome.text_only,
+            partial=outcome.partial,
+            job_id=job_id,
         )
         await _job_runtime.complete(
             job_id,
@@ -1713,6 +1829,10 @@ async def iniciar_recuperacao_persistente(client) -> list[asyncio.Task]:
     """Recupera a fila do processo anterior sem bloquear a conexao do bot."""
 
     report = await _job_runtime.recover_startup(limit=JOB_RECOVERY_LIMIT)
+    health = await asyncio.to_thread(
+        _pipeline_observer.record_runtime_health,
+        PASTA_DOWNLOADS,
+    )
     log.info(
         "fila persistente pronta queued=%d recovered=%d removed_jobs=%d "
         "removed_rate_events=%d worker_id=%s",
@@ -1721,6 +1841,14 @@ async def iniciar_recuperacao_persistente(client) -> list[asyncio.Task]:
         report.removed_jobs,
         report.removed_rate_events,
         _job_runtime.worker_id,
+        extra={
+            "event": "runtime_ready",
+            "stage": "startup",
+            "status": "success",
+            "queue_depth": len(report.pending),
+            "worker_id": _job_runtime.worker_id,
+            **health,
+        },
     )
     return [
         asyncio.create_task(

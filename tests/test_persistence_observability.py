@@ -1,3 +1,4 @@
+import asyncio
 import io
 import json
 import logging
@@ -279,6 +280,30 @@ class MetricsAndLoggingTest(PersistenceTestCase):
         self.assertEqual(sum(int(row["samples"]) for row in timings), 2)
         self.assertEqual(errors[0]["status"], "rate_limited")
         self.assertEqual(errors[0]["status_code"], 429)
+
+    def test_async_stage_records_without_losing_job_context(self):
+        metrics = MetricsRepository(self.db_path)
+        jobs = JobRepository(self.db_path)
+        job = jobs.create_or_get(
+            chat_id=1,
+            user_id=2,
+            url_norm="https://x.com/u/status/async",
+            platform="twitter",
+            now=1,
+        ).job
+        observer = PipelineObserver(metrics, jobs=jobs)
+
+        async def exercise():
+            with observer.job_scope(job.job_id, platform="twitter"):
+                async with observer.async_stage("upload"):
+                    await asyncio.sleep(0)
+
+        asyncio.run(exercise())
+
+        rows = metrics.summary(name="pipeline_stage_duration_ms")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["stage"], "upload")
+        self.assertEqual(rows[0]["status"], "success")
 
     def test_json_log_contains_propagated_job_context(self):
         stream = io.StringIO()

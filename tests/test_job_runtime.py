@@ -4,10 +4,12 @@ import unittest
 from pathlib import Path
 
 from apps.telegram_bot.services.job_runtime import DurableJobRuntime
+from apps.telegram_bot.services.observability import PipelineObserver
 from packages.database import database_manager
 from packages.database.repositories import (
     JobRepository,
     JobStatus,
+    MetricsRepository,
     RateLimitRepository,
 )
 
@@ -22,11 +24,16 @@ class DurableJobRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.temp_dir.cleanup()
 
     def runtime(self, worker_id="worker-a"):
+        jobs = JobRepository(self.db_path)
         return DurableJobRuntime(
-            JobRepository(self.db_path),
+            jobs,
             RateLimitRepository(self.db_path),
             worker_id=worker_id,
             heartbeat_interval=1,
+            observer=PipelineObserver(
+                MetricsRepository(self.db_path),
+                jobs=jobs,
+            ),
         )
 
     async def test_concurrent_submit_claim_upload_and_complete(self):
@@ -62,6 +69,13 @@ class DurableJobRuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(completed.status, JobStatus.COMPLETED)
         self.assertEqual(completed.metadata["item_count"], 2)
+        lifecycle = MetricsRepository(self.db_path).summary(
+            name="pipeline_jobs_total"
+        )
+        self.assertEqual(
+            {str(row["status"]) for row in lifecycle},
+            {"queued", "downloading", "uploading", "completed"},
+        )
 
     async def test_text_only_job_can_complete_without_upload_transition(self):
         runtime = self.runtime()
@@ -121,6 +135,13 @@ class DurableJobRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(denied.allowed)
         self.assertGreater(denied.retry_after, 0)
+        decisions = MetricsRepository(self.db_path).summary(
+            name="rate_limit_decisions_total"
+        )
+        self.assertEqual(
+            {str(row["status"]) for row in decisions},
+            {"allowed", "limited"},
+        )
 
 
 if __name__ == "__main__":

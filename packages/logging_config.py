@@ -19,6 +19,12 @@ def configure_rotating_logging(
     """
 
     log_dir.mkdir(parents=True, exist_ok=True)
+    root_logger = logging.getLogger()
+    if root_logger.handlers:
+        logging.getLogger("pyrogram").setLevel(logging.WARNING)
+        logging.getLogger("yt_dlp").setLevel(logging.ERROR)
+        return
+
     log_handler = RotatingFileHandler(
         log_dir / filename,
         maxBytes=5 * 1024 * 1024,

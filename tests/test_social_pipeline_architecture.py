@@ -9,6 +9,9 @@ from apps.telegram_bot.extractors.base import ExtractionContext
 from apps.telegram_bot.extractors.generic import GenericYtDlpExtractor
 from apps.telegram_bot.handlers.social import SocialMediaPipeline, SocialPipelineConfig
 from apps.telegram_bot.models.media import MediaBundle, MediaItem
+from apps.telegram_bot.services.observability import PipelineObserver
+from packages.database import database_manager
+from packages.database.repositories import JobRepository, MetricsRepository
 
 
 class ExtractionContextTests(unittest.IsolatedAsyncioTestCase):
@@ -46,6 +49,72 @@ class ExtractionContextTests(unittest.IsolatedAsyncioTestCase):
 
 
 class SocialPipelineTests(unittest.IsolatedAsyncioTestCase):
+    async def test_real_pipeline_records_all_stages_with_same_job_id(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            db_path = root / "observability.db"
+            media_path = root / "ready.jpg"
+            media_path.write_bytes(b"prepared")
+            database_manager.init_db(db_path)
+            jobs = JobRepository(db_path)
+            job = jobs.create_or_get(
+                chat_id=1,
+                user_id=2,
+                url_norm="https://instagram.com/p/observed/",
+                platform="instagram",
+            ).job
+            observer = PipelineObserver(MetricsRepository(db_path), jobs=jobs)
+            bundle = MediaBundle(
+                "instagram",
+                (MediaItem(str(media_path), "photo"),),
+                text="Post observado",
+            )
+            extractor = SimpleNamespace(extract=AsyncMock(return_value=bundle))
+            client = SimpleNamespace(
+                send_photo=AsyncMock(),
+                send_video=AsyncMock(),
+                send_media_group=AsyncMock(),
+            )
+            pipeline = SocialMediaPipeline(
+                client=client,
+                session=SimpleNamespace(),
+                config=SocialPipelineConfig(
+                    download_root=root,
+                    max_media_bytes=10_000,
+                    download_timeout=30,
+                    duration_limit=600,
+                ),
+                registry=SimpleNamespace(resolve=lambda _url: extractor),
+                observer=observer,
+            )
+            pipeline.sender.prepare = AsyncMock(return_value=bundle)
+
+            with observer.job_scope(job.job_id, platform="instagram"):
+                result = await pipeline.deliver(
+                    message=SimpleNamespace(
+                        chat=SimpleNamespace(id=1),
+                        id=2,
+                        reply_text=AsyncMock(),
+                    ),
+                    url="https://instagram.com/p/observed/",
+                    requested_by="Juan",
+                    status=SimpleNamespace(delete=AsyncMock(), edit_text=AsyncMock()),
+                    long_video_callback=AsyncMock(),
+                    job_id=job.job_id,
+                )
+
+            with database_manager.connection(db_path) as conn:
+                events = conn.execute(
+                    """
+                    SELECT stage, job_id FROM metric_events
+                    WHERE name = 'pipeline_stage_duration_ms'
+                    """
+                ).fetchall()
+
+        self.assertEqual(result.item_count, 1)
+        self.assertEqual({row["stage"] for row in events}, {"extract", "download", "upload"})
+        self.assertTrue(all(row["job_id"] == job.job_id for row in events))
+
     async def test_pipeline_uses_registry_and_removes_owned_local_media(self):
         with tempfile.TemporaryDirectory() as folder:
             media_path = Path(folder) / "owned.jpg"

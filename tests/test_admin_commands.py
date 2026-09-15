@@ -1,3 +1,4 @@
+import asyncio
 import importlib
 import json
 import sys
@@ -14,8 +15,12 @@ class AdminCommandsTest(unittest.IsolatedAsyncioTestCase):
 
     @classmethod
     def tearDownClass(cls):
+        runtime_loop = cls.super_bot._runtime_loop
         del cls.super_bot
         sys.modules.pop("apps.telegram_bot.super_bot", None)
+        if not runtime_loop.is_running() and not runtime_loop.is_closed():
+            runtime_loop.close()
+        asyncio.set_event_loop(None)
 
     @staticmethod
     def _message(user_id=None):

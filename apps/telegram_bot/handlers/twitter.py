@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 import logging
 import re
@@ -16,6 +17,7 @@ from apps.telegram_bot.extractors.base import ExtractionContext
 from apps.telegram_bot.extractors.twitter import TwitterExtractor
 from apps.telegram_bot.models.media import MediaBundle
 from apps.telegram_bot.services.media_sender import MediaSender
+from apps.telegram_bot.services.observability import PipelineObserver
 from apps.telegram_bot.text_utils import dividir_texto_longo, montar_legenda
 from apps.telegram_bot.translator import traduzir_se_necessario
 from apps.telegram_bot.twitter import traduzir_texto_tweet
@@ -66,6 +68,18 @@ def _article_url(bundle: MediaBundle, text: str) -> str:
         if _is_external_http_url(candidate):
             return candidate
     return ""
+
+
+@asynccontextmanager
+async def _observe_stage(
+    observer: PipelineObserver | None,
+    stage: str,
+) -> AsyncIterator[None]:
+    if observer is None:
+        yield
+        return
+    async with observer.async_stage(stage, platform="twitter"):
+        yield
 
 
 async def _send_text_fallback(
@@ -138,12 +152,14 @@ async def deliver_twitter_post(
     long_video_callback,
     extraction_context: ExtractionContext | None = None,
     upload_started: Callable[[], Awaitable[None]] | None = None,
+    observer: PipelineObserver | None = None,
 ) -> TwitterDelivery:
-    if extraction_context is None:
-        bundle = await extractor.extract(url)
-    else:
-        bundle = await extractor.extract(url, context=extraction_context)
-    quote = await _complete_quote(extractor, bundle, extraction_context)
+    async with _observe_stage(observer, "extract"):
+        if extraction_context is None:
+            bundle = await extractor.extract(url)
+        else:
+            bundle = await extractor.extract(url, context=extraction_context)
+        quote = await _complete_quote(extractor, bundle, extraction_context)
     main_text = await asyncio.to_thread(_translated_text, bundle)
 
     if any((item.duration or 0) > duration_limit for item in bundle.items):
@@ -184,23 +200,32 @@ async def deliver_twitter_post(
                 bundle.source_id,
                 type(cause).__name__,
             )
-            await _send_text_fallback(
-                message,
-                bundle,
-                main_text,
-                requested_by,
-                reason="Prévia indisponível; conteúdo enviado em texto",
-            )
+            if observer is not None:
+                await asyncio.to_thread(
+                    observer.record_fallback,
+                    "text_link",
+                    platform="twitter",
+                    stage="upload",
+                )
+            async with _observe_stage(observer, "fallback"):
+                await _send_text_fallback(
+                    message,
+                    bundle,
+                    main_text,
+                    requested_by,
+                    reason="Prévia indisponível; conteúdo enviado em texto",
+                )
             main_text_fallback = True
     else:
-        if upload_started is not None:
-            await upload_started()
-        text_message = (
-            f"📝 {bundle.author or 'Autor'}:\n{main_text}\n\n"
-            f"👤 Enviado por: {requested_by}"
-        )
-        for part in dividir_texto_longo(text_message):
-            await message.reply_text(part, parse_mode=enums.ParseMode.DISABLED)
+        async with _observe_stage(observer, "upload"):
+            if upload_started is not None:
+                await upload_started()
+            text_message = (
+                f"📝 {bundle.author or 'Autor'}:\n{main_text}\n\n"
+                f"👤 Enviado por: {requested_by}"
+            )
+            for part in dividir_texto_longo(text_message):
+                await message.reply_text(part, parse_mode=enums.ParseMode.DISABLED)
 
     quote_count = 0
     if quote_has_media and quote is not None:
@@ -231,13 +256,21 @@ async def deliver_twitter_post(
                     quote.source_id,
                     type(cause).__name__,
                 )
-                await _send_text_fallback(
-                    message,
-                    quote,
-                    quote_text,
-                    requested_by,
-                    reason="Mídia citada indisponível; conteúdo enviado em texto",
-                )
+                if observer is not None:
+                    await asyncio.to_thread(
+                        observer.record_fallback,
+                        "quoted_text",
+                        platform="twitter",
+                        stage="upload",
+                    )
+                async with _observe_stage(observer, "fallback"):
+                    await _send_text_fallback(
+                        message,
+                        quote,
+                        quote_text,
+                        requested_by,
+                        reason="Mídia citada indisponível; conteúdo enviado em texto",
+                    )
 
     try:
         await status.delete()

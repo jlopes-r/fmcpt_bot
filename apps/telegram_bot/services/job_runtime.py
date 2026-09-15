@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import os
 import socket
 import uuid
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from packages.database.repositories import (
     JobClaim,
@@ -17,6 +17,9 @@ from packages.database.repositories import (
     RateLimitDecision,
     RateLimitRepository,
 )
+
+if TYPE_CHECKING:
+    from apps.telegram_bot.services.observability import PipelineObserver
 
 
 @dataclass(frozen=True)
@@ -37,6 +40,7 @@ class DurableJobRuntime:
         *,
         worker_id: str | None = None,
         heartbeat_interval: float = 30.0,
+        observer: PipelineObserver | None = None,
     ) -> None:
         self.jobs = jobs
         self.rate_limits = rate_limits
@@ -44,6 +48,17 @@ class DurableJobRuntime:
             f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
         )
         self.heartbeat_interval = max(1.0, float(heartbeat_interval))
+        self.observer = observer
+
+    async def _record_job(self, job: JobRecord, status: str | None = None) -> None:
+        if self.observer is None:
+            return
+        await asyncio.to_thread(
+            self.observer.record_job,
+            status or job.status.value,
+            platform=job.platform,
+            job_id=job.job_id,
+        )
 
     async def submit(
         self,
@@ -55,7 +70,7 @@ class DurableJobRuntime:
         metadata: dict[str, Any] | None = None,
         priority: int = 0,
     ) -> JobClaim:
-        return await asyncio.to_thread(
+        claim = await asyncio.to_thread(
             self.jobs.create_or_get,
             chat_id=chat_id,
             user_id=user_id,
@@ -65,9 +80,14 @@ class DurableJobRuntime:
             priority=priority,
             idempotency_window=0,
         )
+        if not claim.reused:
+            await self._record_job(claim.job)
+        return claim
 
     async def claim(self, job_id: str) -> JobRecord:
-        return await asyncio.to_thread(self.jobs.claim, job_id, self.worker_id)
+        job = await asyncio.to_thread(self.jobs.claim, job_id, self.worker_id)
+        await self._record_job(job)
+        return job
 
     async def mark_uploading(self, job_id: str) -> JobRecord:
         current = await asyncio.to_thread(self.jobs.get, job_id)
@@ -75,11 +95,13 @@ class DurableJobRuntime:
             raise LookupError(job_id)
         if current.status is JobStatus.UPLOADING:
             return current
-        return await asyncio.to_thread(
+        job = await asyncio.to_thread(
             self.jobs.transition,
             job_id,
             JobStatus.UPLOADING,
         )
+        await self._record_job(job)
+        return job
 
     async def complete(
         self,
@@ -87,12 +109,14 @@ class DurableJobRuntime:
         *,
         metadata: dict[str, Any] | None = None,
     ) -> JobRecord:
-        return await asyncio.to_thread(
+        job = await asyncio.to_thread(
             self.jobs.transition,
             job_id,
             JobStatus.COMPLETED,
             metadata=metadata,
         )
+        await self._record_job(job)
+        return job
 
     async def fail(self, job_id: str, error: BaseException) -> JobRecord | None:
         """Finaliza uma falha sem esconder a excecao original do pipeline."""
@@ -104,12 +128,14 @@ class DurableJobRuntime:
                 JobStatus.FAILED,
             }:
                 return current
-            return await asyncio.to_thread(
+            job = await asyncio.to_thread(
                 self.jobs.transition,
                 job_id,
                 JobStatus.FAILED,
                 error=error,
             )
+            await self._record_job(job)
+            return job
         except Exception:
             return None
 
@@ -121,13 +147,22 @@ class DurableJobRuntime:
         window_seconds: float,
         scope: str = "telegram_user",
     ) -> RateLimitDecision:
-        return await asyncio.to_thread(
+        decision = await asyncio.to_thread(
             self.rate_limits.consume,
             subject_key,
             limit=limit,
             window_seconds=window_seconds,
             scope=scope,
         )
+        if self.observer is not None:
+            await asyncio.to_thread(
+                self.observer.record_rate_limit,
+                allowed=decision.allowed,
+                remaining=decision.remaining,
+                retry_after=decision.retry_after,
+                scope=scope,
+            )
+        return decision
 
     async def keep_alive(self, job_id: str) -> None:
         """Atualiza o lease; cancelamento deixa o job recuperavel no reinicio."""
@@ -166,6 +201,11 @@ class DurableJobRuntime:
             limit=limit,
         )
         pending.sort(key=lambda job: (-job.priority, job.created_at))
+        if self.observer is not None:
+            for recovered_id in recovered:
+                recovered_job = await asyncio.to_thread(self.jobs.get, recovered_id)
+                if recovered_job is not None:
+                    await self._record_job(recovered_job, "recovered")
         return StartupRecovery(
             pending=tuple(pending),
             recovered_ids=tuple(recovered),

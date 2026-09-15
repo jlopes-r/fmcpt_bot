@@ -25,8 +25,18 @@ _STRUCTURED_FIELDS = (
     "error_type",
     "retryable",
     "duration_ms",
+    "item_count",
+    "text_only",
+    "partial",
+    "attempt",
+    "retry_after",
+    "worker_id",
     "fallback",
     "queue_depth",
+    "disk_free_bytes",
+    "disk_used_bytes",
+    "disk_total_bytes",
+    "removed_metrics",
 )
 _SECRET_ASSIGNMENT = re.compile(
     r"(?i)\b(token|bot_token|api_hash|authorization|cookie|sessionid|csrftoken|password)"

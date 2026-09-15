@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 import logging
 from pathlib import Path
@@ -15,8 +17,9 @@ from apps.telegram_bot.extractors.registry import ExtractorRegistry, build_defau
 from apps.telegram_bot.extractors.twitter import TwitterExtractor
 from apps.telegram_bot.handlers.twitter import deliver_twitter_post
 from apps.telegram_bot.models.media import MediaBundle
-from apps.telegram_bot.services.download_manager import DownloadManager
+from apps.telegram_bot.services.download_manager import DownloadManager, detect_platform
 from apps.telegram_bot.services.media_sender import MediaSender, ProgressCallback
+from apps.telegram_bot.services.observability import PipelineObserver
 from apps.telegram_bot.text_utils import dividir_texto_longo, limpar_texto, montar_legenda
 from apps.telegram_bot.translator import traduzir_se_necessario
 
@@ -59,10 +62,12 @@ class SocialMediaPipeline:
         config: SocialPipelineConfig,
         progress: ProgressCallback | None = None,
         registry: ExtractorRegistry | None = None,
+        observer: PipelineObserver | None = None,
     ) -> None:
         self.client = client
         self.session = session
         self.config = config
+        self.observer = observer
         self.download_manager = DownloadManager(
             config.download_root,
             max_filesize=config.max_media_bytes,
@@ -80,7 +85,21 @@ class SocialMediaPipeline:
             max_media_bytes=config.max_media_bytes,
             download_concurrency=config.media_download_concurrency,
             progress=progress,
+            observer=observer,
         )
+
+    @asynccontextmanager
+    async def _observe_stage(
+        self,
+        stage: str,
+        *,
+        platform: str,
+    ) -> AsyncIterator[None]:
+        if self.observer is None:
+            yield
+            return
+        async with self.observer.async_stage(stage, platform=platform):
+            yield
 
     def context(
         self,
@@ -89,6 +108,7 @@ class SocialMediaPipeline:
         cancel_event=None,
         reply_markup=None,
         force_long: bool = False,
+        job_id: str | None = None,
     ) -> ExtractionContext:
         return ExtractionContext(
             duration_limit=None if force_long else self.config.duration_limit,
@@ -96,6 +116,7 @@ class SocialMediaPipeline:
             cancel_event=cancel_event,
             reply_markup=reply_markup,
             playlist_limit=self.config.playlist_limit,
+            job_id=job_id,
         )
 
     def _cleanup_local_sources(self, bundle: MediaBundle) -> None:
@@ -139,10 +160,11 @@ class SocialMediaPipeline:
             )
             return len(prepared.items)
         if text:
-            if upload_started is not None:
-                await upload_started()
-            for part in dividir_texto_longo(text):
-                await message.reply_text(part, parse_mode=None)
+            async with self._observe_stage("upload", platform=bundle.platform):
+                if upload_started is not None:
+                    await upload_started()
+                for part in dividir_texto_longo(text):
+                    await message.reply_text(part, parse_mode=None)
         return 0
 
     async def deliver(
@@ -157,13 +179,16 @@ class SocialMediaPipeline:
         force_long: bool = False,
         long_video_callback: LongVideoCallback,
         upload_started: UploadStartedCallback | None = None,
+        job_id: str | None = None,
     ) -> SocialDelivery:
         extractor = self.registry.resolve(url)
+        platform = detect_platform(url)
         context = self.context(
             status=status,
             cancel_event=cancel_event,
             reply_markup=reply_markup,
             force_long=force_long,
+            job_id=job_id,
         )
 
         if isinstance(extractor, TwitterExtractor):
@@ -181,6 +206,7 @@ class SocialMediaPipeline:
                 long_video_callback=long_video_callback,
                 extraction_context=context,
                 upload_started=upload_started,
+                observer=self.observer,
             )
             try:
                 return SocialDelivery(
@@ -196,7 +222,8 @@ class SocialMediaPipeline:
                 if outcome.quote_bundle is not None:
                     self._cleanup_local_sources(outcome.quote_bundle)
 
-        bundle = await extractor.extract(url, context=context)
+        async with self._observe_stage("extract", platform=platform):
+            bundle = await extractor.extract(url, context=context)
         try:
             if not force_long and any(
                 (item.duration or 0) > self.config.duration_limit
