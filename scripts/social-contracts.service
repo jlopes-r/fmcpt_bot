@@ -5,6 +5,7 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
+TimeoutStartSec=30min
 User=juanl
 WorkingDirectory=@REPO_DIR@
 Environment=ENV_FILE=@REPO_DIR@/apps/telegram_bot/.env

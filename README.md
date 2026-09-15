@@ -235,6 +235,10 @@ Para testar manualmente sem enviar alerta ao administrador:
   --require-config --no-notify
 ```
 
+Para isolar um caso e limitar a espera manual, use por exemplo
+`--target instagram_reel --timeout 60`. A execução completa imprime cada
+resultado assim que o alvo termina.
+
 Na VM, instale o timer de dias úteis informando o caminho real do repositório:
 
 ```bash

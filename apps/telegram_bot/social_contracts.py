@@ -14,7 +14,7 @@ import os
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Callable, cast
 from urllib.parse import urlparse
 
 import aiohttp
@@ -346,6 +346,7 @@ async def run_contract_checks(
     timeout: float = 180.0,
     cookie_path: str | None = None,
     secondary_cookie_path: str | None = None,
+    on_result: Callable[[ContractResult], None] | None = None,
 ) -> list[ContractResult]:
     """Executa sequencialmente para reduzir bloqueios e rate limits."""
     primary = cookie_path if cookie_path is not None else os.getenv("IG_COOKIE_PATH", "")
@@ -374,4 +375,6 @@ async def run_contract_checks(
         except asyncio.TimeoutError:
             result = ContractResult(target.name, False, f"timeout apos {timeout:g}s")
         results.append(result)
+        if on_result is not None:
+            on_result(result)
     return results

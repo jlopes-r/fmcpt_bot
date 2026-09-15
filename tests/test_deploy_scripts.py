@@ -31,6 +31,7 @@ class DeployScriptTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn("Type=oneshot", service)
+        self.assertIn("TimeoutStartSec=30min", service)
         self.assertIn("check_social_contracts.py", service)
         self.assertIn("RandomizedDelaySec=30m", timer)
         self.assertIn("Persistent=true", timer)
@@ -56,6 +57,8 @@ class DeployScriptTests(unittest.TestCase):
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertIn("--no-notify", completed.stdout)
+        self.assertIn("--target", completed.stdout)
+        self.assertIn("--timeout", completed.stdout)
 
 
 if __name__ == "__main__":

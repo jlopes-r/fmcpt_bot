@@ -59,6 +59,17 @@ def _arguments() -> argparse.Namespace:
         action="store_true",
         help="nao envia alerta ao administrador (util para execucao manual)",
     )
+    parser.add_argument(
+        "--target",
+        action="append",
+        default=[],
+        help="executa apenas o contrato informado (pode ser repetido)",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        help="sobrescreve o timeout por contrato desta execucao",
+    )
     return parser.parse_args()
 
 
@@ -74,13 +85,35 @@ async def _run(args: argparse.Namespace) -> int:
         print("Nenhum teste real configurado em SOCIAL_CONTRACT_URLS.")
         return 2 if args.require_config else 0
 
+    selected = {str(name).strip() for name in args.target if str(name).strip()}
+    if selected:
+        available = {target.name for target in targets}
+        unknown = sorted(selected - available)
+        if unknown:
+            print("ERRO configuracao: contrato desconhecido: " + ", ".join(unknown))
+            return 2
+        targets = [target for target in targets if target.name in selected]
+
     try:
-        timeout = max(10.0, float(os.getenv("SOCIAL_CONTRACT_TIMEOUT", "180")))
+        configured_timeout = (
+            args.timeout
+            if args.timeout is not None
+            else float(os.getenv("SOCIAL_CONTRACT_TIMEOUT", "180"))
+        )
+        timeout = max(10.0, configured_timeout)
     except ValueError:
         print("ERRO configuracao: SOCIAL_CONTRACT_TIMEOUT precisa ser numerico")
         return 2
 
-    results = await run_contract_checks(targets, timeout=timeout)
+    def print_result(result) -> None:
+        marker = "OK" if result.ok else "FALHA"
+        print(f"[{marker}] {result.name}: {result.detail}", flush=True)
+
+    results = await run_contract_checks(
+        targets,
+        timeout=timeout,
+        on_result=print_result,
+    )
     coverage = sorted(
         {
             f"{target.platform}/{target.content_type or 'conteudo'}"
@@ -88,9 +121,6 @@ async def _run(args: argparse.Namespace) -> int:
         }
     )
     print("Cobertura configurada: " + ", ".join(coverage))
-    for result in results:
-        marker = "OK" if result.ok else "FALHA"
-        print(f"[{marker}] {result.name}: {result.detail}")
     failures = sum(not result.ok for result in results)
     print(f"Contratos: {len(results) - failures}/{len(results)} passaram.")
     if failures and not args.no_notify:

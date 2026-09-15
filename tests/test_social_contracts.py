@@ -161,10 +161,16 @@ class ContractRunnerTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.sleep(0.05)
             return contracts.ContractResult(target.name, True, "ok")
 
+        observed = []
         with patch.object(contracts, "check_contract_target", side_effect=check):
-            results = await contracts.run_contract_checks(targets, timeout=0.01)
+            results = await contracts.run_contract_checks(
+                targets,
+                timeout=0.01,
+                on_result=observed.append,
+            )
         self.assertFalse(results[0].ok)
         self.assertTrue(results[1].ok)
+        self.assertEqual(observed, results)
 
 
 if __name__ == "__main__":
