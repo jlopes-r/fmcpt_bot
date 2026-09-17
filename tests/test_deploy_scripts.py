@@ -14,6 +14,33 @@ class DeployScriptTests(unittest.TestCase):
         self.assertIn("Health check failed; rolling back", script)
         self.assertIn("current-venv", script)
         self.assertIn("pip check", script)
+        self.assertIn("RETAIN_VENVS=2", script)
+
+        powershell = (ROOT / "scripts" / "deploy.ps1").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("[int]$RetainVenvs = 2", powershell)
+
+    def test_on_vm_updater_keeps_concise_and_bounded_logs(self):
+        updater = (ROOT / "scripts" / "update.sh").read_text(encoding="utf-8")
+        self.assertIn('DEPLOY_LOG_KEEP="${DEPLOY_LOG_KEEP:-10}"', updater)
+        self.assertIn('LOG_DIR="$REPO_DIR/data/logs/deploy"', updater)
+        self.assertIn("tee -a \"$LOG_FILE\"", updater)
+        self.assertIn('pipeline_status=("${PIPESTATUS[@]}")', updater)
+        self.assertIn("tail -n 80", updater)
+        self.assertIn("prune_update_logs", updater)
+
+    def test_operations_runbook_covers_update_rollback_and_recovery(self):
+        runbook = (ROOT / "docs" / "OPERATIONS.md").read_text(encoding="utf-8")
+        for required in (
+            "atualizar_bot",
+            "data/logs/deploy",
+            "Rollback automatico",
+            "Recuperacao depois de uma falha tardia",
+            ".deploy/last-successful",
+            ".deploy/current-venv",
+        ):
+            self.assertIn(required, runbook)
 
     def test_runtime_updater_is_not_reintroduced(self):
         source = "\n".join(

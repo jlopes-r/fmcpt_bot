@@ -10,7 +10,7 @@ param(
     [ValidateRange(3, 120)]
     [int]$StabilitySeconds = 12,
     [ValidateRange(2, 20)]
-    [int]$RetainVenvs = 4,
+    [int]$RetainVenvs = 2,
     [switch]$SkipDependencies,
     [switch]$SkipTests,
     [switch]$ForceRestart

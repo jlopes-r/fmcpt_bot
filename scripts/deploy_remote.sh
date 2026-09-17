@@ -13,7 +13,7 @@ BRANCH="main"
 TARGET=""
 HEALTH_TIMEOUT=45
 STABILITY_SECONDS=12
-RETAIN_VENVS=4
+RETAIN_VENVS=2
 SKIP_DEPENDENCIES=0
 SKIP_TESTS=0
 FORCE_RESTART=0
@@ -28,7 +28,7 @@ Usage: deploy_remote.sh [options]
   --target SHA                Already-fetched commit to deploy
   --health-timeout SECONDS    Overall service health timeout (default: 45)
   --stability-seconds SECONDS Required stable process window (default: 12)
-  --retain-venvs COUNT        Number of successful release venvs to retain
+  --retain-venvs COUNT        Number of successful release venvs to retain (default: 2)
   --skip-dependencies         Explicitly reuse the current runtime
   --skip-tests                Skip the candidate unit-test suite
   --force-restart             Redeploy/restart even when HEAD is unchanged

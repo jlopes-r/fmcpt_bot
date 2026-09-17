@@ -173,6 +173,10 @@ python scripts/renew_ig_cookies.py
 .\scripts\deploy.ps1
 ```
 
+O procedimento de atualizacao na VM, os logs detalhados, o rollback automatico
+e a recuperacao de incidentes estao documentados em
+[`docs/OPERATIONS.md`](docs/OPERATIONS.md).
+
 ### Qualidade e testes locais
 
 A separacao entre entrypoint, extratores, pipeline e envio esta documentada em
