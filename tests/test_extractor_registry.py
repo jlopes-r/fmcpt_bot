@@ -5,7 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from apps.telegram_bot.errors import UnsupportedUrl
+from apps.telegram_bot.errors import InstagramAccountsUnavailable, UnsupportedUrl
 from apps.telegram_bot.extractors.facebook import FacebookExtractor
 from apps.telegram_bot.extractors.generic import GenericYtDlpExtractor, is_generic_content_url
 from apps.telegram_bot.extractors.instagram import InstagramExtractor
@@ -128,6 +128,27 @@ class InstagramAdapterTests(unittest.IsolatedAsyncioTestCase):
             allow_playlist=False,
             playlist_limit=20,
         )
+
+    async def test_two_rejected_instagram_accounts_do_not_enter_generic_fallback(self):
+        error = InstagramAccountsUnavailable(
+            "both accounts rejected",
+            platform="instagram",
+            stage="authentication",
+            account="primary,secondary",
+        )
+        manager = SimpleNamespace(
+            download_root=Path(tempfile.gettempdir()),
+            download=AsyncMock(),
+        )
+        extractor = InstagramExtractor(
+            manager,
+            legacy_download=AsyncMock(side_effect=error),
+        )
+
+        with self.assertRaises(InstagramAccountsUnavailable):
+            await extractor.extract("https://instagram.com/reel/ABC123/")
+
+        manager.download.assert_not_awaited()
 
 
 class DownloadPolicyTests(unittest.TestCase):

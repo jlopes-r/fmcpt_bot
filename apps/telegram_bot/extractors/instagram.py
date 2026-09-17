@@ -86,6 +86,8 @@ class InstagramExtractor(SocialExtractor):
                 str(self.download_manager.download_root),
                 secondary_cookie_path=self.secondary_cookie_path,
             )
+        except AuthenticationRequired:
+            raise
         except Exception as exc:
             result = None
             legacy_error = type(exc).__name__

@@ -45,6 +45,13 @@ class AuthenticationRequired(SocialMediaError):
     public_message = "A rede social exigiu uma conta valida para abrir esse conteudo."
 
 
+class InstagramAccountsUnavailable(AuthenticationRequired):
+    error_code = "instagram_accounts_unavailable"
+    public_message = (
+        "As contas principal e secundaria do Instagram estao indisponiveis."
+    )
+
+
 class RateLimited(SocialMediaError):
     error_code = "rate_limited"
     retryable = True

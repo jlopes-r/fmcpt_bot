@@ -25,6 +25,7 @@ from datetime import datetime
 import httpx
 
 from apps.telegram_bot.downloaders import baixar_com_ytdlp
+from apps.telegram_bot.errors import InstagramAccountsUnavailable
 from apps.telegram_bot.instagram_resilience import (
     InstagramAccountPool,
     InstagramFailure,
@@ -2167,6 +2168,7 @@ async def download_instagram(
         ("secondary", secondary_cookie_path),
     )
     primary_failed = False
+    attempted_account_ids: list[str] = []
     for slot, path in cookie_slots:
         if not path or not os.path.exists(path):
             log.warning("🍪 Cookies Instagram %s nao configurados: %s", slot, path or "(vazio)")
@@ -2174,6 +2176,8 @@ async def download_instagram(
                 primary_failed = True
             continue
         account_id = _instagram_account_pool.register(slot, path)
+        if account_id not in attempted_account_ids:
+            attempted_account_ids.append(account_id)
         cookies = _load_cookies_from_file(path)
         if not cookies or 'sessionid' not in cookies:
             log.warning("🍪 Cookies Instagram %s vazios ou invalidos", slot)
@@ -2258,6 +2262,18 @@ async def download_instagram(
             log.warning("⚠️ Conta Instagram primaria falhou; tentando secundaria")
 
     log.warning("❌ As duas contas de cookies falharam para: %s", url)
+    authentication_failures = {"cookie_invalid", "challenge"}
+    if len(attempted_account_ids) >= 2 and all(
+        _instagram_account_pool.health(account_id).state
+        in authentication_failures
+        for account_id in attempted_account_ids
+    ):
+        raise InstagramAccountsUnavailable(
+            "Instagram rejeitou as contas principal e secundaria",
+            platform="instagram",
+            stage="authentication",
+            account="primary,secondary",
+        )
     return None
 
 

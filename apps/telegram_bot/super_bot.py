@@ -112,6 +112,7 @@ from apps.telegram_bot.text_utils import dividir_texto_longo
 from apps.telegram_bot.twitter import match_tweet_url, match_profile_url, build_profile_url, build_follow_info_url
 from apps.telegram_bot.errors import (
     AuthenticationRequired,
+    InstagramAccountsUnavailable,
     MediaTooLarge,
     MediaTooLong,
     SocialMediaError,
@@ -1087,15 +1088,29 @@ async def cmd_retry(client, message):
     message.id = original_msg_id
     await processar_links(client, message)
 
-async def avisar_admin_cookies(client, motivo="expirados"):
+async def avisar_admin_cookies(client, motivo="expirados", *, duas_contas=False):
     """Envia aviso ao admin quando cookies do Instagram falham."""
     if ADMIN_ID:
         try:
+            if duas_contas:
+                texto = (
+                    "🍪⚠️ **Alerta de Cookies Instagram**\n\n"
+                    "As contas principal e secundaria tiveram problemas e "
+                    "foram rejeitadas pelo Instagram.\n"
+                    f"Motivo: {motivo}.\n\n"
+                    "Atualize os dois arquivos:\n"
+                    f"- Principal: `{COOKIE_PATH}`\n"
+                    f"- Secundaria: `{SECONDARY_COOKIE_PATH}`"
+                )
+            else:
+                texto = (
+                    "🍪⚠️ **Alerta de Cookies Instagram**\n\n"
+                    f"Os cookies parecem estar {motivo}.\n"
+                    f"Atualize o arquivo: `{COOKIE_PATH}`"
+                )
             await client.send_message(
                 ADMIN_ID,
-                f"🍪⚠️ **Alerta de Cookies Instagram**\n\n"
-                f"Os cookies parecem estar {motivo}.\n"
-                f"Atualize o arquivo: `{COOKIE_PATH}`"
+                texto,
             )
         except Exception as e:
             log.error(f"Falha ao avisar admin sobre cookies: {e}")
@@ -1701,9 +1716,18 @@ async def processar_links(client, message, *, _resume_job: JobRecord | None = No
         if platform == "facebook":
             await status.edit_text(ACCESS_NOTICE)
         elif platform == "instagram":
-            motivo = get_cookie_failure_reason()
-            await avisar_admin_cookies(client, f"expirados ou invalidos ({motivo})")
-            await status.edit_text(f"{erro_aleatorio(ERROS_INSTAGRAM)}\n\n🔒 {motivo}")
+            if isinstance(exc, InstagramAccountsUnavailable):
+                motivo = "principal e secundaria foram rejeitadas"
+                await avisar_admin_cookies(client, motivo, duas_contas=True)
+                await status.edit_text(
+                    f"{erro_aleatorio(ERROS_INSTAGRAM)}\n\n"
+                    "🍪 As duas contas do Instagram tiveram problemas. "
+                    "O administrador foi avisado."
+                )
+            else:
+                motivo = get_cookie_failure_reason()
+                await avisar_admin_cookies(client, f"expirados ou invalidos ({motivo})")
+                await status.edit_text(f"{erro_aleatorio(ERROS_INSTAGRAM)}\n\n🔒 {motivo}")
         else:
             await status.edit_text(exc.public_message)
         _retry_cache[status.id] = (url_raw, usuario, message.chat.id, message.id)

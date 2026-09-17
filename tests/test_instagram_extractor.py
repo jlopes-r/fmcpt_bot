@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, patch
 import httpx
 
 from apps.telegram_bot import instagram_extractor as ig
+from apps.telegram_bot.errors import InstagramAccountsUnavailable
 
 
 class FakeProfileResponse:
@@ -639,6 +640,42 @@ class InstagramExtractorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["_cookie_source"], "primary")
         self.assertFalse(result["_primary_cookie_failed"])
         self.assertEqual(api.await_count, 1)
+
+    async def test_both_rejected_accounts_raise_specific_alert_error(self):
+        reel_url = "https://www.instagram.com/reel/DNBCJoiOp9J/"
+        ig.reset_cookies_bad()
+        self.addCleanup(ig.reset_cookies_bad)
+
+        async def reject_account(*_args):
+            ig._mark_cookies_bad(
+                "login_required",
+                ig.InstagramFailure.COOKIE_INVALID,
+            )
+            return None
+
+        with (
+            patch.object(ig.os.path, "exists", return_value=True),
+            patch.object(
+                ig,
+                "_load_cookies_from_file",
+                return_value={"sessionid": "rejected"},
+            ),
+            patch.object(
+                ig,
+                "_extract_via_api",
+                new=AsyncMock(side_effect=reject_account),
+            ) as api,
+        ):
+            with self.assertRaises(InstagramAccountsUnavailable) as raised:
+                await ig.download_instagram(
+                    reel_url,
+                    "primary-rejected.txt",
+                    "C:/tmp",
+                    secondary_cookie_path="secondary-rejected.txt",
+                )
+
+        self.assertEqual(raised.exception.account, "primary,secondary")
+        self.assertEqual(api.await_count, 2)
 
     async def test_secondary_cookie_is_used_after_primary_failure(self):
         reel_url = "https://www.instagram.com/reel/DNBCJoiOp9J/"
