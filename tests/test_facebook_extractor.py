@@ -119,6 +119,21 @@ class FacebookExtractorTests(unittest.IsolatedAsyncioTestCase):
             playlist_limit=20,
         )
         self.assertEqual(result.metadata["extraction_strategy"], "yt-dlp")
+        self.assertEqual(result.metadata["content_type"], "video")
+
+    async def test_reel_download_is_typed(self):
+        downloaded = MediaBundle(
+            "facebook",
+            (MediaItem("local.mp4", "video"),),
+            source_id="333",
+        )
+        manager = SimpleNamespace(download=AsyncMock(return_value=downloaded))
+        extractor = FacebookExtractor(SimpleNamespace(), manager)
+
+        result = await extractor.extract("https://facebook.com/reel/333")
+
+        self.assertEqual(result.metadata["extraction_strategy"], "yt-dlp")
+        self.assertEqual(result.metadata["content_type"], "reel")
 
     async def test_reel_falls_back_from_ytdlp_to_public_html(self):
         manager = SimpleNamespace(

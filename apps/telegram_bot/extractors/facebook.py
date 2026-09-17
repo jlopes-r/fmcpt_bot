@@ -227,7 +227,7 @@ class FacebookExtractor(SocialExtractor):
             downloaded = await self._extract_ytdlp(url, target, context)
             if html_bundle is not None:
                 return _merge_html_and_downloaded(html_bundle, downloaded)
-            return _annotate(downloaded, "yt-dlp")
+            return _annotate(downloaded, "yt-dlp", content_type=target.kind)
         except SocialMediaError as exc:
             download_error = exc
 
