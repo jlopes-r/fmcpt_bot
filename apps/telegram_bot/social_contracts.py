@@ -28,6 +28,7 @@ from apps.telegram_bot.instagram_extractor import (
 from apps.telegram_bot.models.media import MediaBundle, MediaKind
 from apps.telegram_bot.services.download_manager import DownloadManager, detect_platform
 from apps.telegram_bot.services.media_sender import MediaSender
+from packages.config import instagram_cookie_path, instagram_secondary_cookie_path
 
 
 SUPPORTED_DOMAINS = (
@@ -349,11 +350,13 @@ async def run_contract_checks(
     on_result: Callable[[ContractResult], None] | None = None,
 ) -> list[ContractResult]:
     """Executa sequencialmente para reduzir bloqueios e rate limits."""
-    primary = cookie_path if cookie_path is not None else os.getenv("IG_COOKIE_PATH", "")
+    primary = (
+        cookie_path if cookie_path is not None else str(instagram_cookie_path())
+    )
     secondary = (
         secondary_cookie_path
         if secondary_cookie_path is not None
-        else os.getenv("IG_SECONDARY_COOKIE_PATH", "")
+        else str(instagram_secondary_cookie_path())
     )
     try:
         max_media_bytes = max(1, int(os.getenv("MAX_MEDIA_BYTES", "2000000000")))

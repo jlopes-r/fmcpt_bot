@@ -172,6 +172,36 @@ class ContractRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(results[1].ok)
         self.assertEqual(observed, results)
 
+    async def test_runner_uses_same_default_cookie_paths_as_bot(self):
+        target = contracts.ContractTarget(
+            "instagram",
+            "https://instagram.com/p/abc/",
+        )
+        check = AsyncMock(return_value=contracts.ContractResult("instagram", True, "ok"))
+        with (
+            patch.object(
+                contracts,
+                "instagram_cookie_path",
+                return_value="data/instagram_cookies.txt",
+            ),
+            patch.object(
+                contracts,
+                "instagram_secondary_cookie_path",
+                return_value="data/instagram_cookies_secondary.txt",
+            ),
+            patch.object(contracts, "check_contract_target", new=check),
+        ):
+            await contracts.run_contract_checks([target], timeout=1)
+
+        self.assertEqual(
+            check.await_args.kwargs["cookie_path"],
+            "data/instagram_cookies.txt",
+        )
+        self.assertEqual(
+            check.await_args.kwargs["secondary_cookie_path"],
+            "data/instagram_cookies_secondary.txt",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
