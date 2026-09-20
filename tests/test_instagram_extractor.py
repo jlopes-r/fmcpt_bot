@@ -164,6 +164,8 @@ class FakeLoginRequiredClient:
 class InstagramExtractorTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         # Testes de rede simulada não devem ler/gravar o cache real do bot.
+        ig._instagram_account_pool.reset()
+        self.addCleanup(ig._instagram_account_pool.reset)
         for name, value in (
             ('_profile_cache', {}), ('_profile_cache_ttl', {}),
             ('_ig_429_since', 0.0), ('_ig_last_request_at', 0.0),
@@ -703,6 +705,79 @@ class InstagramExtractorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["_cookie_source"], "secondary")
         self.assertTrue(result["_primary_cookie_failed"])
         self.assertEqual(api.await_count, 2)
+
+    async def test_secondary_rate_limit_goes_to_ytdlp_without_false_cookie_failure(self):
+        reel_url = "https://www.instagram.com/reel/DdMLMZzIXu-/"
+        requests = []
+
+        class IncidentApiClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def get(self, url, headers=None):
+                cookie_header = (headers or {}).get("Cookie", "")
+                requests.append((url, cookie_header))
+                request = httpx.Request("GET", url)
+                if "sessionid=primary" in cookie_header:
+                    return httpx.Response(
+                        400,
+                        text='{"message":"checkpoint_required"}',
+                        request=request,
+                    )
+                if "www.instagram.com" in url:
+                    return httpx.Response(429, text="", request=request)
+                return httpx.Response(
+                    404,
+                    text='{"message":"login_required"}',
+                    request=httpx.Request(
+                        "GET", "https://i.instagram.com/accounts/login/"
+                    ),
+                )
+
+        video_result = {
+            "files": ["C:/tmp/reel.mp4"],
+            "type": "video",
+            "title": "Video",
+            "uploader": "Autor",
+        }
+        with (
+            patch.object(ig.os.path, "exists", return_value=True),
+            patch.object(
+                ig,
+                "_load_cookies_from_file",
+                side_effect=[
+                    {"sessionid": "primary"},
+                    {"sessionid": "secondary"},
+                ],
+            ),
+            patch.object(ig.httpx, "AsyncClient", IncidentApiClient),
+            patch.object(ig, "_ig_wait_pacing", new=AsyncMock()),
+            patch.object(
+                ig, "_extract_via_ytdlp", new=AsyncMock(return_value=video_result)
+            ) as ytdlp,
+        ):
+            result = await ig.download_instagram(
+                reel_url,
+                "primary.txt",
+                "C:/tmp",
+                secondary_cookie_path="secondary.txt",
+            )
+
+        self.assertEqual(result["_cookie_source"], "secondary")
+        self.assertTrue(result["_primary_cookie_failed"])
+        ytdlp.assert_awaited_once_with(
+            reel_url, "secondary.txt", "C:/tmp"
+        )
+        self.assertEqual(len(requests), 2)
+        self.assertIn("sessionid=primary", requests[0][1])
+        self.assertIn("sessionid=secondary", requests[1][1])
+        self.assertNotIn("i.instagram.com/api/", requests[1][0])
 
     async def test_authenticated_layers_and_ytdlp_use_each_cookie(self):
         reel_url = "https://www.instagram.com/reel/DNBCJoiOp9J/"

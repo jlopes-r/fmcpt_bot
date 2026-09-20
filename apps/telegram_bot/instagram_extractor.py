@@ -1411,9 +1411,12 @@ async def _extract_via_api(shortcode: str, cookies: dict = None) -> dict | None:
                 # ── Detectar challenge/login redirect ──
                 if failure is InstagramFailure.IP_RATE_LIMITED:
                     log.warning("   ⏳ API (%s) limitada pelo Instagram (429); cookies nao foram invalidados", host)
-                    # O limite pode afetar apenas o endpoint web. Ainda dentro
-                    # da mesma conta, tenta o endpoint autenticado do app.
-                    continue
+                    # O 429 ativa um cooldown global de IP. Nao tente o host
+                    # movel logo em seguida: redirects intermediarios para
+                    # /accounts/login podem parecer cookie invalido e abrir o
+                    # circuito de uma conta saudavel. O orquestrador ainda
+                    # permite o yt-dlp, que nao usa estas rotas de metadados.
+                    return None
                 if failure in {InstagramFailure.COOKIE_INVALID, InstagramFailure.CHALLENGE}:
                     log.warning("   🍪 API (%s) rejeitou a conta: %s", host, failure.value)
                     return None
@@ -1471,7 +1474,9 @@ async def _extract_via_api_media_id(media_id: str, cookies: dict) -> dict | None
                     f"Story por media_id ({host})",
                 )
                 if failure is InstagramFailure.IP_RATE_LIMITED:
-                    continue
+                    # Respeita o cooldown global e deixa o orquestrador seguir
+                    # para o fallback autenticado do yt-dlp.
+                    return None
                 if failure in {
                     InstagramFailure.COOKIE_INVALID,
                     InstagramFailure.CHALLENGE,
@@ -2030,7 +2035,9 @@ async def _extract_via_stories_api(
                     f"Sequência de stories ({host})",
                 )
                 if failure is InstagramFailure.IP_RATE_LIMITED:
-                    continue
+                    # Respeita o cooldown global e deixa o orquestrador seguir
+                    # para o fallback autenticado do yt-dlp.
+                    return None
                 if failure in {
                     InstagramFailure.COOKIE_INVALID,
                     InstagramFailure.CHALLENGE,
