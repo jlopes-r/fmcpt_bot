@@ -1183,50 +1183,76 @@ class EphemeralCommandService:
     async def poll_bot(self, runtime: BotRuntime) -> None:
         if not runtime.token:
             self.log.warning("%s token is not configured; skipping", runtime.name)
+            await self.stop_event.wait()
             return
 
         api = BotApi(runtime.token)
         offset = 0
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=70)) as session:
-            await api.post(session, "deleteWebhook", {"drop_pending_updates": False})
-            await set_bot_commands_via_bot_api(runtime.token, runtime.commands)
-            await set_bot_commands_menu_button_via_bot_api(runtime.token)
-            self.log.info("%s ephemeral command listener started", runtime.name)
+        while not self.stop_event.is_set():
+            initialized = False
+            try:
+                async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=70)) as session:
+                    await api.post(session, "deleteWebhook", {"drop_pending_updates": False})
+                    await set_bot_commands_via_bot_api(runtime.token, runtime.commands)
+                    await set_bot_commands_menu_button_via_bot_api(runtime.token)
+                    initialized = True
+                    self.log.info("%s ephemeral command listener started", runtime.name)
 
-            while not self.stop_event.is_set():
-                try:
-                    data = await api.post(
-                        session,
-                        "getUpdates",
-                        {
-                            "offset": offset,
-                            "timeout": 50,
-                            "allowed_updates": ["message", "callback_query"],
-                        },
-                    )
-                    for update in data.get("result", []):
-                        offset = max(offset, update["update_id"] + 1)
-                        if callback_query := update.get("callback_query"):
-                            await self.handle_callback_query(session, runtime, api, callback_query)
-                        else:
-                            message = update.get("message") or {}
-                            await self.handle_command(session, runtime, api, message)
-                except asyncio.CancelledError:
-                    raise
-                except Exception:
-                    self.log.exception("%s polling error", runtime.name)
-                    await asyncio.sleep(5)
+                    while not self.stop_event.is_set():
+                        data = await api.post(
+                            session,
+                            "getUpdates",
+                            {
+                                "offset": offset,
+                                "timeout": 50,
+                                "allowed_updates": ["message", "callback_query"],
+                            },
+                        )
+                        for update in data.get("result", []):
+                            offset = max(offset, update["update_id"] + 1)
+                            if callback_query := update.get("callback_query"):
+                                await self.handle_callback_query(session, runtime, api, callback_query)
+                            else:
+                                message = update.get("message") or {}
+                                await self.handle_command(session, runtime, api, message)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                phase = "polling" if initialized else "initialization"
+                self.log.exception("%s listener %s error; retrying", runtime.name, phase)
+                await self.wait_before_retry()
+
+    async def wait_before_retry(self, seconds: float = 5) -> None:
+        try:
+            await asyncio.wait_for(self.stop_event.wait(), timeout=seconds)
+        except asyncio.TimeoutError:
+            pass
 
     async def run(self) -> None:
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, self.stop_event.set)
 
-        tasks = [asyncio.create_task(self.poll_bot(bot)) for bot in self.bots]
-        await self.stop_event.wait()
-        for task in tasks:
-            task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+        tasks = [
+            asyncio.create_task(self.poll_bot(bot), name=f"ephemeral-{bot.name}")
+            for bot in self.bots
+        ]
+        stop_task = asyncio.create_task(self.stop_event.wait(), name="ephemeral-stop")
+        try:
+            done, _ = await asyncio.wait([stop_task, *tasks], return_when=asyncio.FIRST_COMPLETED)
+            if stop_task not in done:
+                failed_task = next(task for task in tasks if task in done)
+                failure = failed_task.exception()
+                message = f"{failed_task.get_name()} listener stopped unexpectedly"
+                if failure is not None:
+                    raise RuntimeError(message) from failure
+                raise RuntimeError(message)
+        finally:
+            self.stop_event.set()
+            stop_task.cancel()
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(stop_task, *tasks, return_exceptions=True)
 
 
 def main() -> None:
