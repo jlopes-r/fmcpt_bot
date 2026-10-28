@@ -12,6 +12,10 @@ from packages.telegram_watchdog import (
 )
 
 
+class StopMonitor(Exception):
+    pass
+
+
 class FakeClient:
     def __init__(self):
         self.is_connected = True
@@ -97,26 +101,24 @@ class TelegramWatchdogTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(notifications, [])
 
     async def test_monitor_notifies_systemd_only_after_success(self):
-        probed = asyncio.Event()
         notifications = []
 
         async def successful_probe(_client):
-            probed.set()
+            return None
 
-        task = asyncio.create_task(
-            monitor_pyrogram_client(
+        def successful_notification(message):
+            notifications.append(message)
+            raise StopMonitor
+
+        with self.assertRaises(StopMonitor):
+            await monitor_pyrogram_client(
                 self.client,
                 logger=self.logger,
                 interval_seconds=60,
                 timeout_seconds=0.1,
                 probe=successful_probe,
-                notifier=lambda message: notifications.append(message) or True,
+                notifier=successful_notification,
             )
-        )
-        await probed.wait()
-        await asyncio.sleep(0)
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
 
         self.assertEqual(notifications, ["WATCHDOG=1"])
 
