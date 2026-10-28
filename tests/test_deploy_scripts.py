@@ -16,6 +16,9 @@ class DeployScriptTests(unittest.TestCase):
         self.assertIn("pip check", script)
         self.assertIn("RETAIN_VENVS=2", script)
         self.assertIn('PYTHONPATH="$PREVIEW_DIR" ENV_FILE=/dev/null', script)
+        self.assertEqual(script.count("WatchdogSec=120s"), 2)
+        self.assertEqual(script.count("WatchdogSignal=SIGKILL"), 2)
+        self.assertEqual(script.count("NotifyAccess=main"), 2)
 
         powershell = (ROOT / "scripts" / "deploy.ps1").read_text(
             encoding="utf-8"

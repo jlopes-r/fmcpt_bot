@@ -1,6 +1,7 @@
 [Unit]
 Description=Meu Super Bot Telegram
-After=network.target
+Wants=network-online.target
+After=network-online.target
 
 [Service]
 User=juanl
@@ -9,6 +10,11 @@ Environment=ENV_FILE=/home/juanl/bot/apps/telegram_bot/.env
 ExecStart=/home/juanl/bot/venv/bin/python /home/juanl/bot/apps/telegram_bot/super_bot.py
 Restart=always
 RestartSec=10
+WatchdogSec=120s
+WatchdogSignal=SIGKILL
+NotifyAccess=main
+TimeoutStopSec=30s
+KillMode=control-group
 
 [Install]
 WantedBy=multi-user.target

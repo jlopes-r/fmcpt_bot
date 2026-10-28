@@ -1,0 +1,21 @@
+[Unit]
+Description=FMCPT Bot de Comandos Telegram
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=juanl
+WorkingDirectory=/home/juanl/bot/apps/comandos
+Environment=ENV_FILE=/home/juanl/bot/apps/telegram_bot/.env
+ExecStart=/home/juanl/bot/venv/bin/python /home/juanl/bot/apps/comandos/comandos_bot.py
+Restart=always
+RestartSec=10
+WatchdogSec=120s
+WatchdogSignal=SIGKILL
+NotifyAccess=main
+TimeoutStopSec=30s
+KillMode=control-group
+
+[Install]
+WantedBy=multi-user.target

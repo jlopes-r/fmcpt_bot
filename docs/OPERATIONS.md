@@ -98,6 +98,40 @@ A fila e os limites de uso ficam no SQLite. Ao iniciar, o bot devolve jobs com
 lease interrompido para a fila e tenta recuperar a mensagem original; reiniciar
 o servico nao apaga esses estados.
 
+## Recuperacao automatica do Telegram
+
+`superbot.service` e `comandosbot.service` verificam a cada 30 segundos o RPC
+`updates.GetState` e as tarefas internas de sessao, recepcao e dispatch do
+Pyrogram. Tres falhas consecutivas encerram somente o processo afetado para que
+o systemd o recrie. O mesmo monitor alimenta `WatchdogSec=120s`; assim, um loop
+de eventos completamente congelado tambem e recuperado sem reiniciar a VM.
+
+```bash
+systemctl show superbot.service comandosbot.service \
+  --property=ActiveState,NRestarts,WatchdogUSec,WatchdogTimestamp --no-pager
+journalctl -u superbot.service -u comandosbot.service \
+  --since "30 minutes ago" --no-pager | grep "Telegram watchdog"
+```
+
+## Memoria e logs da VM
+
+A VM pequena usa `/swapfile` com 1 GiB e `vm.swappiness=10` para absorver picos
+curtos de FFmpeg sem trocar memoria agressivamente. O journal persistente e
+limitado a 250 MiB e sete dias por
+`/etc/systemd/journald.conf.d/60-bot-retention.conf`.
+
+```bash
+free -h
+swapon --show
+sysctl vm.swappiness
+journalctl --disk-usage
+```
+
+O `google-cloud-ops-agent` fica desativado enquanto a conta de servico nao tiver
+`roles/logging.logWriter` e `roles/monitoring.metricWriter`. Sem essas funcoes o
+agente nao entrega observabilidade e entra em retries locais. Nao o reative sem
+corrigir ambas as permissoes e validar os health checks do agente.
+
 ## Espaco em disco
 
 ```bash

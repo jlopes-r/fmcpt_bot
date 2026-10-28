@@ -3,12 +3,13 @@ import sys
 import re
 import json
 import copy
+import asyncio
 import logging
 from pathlib import Path
 from datetime import datetime
 
 from functools import wraps
-from pyrogram import Client, filters
+from pyrogram import Client, filters, idle
 from pyrogram.types import InputMediaPhoto, InputMediaVideo, InputMediaAudio
 from dotenv import load_dotenv
 
@@ -32,6 +33,7 @@ from packages.json_store import (
 )
 from packages.private_access import guard_authorized_group_chat, guard_private_chat_access
 from packages.pyrogram_file_id_compat import patch_pyrogram_file_id
+from packages.telegram_watchdog import monitor_pyrogram_client
 from packages.telegram_ui import (
     build_bot_commands,
     reply_command_menu,
@@ -1167,8 +1169,6 @@ async def processar_media_criacao(client, message):
 # -----------------------------------------
 # NOTIFICAÇÃO DE ATUALIZAÇÃO
 # -----------------------------------------
-import asyncio
-
 async def notificar_atualizacao():
     """Envia notificação nos grupos quando o bot reinicia após um git pull com mudanças."""
     await asyncio.sleep(5)  # Aguarda a conexão do bot estabilizar
@@ -1205,7 +1205,51 @@ async def notificar_atualizacao():
     except Exception as e:
         log.error(f"Erro ao processar changelog de atualização: {e}")
 
+
+async def _rodar_supervisionado():
+    await app.start()
+    watchdog_task = asyncio.create_task(
+        monitor_pyrogram_client(app, logger=log),
+        name="telegram-session-watchdog",
+    )
+    notificacao_task = asyncio.create_task(
+        notificar_atualizacao(),
+        name="notificar-atualizacao",
+    )
+    idle_task = asyncio.create_task(idle(), name="telegram-idle")
+
+    try:
+        concluidas, _ = await asyncio.wait(
+            {idle_task, watchdog_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if watchdog_task in concluidas:
+            await watchdog_task
+            raise RuntimeError("Telegram watchdog stopped unexpectedly")
+        await idle_task
+    finally:
+        for tarefa in (idle_task, watchdog_task, notificacao_task):
+            tarefa.cancel()
+        await asyncio.gather(
+            idle_task,
+            watchdog_task,
+            notificacao_task,
+            return_exceptions=True,
+        )
+        try:
+            await asyncio.wait_for(app.stop(), timeout=15)
+        except asyncio.CancelledError as exc:
+            log.warning("Sessão do Telegram já estava cancelada: %s", exc)
+        except Exception as exc:
+            log.warning("Falha ao encerrar a sessão do Telegram: %s", exc)
+
+
 if __name__ == "__main__":
     log.info("Bot de Comandos iniciando...")
-    asyncio.get_event_loop().create_task(notificar_atualizacao())
-    app.run()
+    try:
+        app.run(_rodar_supervisionado())
+    except KeyboardInterrupt:
+        pass
+    except Exception as exc:
+        log.error("Erro fatal na execução do bot: %s", exc, exc_info=True)
+        os._exit(1)

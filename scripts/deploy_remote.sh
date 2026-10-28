@@ -358,18 +358,40 @@ if [[ "$COMMANDS_AFFECTED" -eq 1 && -f "$COMMANDS_CHANGELOG_FILE" ]]; then
 fi
 
 cat >"$DROPIN_TEMP" <<EOF
+[Unit]
+Wants=network-online.target
+After=network-online.target
+
 [Service]
 ExecStart=
 ExecStart=$CURRENT_LINK/bin/python $REPO_DIR/apps/telegram_bot/super_bot.py
 Environment=SUPERBOT_DEPLOY_MANAGED=1
+Restart=always
+RestartSec=10s
+WatchdogSec=120s
+WatchdogSignal=SIGKILL
+NotifyAccess=main
+TimeoutStopSec=30s
+KillMode=control-group
 EOF
 
 if [[ "$COMMANDS_AFFECTED" -eq 1 ]]; then
     cat >"$COMMANDS_DROPIN_TEMP" <<EOF
+[Unit]
+Wants=network-online.target
+After=network-online.target
+
 [Service]
 ExecStart=
 ExecStart=$CURRENT_LINK/bin/python $REPO_DIR/apps/comandos/comandos_bot.py
 Environment=SUPERBOT_DEPLOY_MANAGED=1
+Restart=always
+RestartSec=10s
+WatchdogSec=120s
+WatchdogSignal=SIGKILL
+NotifyAccess=main
+TimeoutStopSec=30s
+KillMode=control-group
 EOF
 fi
 

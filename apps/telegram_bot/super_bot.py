@@ -82,6 +82,7 @@ from packages.config import (
 from packages.logging_config import configure_rotating_logging
 from packages.observability import get_log_context
 from packages.private_access import guard_authorized_group_chat, guard_private_chat_access
+from packages.telegram_watchdog import monitor_pyrogram_client
 from packages.telegram_ui import (
     build_bot_commands,
     reply_command_menu,
@@ -1914,50 +1915,46 @@ if __name__ == "__main__":
 
     log.info("Super Bot iniciado!")
 
-    # --- Canário de conectividade ---
-    # O Pyrogram às vezes perde o socket MTProto (ex: o DC poda a conexão ou a
-    # rede cai) e fica preso apenas mandando keepalives que falham
-    # ("socket.send() raised exception"), sem se recuperar sozinho. Este canário
-    # faz um Ping real ao DC em background: se falhar N vezes seguidas, forçamos
-    # o encerramento do processo para o supervisor/systemd recriá-lo de forma limpa.
-    CANARIO_INTERVALO = 15     # segundos entre pings
-    CANARIO_FALHAS = 4         # falhas consecutivas antes de reiniciar
-    _falhas_ping = [0]
-
-    async def _canario_conectividade():
-        while True:
-            await asyncio.sleep(CANARIO_INTERVALO)
-            try:
-                await app.invoke(
-                    raw.functions.Ping(ping_id=random.randint(1, pow(2, 31) - 1))
-                )
-                _falhas_ping[0] = 0
-            except Exception as e:
-                _falhas_ping[0] += 1
-                log.warning(f"Canário: ping ao DC falhou ({_falhas_ping[0]}/{CANARIO_FALHAS}): {e}")
-                if _falhas_ping[0] >= CANARIO_FALHAS:
-                    log.error("Canário: conexão com o Telegram caiu. Reiniciando o bot...")
-                    os._exit(1)
-
-    async def _rodar_with_canario():
+    async def _rodar_supervisionado():
         await app.start()
         recovery_tasks = await iniciar_recuperacao_persistente(app)
+        watchdog_task = asyncio.create_task(
+            monitor_pyrogram_client(app, logger=log),
+            name="telegram-session-watchdog",
+        )
+        idle_task = asyncio.create_task(idle(), name="telegram-idle")
         tarefas_fundo = [
-            asyncio.create_task(_canario_conectividade(), name="canario-conectividade"),
             asyncio.create_task(notificar_atualizacao(), name="notificar-atualizacao"),
             asyncio.create_task(limpeza_periodica(), name="limpeza-periodica"),
             *recovery_tasks,
         ]
         try:
-            await idle()
+            concluidas, _ = await asyncio.wait(
+                {idle_task, watchdog_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if watchdog_task in concluidas:
+                await watchdog_task
+                raise RuntimeError("Telegram watchdog stopped unexpectedly")
+            await idle_task
         finally:
-            for tarefa in tarefas_fundo:
+            for tarefa in [idle_task, watchdog_task, *tarefas_fundo]:
                 tarefa.cancel()
-            await asyncio.gather(*tarefas_fundo, return_exceptions=True)
-            await app.stop()
+            await asyncio.gather(
+                idle_task,
+                watchdog_task,
+                *tarefas_fundo,
+                return_exceptions=True,
+            )
+            try:
+                await asyncio.wait_for(app.stop(), timeout=15)
+            except asyncio.CancelledError as exc:
+                log.warning("Sessão do Telegram já estava cancelada: %s", exc)
+            except Exception as exc:
+                log.warning("Falha ao encerrar a sessão do Telegram: %s", exc)
 
     try:
-        _runtime_loop.run_until_complete(_rodar_with_canario())
+        _runtime_loop.run_until_complete(_rodar_supervisionado())
     except KeyboardInterrupt:
         pass
     except Exception as e:
