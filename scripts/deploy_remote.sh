@@ -331,7 +331,7 @@ if [[ "$SKIP_TESTS" -eq 0 ]]; then
     log "Running the candidate unit tests before any restart..."
     (
         cd "$PREVIEW_DIR"
-        PYTHONPATH="$PREVIEW_DIR" "$NEW_RUNTIME/bin/python" \
+        PYTHONPATH="$PREVIEW_DIR" ENV_FILE=/dev/null "$NEW_RUNTIME/bin/python" \
             -m unittest discover -s tests -p 'test_*.py'
     )
 fi

@@ -15,6 +15,7 @@ class DeployScriptTests(unittest.TestCase):
         self.assertIn("current-venv", script)
         self.assertIn("pip check", script)
         self.assertIn("RETAIN_VENVS=2", script)
+        self.assertIn('PYTHONPATH="$PREVIEW_DIR" ENV_FILE=/dev/null', script)
 
         powershell = (ROOT / "scripts" / "deploy.ps1").read_text(
             encoding="utf-8"
