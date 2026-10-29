@@ -19,6 +19,10 @@ from typing import Any
 from pyrogram import raw
 
 
+LOCAL_HEARTBEAT_INTERVAL_SECONDS = 30.0
+REMOTE_PROBE_INTERVAL_SECONDS = 8 * 60 * 60.0
+
+
 class TelegramSessionUnhealthy(RuntimeError):
     """Raised when a Pyrogram client remains unhealthy across several probes."""
 
@@ -37,7 +41,9 @@ def _task_problem(task: asyncio.Task[Any] | None, label: str) -> str | None:
     return f"{label} stopped with {type(exception).__name__}: {exception}"
 
 
-def _assert_internal_workers(client: Any) -> None:
+def inspect_pyrogram_workers(client: Any) -> None:
+    """Check Pyrogram's local tasks without making a Telegram request."""
+
     if not getattr(client, "is_connected", False):
         raise ConnectionError("Pyrogram client is disconnected")
     if not getattr(client, "is_initialized", False):
@@ -75,9 +81,9 @@ def _assert_internal_workers(client: Any) -> None:
 async def probe_pyrogram_client(client: Any) -> None:
     """Verify local workers and perform the updates RPC that failed in production."""
 
-    _assert_internal_workers(client)
+    inspect_pyrogram_workers(client)
     await client.invoke(raw.functions.updates.GetState())
-    _assert_internal_workers(client)
+    inspect_pyrogram_workers(client)
 
 
 def notify_systemd(message: str = "WATCHDOG=1") -> bool:
@@ -104,21 +110,27 @@ async def monitor_pyrogram_client(
     client: Any,
     *,
     logger: logging.Logger,
-    interval_seconds: float = 30.0,
+    interval_seconds: float = LOCAL_HEARTBEAT_INTERVAL_SECONDS,
+    remote_probe_interval_seconds: float = REMOTE_PROBE_INTERVAL_SECONDS,
     timeout_seconds: float = 15.0,
     max_failures: int = 3,
     probe: Callable[[Any], Awaitable[None]] = probe_pyrogram_client,
+    local_probe: Callable[[Any], None] = inspect_pyrogram_workers,
     notifier: Callable[[str], bool] = notify_systemd,
+    on_unhealthy: Callable[[str], Awaitable[None]] | None = None,
 ) -> None:
     """Continuously supervise a client, raising after persistent failures.
 
-    A successful probe also feeds systemd's process watchdog.  Failed probes do
-    not send a heartbeat, so systemd can still recover the service if this
-    coroutine or the whole event loop becomes stuck.
+    Local worker checks feed systemd without generating Telegram traffic.  A
+    real ``updates.GetState`` request runs only three times per day by default.
+    Failed checks do not send a heartbeat, so systemd can still recover the
+    service if this coroutine or the whole event loop becomes stuck.
     """
 
     if interval_seconds <= 0:
         raise ValueError("interval_seconds must be positive")
+    if remote_probe_interval_seconds <= 0:
+        raise ValueError("remote_probe_interval_seconds must be positive")
     if timeout_seconds <= 0:
         raise ValueError("timeout_seconds must be positive")
     if max_failures <= 0:
@@ -126,26 +138,47 @@ async def monitor_pyrogram_client(
 
     failures = 0
     last_error: BaseException | None = None
+    next_remote_probe = 0.0
+    loop = asyncio.get_running_loop()
 
     while True:
+        remote_probe_due = loop.time() >= next_remote_probe
+        probe_kind = "remote" if remote_probe_due else "local"
         try:
-            await asyncio.wait_for(probe(client), timeout=timeout_seconds)
+            local_probe(client)
+            if remote_probe_due:
+                await asyncio.wait_for(probe(client), timeout=timeout_seconds)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             failures += 1
             last_error = exc
             logger.warning(
-                "Telegram watchdog probe failed (%s/%s): %s",
+                "Telegram watchdog %s probe failed (%s/%s): %s",
+                probe_kind,
                 failures,
                 max_failures,
                 exc,
             )
             if failures >= max_failures:
-                raise TelegramSessionUnhealthy(
+                reason = (
                     "Telegram session remained unhealthy after "
                     f"{max_failures} probes: {last_error}"
-                ) from exc
+                )
+                if on_unhealthy is not None:
+                    try:
+                        await asyncio.wait_for(
+                            on_unhealthy(reason),
+                            timeout=min(timeout_seconds, 10.0),
+                        )
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as alert_error:
+                        logger.error(
+                            "Could not send Telegram watchdog alert: %s",
+                            alert_error,
+                        )
+                raise TelegramSessionUnhealthy(reason) from exc
         else:
             if failures:
                 logger.info(
@@ -154,6 +187,12 @@ async def monitor_pyrogram_client(
                 )
             failures = 0
             last_error = None
+            if remote_probe_due:
+                next_remote_probe = loop.time() + remote_probe_interval_seconds
+                logger.info(
+                    "Telegram remote probe succeeded; next check in %.1f hours.",
+                    remote_probe_interval_seconds / 3600,
+                )
             notifier("WATCHDOG=1")
 
         await asyncio.sleep(interval_seconds)

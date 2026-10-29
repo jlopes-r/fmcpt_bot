@@ -100,11 +100,14 @@ o servico nao apaga esses estados.
 
 ## Recuperacao automatica do Telegram
 
-`superbot.service` e `comandosbot.service` verificam a cada 30 segundos o RPC
-`updates.GetState` e as tarefas internas de sessao, recepcao e dispatch do
-Pyrogram. Tres falhas consecutivas encerram somente o processo afetado para que
-o systemd o recrie. O mesmo monitor alimenta `WatchdogSec=120s`; assim, um loop
-de eventos completamente congelado tambem e recuperado sem reiniciar a VM.
+`superbot.service` e `comandosbot.service` verificam localmente, a cada 30
+segundos e sem trafego no Telegram, as tarefas internas de sessao, recepcao e
+dispatch do Pyrogram. O RPC real `updates.GetState` roda a cada oito horas (tres
+vezes por dia). Tres falhas consecutivas tentam avisar o administrador pela Bot
+API HTTPS, independente da sessao MTProto quebrada, e encerram somente o
+processo afetado para que o systemd o recrie. O monitor local alimenta
+`WatchdogSec=120s`; assim, um loop de eventos completamente congelado tambem e
+recuperado sem reiniciar a VM.
 
 ```bash
 systemctl show superbot.service comandosbot.service \

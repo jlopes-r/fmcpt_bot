@@ -15,6 +15,7 @@ from packages.telegram_ui import (
     build_web_app_menu_button_payload,
     clear_bot_commands_for_chat_via_bot_api,
     reply_command_menu,
+    send_bot_api_message,
     set_bot_commands_for_chat_via_bot_api,
     set_bot_commands_menu_button_via_bot_api,
     set_bot_menu_button_via_bot_api,
@@ -60,6 +61,26 @@ class FakeGroupMessage(FakeMessage):
 
 
 class TelegramUiTests(unittest.IsolatedAsyncioTestCase):
+    async def test_send_bot_api_message_uses_independent_send_message_call(self):
+        seen = []
+        original = telegram_ui._bot_api_post
+
+        async def capture_bot_api(token, method, payload):
+            seen.append((token, method, payload))
+            return {"ok": True, "result": {}}
+
+        telegram_ui._bot_api_post = capture_bot_api
+        try:
+            sent = await send_bot_api_message("123:abc", 456, "reiniciando")
+        finally:
+            telegram_ui._bot_api_post = original
+
+        self.assertTrue(sent)
+        self.assertEqual(
+            seen,
+            [("123:abc", "sendMessage", {"chat_id": 456, "text": "reiniciando"})],
+        )
+
     async def test_reply_command_menu_falls_back_when_web_app_button_is_rejected(self):
         message = FakeMessage(fail_first=True)
         commands = (

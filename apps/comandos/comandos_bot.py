@@ -37,6 +37,7 @@ from packages.telegram_watchdog import monitor_pyrogram_client
 from packages.telegram_ui import (
     build_bot_commands,
     reply_command_menu,
+    send_bot_api_message,
     set_bot_commands_via_bot_api,
     set_bot_commands_menu_button_via_bot_api,
 )
@@ -79,8 +80,13 @@ load_environment()
 API_ID = get_int_env("API_ID")
 API_HASH = os.getenv("API_HASH")
 BOT_TOKEN = os.getenv("BOT_TOKEN_COMANDOS")
+ADMIN_ID = get_int_env("ADMIN_ID", 0)
 GRUPOS_AUTORIZADOS_STR = os.getenv("GRUPOS_AUTORIZADOS", "")
 GRUPOS_AUTORIZADOS = parse_chat_ids(GRUPOS_AUTORIZADOS_STR)
+WATCHDOG_ALERT_CHAT_ID = ADMIN_ID or next(
+    (chat_id for chat_id in GRUPOS_AUTORIZADOS if chat_id > 0),
+    GRUPOS_AUTORIZADOS[0] if GRUPOS_AUTORIZADOS else 0,
+)
 MINI_APP_URL = mini_app_url()
 
 # Logging
@@ -1208,8 +1214,25 @@ async def notificar_atualizacao():
 
 async def _rodar_supervisionado():
     await app.start()
+
+    async def _avisar_falha_watchdog(reason: str):
+        if not WATCHDOG_ALERT_CHAT_ID:
+            log.warning("Watchdog sem chat configurado para enviar o alerta")
+            return
+        await send_bot_api_message(
+            BOT_TOKEN,
+            WATCHDOG_ALERT_CHAT_ID,
+            "⚠️ O ComandosBot perdeu a sessão com o Telegram após três "
+            "verificações. Vou reiniciar somente este bot agora.\n\n"
+            f"Detalhe: {reason}",
+        )
+
     watchdog_task = asyncio.create_task(
-        monitor_pyrogram_client(app, logger=log),
+        monitor_pyrogram_client(
+            app,
+            logger=log,
+            on_unhealthy=_avisar_falha_watchdog,
+        ),
         name="telegram-session-watchdog",
     )
     notificacao_task = asyncio.create_task(

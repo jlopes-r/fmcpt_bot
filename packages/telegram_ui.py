@@ -132,6 +132,19 @@ async def _bot_api_post(bot_token: str, method: str, payload: dict) -> dict:
             return data
 
 
+async def send_bot_api_message(bot_token: str, chat_id: int, text: str) -> bool:
+    """Send an alert independently from the bot's Pyrogram/MTProto session."""
+
+    if not bot_token or not chat_id or not text:
+        return False
+    await _bot_api_post(
+        bot_token,
+        "sendMessage",
+        {"chat_id": chat_id, "text": text},
+    )
+    return True
+
+
 async def set_bot_commands_via_bot_api(
     bot_token: str,
     commands: tuple[CommandSpec, ...],
