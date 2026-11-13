@@ -12,8 +12,9 @@ from enum import Enum
 import json
 import os
 from pathlib import Path
+from threading import Lock
 import time
-from typing import Callable, Mapping
+from typing import Callable, Mapping, Sequence
 from urllib.parse import urljoin, urlparse
 
 import httpx
@@ -34,6 +35,31 @@ class InstagramFailure(str, Enum):
     CHALLENGE = "challenge"
     IP_RATE_LIMITED = "ip_rate_limited"
     TRANSIENT = "transient"
+
+
+class InstagramAccountRotation:
+    """Selects a preferred account in stable blocks of download requests.
+
+    The selector is intentionally independent from account health.  The
+    caller still tries the remaining accounts as fallbacks and the account
+    pool decides whether an account is temporarily unsafe to use.
+    """
+
+    def __init__(self, block_size: int = 5) -> None:
+        self.block_size = max(1, int(block_size))
+        self._request_count = 0
+        self._lock = Lock()
+
+    def order(self, slots: Sequence[tuple[str, str]]) -> tuple[tuple[str, str], ...]:
+        """Return slots with one preferred account, rotating every block."""
+
+        configured = tuple((label, path) for label, path in slots if path)
+        if len(configured) < 2:
+            return configured
+        with self._lock:
+            preferred_index = (self._request_count // self.block_size) % len(configured)
+            self._request_count += 1
+        return configured[preferred_index:] + configured[:preferred_index]
 
 
 def _response_text(response: object) -> str:

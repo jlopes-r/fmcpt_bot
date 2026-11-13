@@ -28,6 +28,7 @@ from apps.telegram_bot.downloaders import baixar_com_ytdlp
 from apps.telegram_bot.errors import InstagramAccountsUnavailable
 from apps.telegram_bot.instagram_resilience import (
     InstagramAccountPool,
+    InstagramAccountRotation,
     InstagramFailure,
     classify_instagram_response,
     load_graphql_documents,
@@ -58,6 +59,9 @@ _instagram_account_pool = InstagramAccountPool(
     ),
     challenge_seconds=_bounded_env_number('IG_CHALLENGE_COOLDOWN', 3600, 60, 86400),
     ip_rate_limit_seconds=_bounded_env_number('IG_429_COOLDOWN', 120, 10, 3600),
+)
+_instagram_account_rotation = InstagramAccountRotation(
+    int(_bounded_env_number('IG_ACCOUNT_ROTATION_REQUESTS', 5, 1, 100))
 )
 _active_ig_account: ContextVar[str | None] = ContextVar(
     'active_instagram_account', default=None
@@ -2140,11 +2144,14 @@ async def download_instagram(
     secondary_cookie_path: str = "",
 ) -> dict | None:
     """
-    Download autenticado com duas contas, em ordem deterministica.
+    Download autenticado com duas contas, alternando a preferencia a cada
+    bloco de requisicoes.
 
     Para cada conta configurada, tenta as rotas autenticadas adequadas ao tipo
     de URL e depois o yt-dlp com uma copia dos mesmos cookies. A conta
-    secundaria so entra quando a primaria nao entrega uma midia valida.
+    outra conta entra imediatamente quando a preferida nao entrega uma midia
+    valida. Desafios e cookies invalidos continuam sendo protegidos pelo pool
+    de circuit breakers.
 
     Retorna dict com:
       - urls: lista de URLs diretas da CDN, OU
@@ -2154,6 +2161,7 @@ async def download_instagram(
       - uploader: nome do autor
       - _cookie_source: 'primary' ou 'secondary'
       - _primary_cookie_failed: True quando a secundaria salvou o download
+      - _instagram_account_failures: contas rejeitadas antes do fallback
     """
     log.info("📷 Instagram Extractor v2: %s", url)
     try:
@@ -2170,12 +2178,26 @@ async def download_instagram(
         log.warning("❌ Não foi possível extrair shortcode de: %s", url)
         return None
 
-    cookie_slots = (
+    cookie_slots = _instagram_account_rotation.order((
         ("primary", cookie_path),
         ("secondary", secondary_cookie_path),
-    )
+    ))
     primary_failed = False
     attempted_account_ids: list[str] = []
+    account_failures: list[dict[str, str]] = []
+
+    def record_authentication_failure(slot: str, account_id: str) -> None:
+        health = _instagram_account_pool.health(account_id)
+        if health.state not in {'cookie_invalid', 'challenge'}:
+            return
+        if any(failure['slot'] == slot for failure in account_failures):
+            return
+        account_failures.append({
+            'slot': slot,
+            'failure': health.state,
+            'reason': health.reason or health.state,
+        })
+
     for slot, path in cookie_slots:
         if not path or not os.path.exists(path):
             log.warning("🍪 Cookies Instagram %s nao configurados: %s", slot, path or "(vazio)")
@@ -2196,6 +2218,7 @@ async def download_instagram(
             )
             if slot == "primary":
                 primary_failed = True
+            record_authentication_failure(slot, account_id)
             continue
 
         log.info("🍪 Tentando conta Instagram %s", slot)
@@ -2261,12 +2284,14 @@ async def download_instagram(
         if _is_acceptable_result_for_url(result, url):
             result['_cookie_source'] = slot
             result['_primary_cookie_failed'] = primary_failed
+            result['_instagram_account_failures'] = account_failures
             reset_cookies_bad(reset_pool=False)
             log.info("✅ Instagram via conta %s: %s", slot, url)
             return result
         if slot == "primary":
             primary_failed = True
             log.warning("⚠️ Conta Instagram primaria falhou; tentando secundaria")
+        record_authentication_failure(slot, account_id)
 
     log.warning("❌ As duas contas de cookies falharam para: %s", url)
     authentication_failures = {"cookie_invalid", "challenge"}

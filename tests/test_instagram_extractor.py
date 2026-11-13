@@ -166,6 +166,10 @@ class InstagramExtractorTest(unittest.IsolatedAsyncioTestCase):
         # Testes de rede simulada não devem ler/gravar o cache real do bot.
         ig._instagram_account_pool.reset()
         self.addCleanup(ig._instagram_account_pool.reset)
+        rotation = ig.InstagramAccountRotation(block_size=5)
+        rotation_patcher = patch.object(ig, '_instagram_account_rotation', rotation)
+        rotation_patcher.start()
+        self.addCleanup(rotation_patcher.stop)
         for name, value in (
             ('_profile_cache', {}), ('_profile_cache_ttl', {}),
             ('_ig_429_since', 0.0), ('_ig_last_request_at', 0.0),
@@ -704,7 +708,35 @@ class InstagramExtractorTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["_cookie_source"], "secondary")
         self.assertTrue(result["_primary_cookie_failed"])
+        self.assertEqual(result["_instagram_account_failures"], [])
         self.assertEqual(api.await_count, 2)
+
+    async def test_rejected_account_is_reported_when_other_account_falls_back(self):
+        reel_url = "https://www.instagram.com/reel/DNBCJoiOp9J/"
+        ig.reset_cookies_bad()
+        self.addCleanup(ig.reset_cookies_bad)
+
+        async def extract_api(_shortcode, cookies):
+            if cookies["sessionid"] == "primary":
+                ig._mark_cookies_bad("checkpoint_required", ig.InstagramFailure.CHALLENGE)
+                return None
+            return video_result
+
+        video_result = {"urls": ["https://example.com/reel.mp4"], "type": "video"}
+        with (
+            patch.object(ig.os.path, "exists", return_value=True),
+            patch.object(ig, "_load_cookies_from_file", side_effect=[
+                {"sessionid": "primary"}, {"sessionid": "secondary"},
+            ]),
+            patch.object(ig, "_extract_via_api", new=AsyncMock(side_effect=extract_api)),
+        ):
+            result = await ig.download_instagram(
+                reel_url, "primary-alert.txt", "C:/tmp", secondary_cookie_path="secondary-alert.txt"
+            )
+
+        self.assertEqual(result["_cookie_source"], "secondary")
+        self.assertEqual(result["_instagram_account_failures"][0]["slot"], "primary")
+        self.assertEqual(result["_instagram_account_failures"][0]["failure"], "challenge")
 
     async def test_secondary_rate_limit_goes_to_ytdlp_without_false_cookie_failure(self):
         reel_url = "https://www.instagram.com/reel/DdMLMZzIXu-/"

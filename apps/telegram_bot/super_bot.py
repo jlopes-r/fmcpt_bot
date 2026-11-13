@@ -1101,7 +1101,8 @@ async def avisar_admin_cookies(client, motivo="expirados", *, duas_contas=False)
             if duas_contas:
                 texto = (
                     "🍪⚠️ **Alerta de Cookies Instagram**\n\n"
-                    "As contas principal e secundaria tiveram problemas e "
+                    f"As contas {_instagram_account_name('primary')} e "
+                    f"{_instagram_account_name('secondary')} tiveram problemas e "
                     "foram rejeitadas pelo Instagram.\n"
                     f"Motivo: {motivo}.\n\n"
                     "Atualize os dois arquivos:\n"
@@ -1120,6 +1121,38 @@ async def avisar_admin_cookies(client, motivo="expirados", *, duas_contas=False)
             )
         except Exception as e:
             log.error(f"Falha ao avisar admin sobre cookies: {e}")
+
+
+_instagram_account_alerted_at: dict[tuple[str, str], float] = {}
+
+
+def _instagram_account_name(slot: str) -> str:
+    variable = "IG_PRIMARY_USERNAME" if slot == "primary" else "IG_SECONDARY_USERNAME"
+    username = os.getenv(variable, "").strip().lstrip("@")
+    return f"@{username}" if username else f"conta {slot}"
+
+
+async def avisar_admin_falha_conta_instagram(client, failure: dict[str, str]):
+    """Alert once per account/failure incident while the fallback keeps working."""
+    if not ADMIN_ID:
+        return
+    slot = failure.get("slot", "desconhecida")
+    kind = failure.get("failure", "erro")
+    key = (slot, kind)
+    now = time.monotonic()
+    if now - _instagram_account_alerted_at.get(key, 0.0) < 1800:
+        return
+    _instagram_account_alerted_at[key] = now
+    reason = failure.get("reason", kind)
+    try:
+        await client.send_message(
+            ADMIN_ID,
+            "🍪⚠️ **Alerta de conta Instagram**\n\n"
+            f"{_instagram_account_name(slot)} ({slot}) foi rejeitada: {reason}.\n"
+            "O pedido foi atendido pela outra conta.",
+        )
+    except Exception as e:
+        log.error(f"Falha ao avisar admin sobre conta Instagram: {e}")
 
 @app.on_callback_query(filters.regex(r"^(forcelong|cancellong)_([a-f0-9]{32})$"))
 async def callback_long_video(client, callback_query):
@@ -1666,14 +1699,9 @@ async def processar_links(client, message, *, _resume_job: JobRecord | None = No
             DOWNLOAD_COUNT += 1
         if platform == "instagram":
             _failed_url_cache.pop(url_norm, None)
-            if (
-                outcome.bundle.metadata.get("_primary_cookie_failed")
-                and outcome.bundle.metadata.get("_cookie_source") == "secondary"
-            ):
-                await avisar_admin_cookies(
-                    client,
-                    "com falha; a conta secundaria assumiu o download",
-                )
+            for failure in outcome.bundle.metadata.get("_instagram_account_failures", []):
+                if isinstance(failure, dict):
+                    await avisar_admin_falha_conta_instagram(client, failure)
         await asyncio.to_thread(
             _pipeline_observer.record_delivery,
             platform=outcome.platform,

@@ -4,6 +4,7 @@ import httpx
 
 from apps.telegram_bot.instagram_resilience import (
     InstagramAccountPool,
+    InstagramAccountRotation,
     InstagramFailure,
     classify_instagram_response,
     load_graphql_documents,
@@ -135,6 +136,16 @@ class InstagramAccountPoolTest(unittest.TestCase):
         self.assertTrue(self.pool.can_attempt(self.secondary, "ytdlp"))
         self.now += 21
         self.assertTrue(self.pool.can_attempt(self.secondary, "story_api"))
+
+
+class InstagramAccountRotationTest(unittest.TestCase):
+    def test_rotates_preferred_account_every_five_requests(self):
+        rotation = InstagramAccountRotation(block_size=5)
+        slots = (("primary", "primary.txt"), ("secondary", "secondary.txt"))
+
+        orders = [rotation.order(slots)[0][0] for _ in range(12)]
+
+        self.assertEqual(orders, ["primary"] * 5 + ["secondary"] * 5 + ["primary"] * 2)
 
 
 class GraphQLDocumentConfigTest(unittest.TestCase):
