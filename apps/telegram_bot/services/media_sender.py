@@ -33,6 +33,7 @@ from apps.telegram_bot.errors import (
     TelegramUploadFailed,
 )
 from apps.telegram_bot.models.media import MediaBundle, MediaItem
+from apps.telegram_bot.services.media_filenames import ensure_photo_upload_extension
 from packages.observability import redact_sensitive
 
 if TYPE_CHECKING:
@@ -271,6 +272,10 @@ class MediaSender:
             if mime not in {"image/jpeg", "image/png"}:
                 path = await self._convert_photo(path, directory, item.index)
                 mime = "image/jpeg"
+            else:
+                path = await ensure_photo_upload_extension(
+                    path, mime, directory, item.index
+                )
             return item.with_source(str(path), mime_type=mime, size=path.stat().st_size)
 
         if detected_kind == "video":
