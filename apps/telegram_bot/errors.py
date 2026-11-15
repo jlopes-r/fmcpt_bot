@@ -48,7 +48,7 @@ class AuthenticationRequired(SocialMediaError):
 class InstagramAccountsUnavailable(AuthenticationRequired):
     error_code = "instagram_accounts_unavailable"
     public_message = (
-        "As contas principal e secundaria do Instagram estao indisponiveis."
+        "As contas configuradas do Instagram estao indisponiveis."
     )
 
 

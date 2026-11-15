@@ -1696,12 +1696,6 @@ async def processar_links(client, message, *, _resume_job: JobRecord | None = No
             DOWNLOAD_COUNT += 1
         if platform == "instagram":
             _failed_url_cache.pop(url_norm, None)
-            failures = [
-                failure
-                for failure in outcome.bundle.metadata.get("_instagram_account_failures", [])
-                if isinstance(failure, dict)
-            ]
-            await avisar_falhas_contas_instagram(message, failures)
         await asyncio.to_thread(
             _pipeline_observer.record_delivery,
             platform=outcome.platform,
@@ -1751,16 +1745,22 @@ async def processar_links(client, message, *, _resume_job: JobRecord | None = No
             await status.edit_text(ACCESS_NOTICE)
         elif platform == "instagram":
             if isinstance(exc, InstagramAccountsUnavailable):
-                motivo = "principal e secundaria foram rejeitadas"
-                await avisar_admin_cookies(client, motivo, duas_contas=True)
+                accounts = [
+                    _instagram_account_name(slot.strip())
+                    for slot in exc.account.split(",")
+                    if slot.strip()
+                ]
+                account_text = ", ".join(accounts) or "as contas configuradas"
+                motivo = "cookies rejeitados ou verificação de segurança exigida"
+                if "challenge" in str(exc).lower():
+                    motivo = "verificação de segurança exigida pelo Instagram"
                 await status.edit_text(
                     f"{erro_aleatorio(ERROS_INSTAGRAM)}\n\n"
-                    "🍪 As duas contas do Instagram tiveram problemas. "
-                    "O administrador foi avisado."
+                    f"🍪 Não foi possível usar {account_text}: {motivo}.\n"
+                    "Atualize os cookies dessas contas e tente novamente."
                 )
             else:
                 motivo = get_cookie_failure_reason()
-                await avisar_admin_cookies(client, f"expirados ou invalidos ({motivo})")
                 await status.edit_text(f"{erro_aleatorio(ERROS_INSTAGRAM)}\n\n🔒 {motivo}")
         else:
             await status.edit_text(exc.public_message)

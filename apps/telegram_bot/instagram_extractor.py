@@ -55,10 +55,10 @@ _instagram_account_pool = InstagramAccountPool(
     failure_threshold=int(_bounded_env_number('IG_CIRCUIT_FAILURES', 2, 1, 10)),
     circuit_seconds=_bounded_env_number('IG_CIRCUIT_SECONDS', 300, 10, 3600),
     invalid_cookie_seconds=_bounded_env_number(
-        'IG_INVALID_COOKIE_COOLDOWN', 1800, 60, 86400
+        'IG_INVALID_COOKIE_COOLDOWN', 21600, 60, 86400
     ),
-    challenge_seconds=_bounded_env_number('IG_CHALLENGE_COOLDOWN', 3600, 60, 86400),
-    ip_rate_limit_seconds=_bounded_env_number('IG_429_COOLDOWN', 120, 10, 3600),
+    challenge_seconds=_bounded_env_number('IG_CHALLENGE_COOLDOWN', 86400, 60, 86400),
+    ip_rate_limit_seconds=_bounded_env_number('IG_429_COOLDOWN', 900, 10, 3600),
 )
 _instagram_account_rotation = InstagramAccountRotation(
     int(_bounded_env_number('IG_ACCOUNT_MAX_CONSECUTIVE', 5, 1, 100))
@@ -2302,8 +2302,13 @@ async def download_instagram(
         in authentication_failures
         for account_id in attempted_account_ids
     ):
+        failed_reasons = ", ".join(
+            f"{_instagram_account_pool.health(account_id).label}:"
+            f"{_instagram_account_pool.health(account_id).state}"
+            for account_id in attempted_account_ids
+        )
         raise InstagramAccountsUnavailable(
-            "Instagram rejeitou todas as contas configuradas",
+            f"Instagram rejeitou todas as contas configuradas ({failed_reasons})",
             platform="instagram",
             stage="authentication",
             account=",".join(_instagram_account_pool.health(account_id).label for account_id in attempted_account_ids),
