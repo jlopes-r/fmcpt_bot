@@ -75,6 +75,7 @@ from packages.config import (
     get_int_env,
     instagram_cookie_path,
     instagram_secondary_cookie_path,
+    instagram_tertiary_cookie_path,
     load_environment,
     mini_app_url,
     parse_chat_ids,
@@ -154,6 +155,7 @@ AUDIO_BOCA_LEITE_DIR = os.path.join(RAIZ, "assets", "audios")
 PASTA_DOWNLOADS = DOWNLOADS_DIR
 COOKIE_PATH = str(instagram_cookie_path())
 SECONDARY_COOKIE_PATH = str(instagram_secondary_cookie_path())
+TERTIARY_COOKIE_PATH = str(instagram_tertiary_cookie_path())
 MINI_APP_URL = mini_app_url()
 
 API_ID = get_int_env("API_ID")
@@ -989,6 +991,7 @@ async def cmd_ig_status(client, message):
         contas = [
             ('principal', COOKIE_PATH),
             ('secundaria', SECONDARY_COOKIE_PATH),
+            ('terciaria', TERTIARY_COOKIE_PATH),
         ]
         relatorios = []
         for nome, path in contas:
@@ -1127,9 +1130,10 @@ _instagram_account_alerted_at: dict[tuple[str, str], float] = {}
 
 
 def _instagram_account_name(slot: str) -> str:
-    variable = "IG_PRIMARY_USERNAME" if slot == "primary" else "IG_SECONDARY_USERNAME"
+    variable = {"primary": "IG_PRIMARY_USERNAME", "secondary": "IG_SECONDARY_USERNAME", "tertiary": "IG_TERTIARY_USERNAME"}.get(slot, "")
     username = os.getenv(variable, "").strip().lstrip("@")
-    return f"@{username}" if username else f"conta {slot}"
+    number = {"primary": "1", "secondary": "2", "tertiary": "3"}.get(slot, slot)
+    return f"@{username}" if username else f"conta {number}"
 
 
 async def avisar_admin_falha_conta_instagram(client, failure: dict[str, str]):
@@ -1402,6 +1406,7 @@ def _social_pipeline_config() -> SocialPipelineConfig:
         playlist_limit=max(1, min(get_int_env("GENERIC_MAX_ITEMS", 20), 50)),
         instagram_cookie_path=COOKIE_PATH,
         instagram_secondary_cookie_path=SECONDARY_COOKIE_PATH,
+        instagram_tertiary_cookie_path=TERTIARY_COOKIE_PATH,
     )
 
 

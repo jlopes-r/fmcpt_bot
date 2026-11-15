@@ -39,6 +39,7 @@ class SocialPipelineConfig:
     playlist_limit: int = 20
     instagram_cookie_path: str = ""
     instagram_secondary_cookie_path: str = ""
+    instagram_tertiary_cookie_path: str = ""
 
 
 @dataclass(frozen=True)
@@ -78,6 +79,7 @@ class SocialMediaPipeline:
             self.download_manager,
             instagram_cookie_path=config.instagram_cookie_path,
             instagram_secondary_cookie_path=config.instagram_secondary_cookie_path,
+            instagram_tertiary_cookie_path=config.instagram_tertiary_cookie_path,
         )
         self.sender = MediaSender(
             client,

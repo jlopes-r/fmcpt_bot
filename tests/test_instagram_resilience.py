@@ -140,12 +140,12 @@ class InstagramAccountPoolTest(unittest.TestCase):
 
 class InstagramAccountRotationTest(unittest.TestCase):
     def test_rotates_preferred_account_every_five_requests(self):
-        rotation = InstagramAccountRotation(block_size=5)
-        slots = (("primary", "primary.txt"), ("secondary", "secondary.txt"))
+        rotation = InstagramAccountRotation(max_consecutive=5)
+        slots = (("primary", "primary.txt"), ("secondary", "secondary.txt"), ("tertiary", "tertiary.txt"))
 
-        orders = [rotation.order(slots)[0][0] for _ in range(12)]
+        orders = [rotation.order(slots)[0][0] for _ in range(100)]
 
-        self.assertEqual(orders, ["primary"] * 5 + ["secondary"] * 5 + ["primary"] * 2)
+        self.assertTrue(all(orders[index:index + 6].count(orders[index]) < 6 for index in range(len(orders) - 5)))
 
 
 class GraphQLDocumentConfigTest(unittest.TestCase):

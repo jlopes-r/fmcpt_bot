@@ -61,7 +61,7 @@ _instagram_account_pool = InstagramAccountPool(
     ip_rate_limit_seconds=_bounded_env_number('IG_429_COOLDOWN', 120, 10, 3600),
 )
 _instagram_account_rotation = InstagramAccountRotation(
-    int(_bounded_env_number('IG_ACCOUNT_ROTATION_REQUESTS', 5, 1, 100))
+    int(_bounded_env_number('IG_ACCOUNT_MAX_CONSECUTIVE', 5, 1, 100))
 )
 _active_ig_account: ContextVar[str | None] = ContextVar(
     'active_instagram_account', default=None
@@ -2142,6 +2142,7 @@ async def download_instagram(
     out_dir: str,
     *,
     secondary_cookie_path: str = "",
+    tertiary_cookie_path: str = "",
 ) -> dict | None:
     """
     Download autenticado com duas contas, alternando a preferencia a cada
@@ -2181,6 +2182,7 @@ async def download_instagram(
     cookie_slots = _instagram_account_rotation.order((
         ("primary", cookie_path),
         ("secondary", secondary_cookie_path),
+        ("tertiary", tertiary_cookie_path),
     ))
     primary_failed = False
     attempted_account_ids: list[str] = []
@@ -2293,7 +2295,7 @@ async def download_instagram(
             log.warning("⚠️ Conta Instagram primaria falhou; tentando secundaria")
         record_authentication_failure(slot, account_id)
 
-    log.warning("❌ As duas contas de cookies falharam para: %s", url)
+    log.warning("❌ Todas as contas de cookies falharam para: %s", url)
     authentication_failures = {"cookie_invalid", "challenge"}
     if len(attempted_account_ids) >= 2 and all(
         _instagram_account_pool.health(account_id).state
@@ -2301,10 +2303,10 @@ async def download_instagram(
         for account_id in attempted_account_ids
     ):
         raise InstagramAccountsUnavailable(
-            "Instagram rejeitou as contas principal e secundaria",
+            "Instagram rejeitou todas as contas configuradas",
             platform="instagram",
             stage="authentication",
-            account="primary,secondary",
+            account=",".join(_instagram_account_pool.health(account_id).label for account_id in attempted_account_ids),
         )
     return None
 

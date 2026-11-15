@@ -12,6 +12,7 @@ from enum import Enum
 import json
 import os
 from pathlib import Path
+import random
 from threading import Lock
 import time
 from typing import Callable, Mapping, Sequence
@@ -45,21 +46,37 @@ class InstagramAccountRotation:
     pool decides whether an account is temporarily unsafe to use.
     """
 
-    def __init__(self, block_size: int = 5) -> None:
-        self.block_size = max(1, int(block_size))
+    def __init__(self, max_consecutive: int = 5, *, block_size: int | None = None) -> None:
+        self._legacy_deterministic = block_size is not None
+        if block_size is not None:
+            max_consecutive = block_size
         self._request_count = 0
+        self.max_consecutive = max(1, int(max_consecutive))
+        self._last_label = ""
+        self._consecutive = 0
+        self._rng = random.Random()
         self._lock = Lock()
 
     def order(self, slots: Sequence[tuple[str, str]]) -> tuple[tuple[str, str], ...]:
-        """Return slots with one preferred account, rotating every block."""
+        """Return a random preferred account, capped by consecutive use."""
 
         configured = tuple((label, path) for label, path in slots if path)
         if len(configured) < 2:
             return configured
         with self._lock:
-            preferred_index = (self._request_count // self.block_size) % len(configured)
-            self._request_count += 1
-        return configured[preferred_index:] + configured[:preferred_index]
+            if self._legacy_deterministic:
+                preferred = configured[(self._request_count // self.max_consecutive) % len(configured)]
+                self._request_count += 1
+                return (preferred, *(slot for slot in configured if slot != preferred))
+            candidates = list(configured)
+            if self._consecutive >= self.max_consecutive:
+                candidates = [slot for slot in candidates if slot[0] != self._last_label]
+            preferred = self._rng.choice(candidates)
+            self._consecutive = self._consecutive + 1 if preferred[0] == self._last_label else 1
+            self._last_label = preferred[0]
+            remaining = [slot for slot in configured if slot != preferred]
+            self._rng.shuffle(remaining)
+        return (preferred, *remaining)
 
 
 def _response_text(response: object) -> str:

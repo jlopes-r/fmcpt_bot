@@ -60,6 +60,7 @@ def build_default_registry(
     *,
     instagram_cookie_path: str | None = None,
     instagram_secondary_cookie_path: str | None = None,
+    instagram_tertiary_cookie_path: str | None = None,
 ) -> ExtractorRegistry:
     """Build the production order: custom extractors before generic yt-dlp."""
     return ExtractorRegistry(
@@ -72,6 +73,9 @@ def build_default_registry(
                 secondary_cookie_path=instagram_secondary_cookie_path
                 if instagram_secondary_cookie_path is not None
                 else os.getenv("IG_SECONDARY_COOKIE_PATH", ""),
+                tertiary_cookie_path=instagram_tertiary_cookie_path
+                if instagram_tertiary_cookie_path is not None
+                else os.getenv("IG_TERTIARY_COOKIE_PATH", ""),
             ),
             FacebookExtractor(session, download_manager),
             TwitterExtractor(session, download_manager),
